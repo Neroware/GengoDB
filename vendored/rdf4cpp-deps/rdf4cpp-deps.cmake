@@ -1,0 +1,17 @@
+include_directories(${PROJECT_SOURCE_DIR}/vendored/rdf4cpp-deps/)
+include_directories(${PROJECT_SOURCE_DIR}/vendored/rdf4cpp-deps/expected_lite/include)
+include_directories(${PROJECT_SOURCE_DIR}/vendored/rdf4cpp-deps/highway)
+include_directories(${PROJECT_SOURCE_DIR}/vendored/rdf4cpp-deps/dice/hash/include)
+include_directories(${PROJECT_SOURCE_DIR}/vendored/rdf4cpp-deps/dice/sparse_map/include)
+include_directories(${PROJECT_SOURCE_DIR}/vendored/rdf4cpp-deps/dice/template_library/include)
+include_directories(${PROJECT_SOURCE_DIR}/vendored/rdf4cpp-deps/uni_algo/include)
+include_directories(${PROJECT_SOURCE_DIR}/vendored/rdf4cpp-deps/libxml2/include)
+
+add_subdirectory(${PROJECT_SOURCE_DIR}/vendored/rdf4cpp-deps/expected_lite/ EXCLUDE_FROM_ALL)
+add_subdirectory(${PROJECT_SOURCE_DIR}/vendored/rdf4cpp-deps/highway/ EXCLUDE_FROM_ALL)
+add_library(highway::highway ALIAS hwy) # required by rdf4cpp
+add_subdirectory(${PROJECT_SOURCE_DIR}/vendored/rdf4cpp-deps/dice/hash/ EXCLUDE_FROM_ALL)
+add_subdirectory(${PROJECT_SOURCE_DIR}/vendored/rdf4cpp-deps/dice/sparse_map/ EXCLUDE_FROM_ALL)
+add_subdirectory(${PROJECT_SOURCE_DIR}/vendored/rdf4cpp-deps/dice/template_library/ EXCLUDE_FROM_ALL)
+add_subdirectory(${PROJECT_SOURCE_DIR}/vendored/rdf4cpp-deps/uni_algo/ EXCLUDE_FROM_ALL)
+add_subdirectory(${PROJECT_SOURCE_DIR}/vendored/rdf4cpp-deps/libxml2/ EXCLUDE_FROM_ALL)

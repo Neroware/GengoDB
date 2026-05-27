@@ -34,6 +34,10 @@ include(FindZLIB)
 message("Using ZLIB: ${ZLIB_INCLUDE_DIRS}")
 message("Using Python3: ${Python3_EXECUTABLE}")
 
+find_package(Boost 1.83.0 REQUIRED COMPONENTS headers)
+include(${PROJECT_SOURCE_DIR}/vendored/rdf4cpp-deps/rdf4cpp-deps.cmake)
+find_package(rdf4cpp REQUIRED)
+
 find_package(Arrow 24 REQUIRED)
 find_package(ArrowCompute 24 REQUIRED)
 option(ENABLE_GPU_BACKEND "enable GPU backend" OFF)
