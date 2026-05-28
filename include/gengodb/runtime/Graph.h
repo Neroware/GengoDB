@@ -40,7 +40,7 @@ public:
         rel_id_t   secondPrevRelId;
         rel_id_t   secondNextRelId;
         RelPayload payload;
-        bool firstInChainMarker = false;
+        uint8_t    firstInChainMarker = 0;
     };
     Graph(int32_t nodeCapacity, int32_t relCapacity)
       : nodes_(nodeCapacity), rels_(relCapacity),
@@ -62,7 +62,7 @@ public:
     node_id_t addNode(NodePayload initPayload) {
         node_id_t id = allocNode();
         NodeEntry& n = nodes_.ptr[id];
-        n.inUse = false;
+        n.inUse = true;
         n.firstRelId = GRAPH_NONE;
         n.payload = initPayload;
         return id;
@@ -70,7 +70,7 @@ public:
     rel_id_t addRelationship(node_id_t from, node_id_t to, uint32_t typeId, RelPayload initPayload) {
         rel_id_t id = allocRel();
         RelEntry& r = rels_.ptr[id];
-        r.inUse = false;
+        r.inUse = true;
         r.firstNodeId = from;
         r.secondNodeId = to;
         r.typeId = typeId;
@@ -136,7 +136,8 @@ private:
         if (nodeIsFirst) {
             r.firstNextRelId = oldHead;
             r.firstPrevRelId = GRAPH_NONE;
-        } else {
+        } 
+        else {
             r.secondNextRelId = oldHead;
             r.secondPrevRelId = GRAPH_NONE;
         }
@@ -171,7 +172,7 @@ private:
         if (nextId != GRAPH_NONE) {
             RelEntry& next = rels_.ptr[nextId];
             if (next.firstNodeId == nodeId) {
-                next.firstPrevRelId  = prevId;
+                next.firstPrevRelId = prevId;
             }
             else {
                 next.secondPrevRelId = prevId;

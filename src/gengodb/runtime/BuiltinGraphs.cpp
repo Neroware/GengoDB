@@ -7,8 +7,7 @@ SimpleGraph* SimpleGraph::create(int32_t nodeCapacity, int32_t relCapacity) {
 }
 
 BuiltinGraph::Type BuiltinGraph::type(void* ptr) {
-    // TODO implement
-    return BuiltinGraph::Type::BUILTIN_SIMPLE_GRAPH;
+    return *reinterpret_cast<const BuiltinGraph::Type*>(ptr);
 }
 int64_t BuiltinGraph::typeId(void* ptr) {
     return static_cast<int64_t>(type(ptr));
@@ -23,7 +22,7 @@ PropertyGraph::PropRecord& PropertyGraph::prop(prop_id_t id) const {
     assert(id >= 0 && id < propMark_);
     return props_.ptr[id];
 }
-node_id_t PropertyGraph::addNode(uint32_t label) {
+node_id_t PropertyGraph::addNode() {
     node_id_t id = graph_.addNode(/*initPayload=*/GRAPH_NONE);
     node(id).inUse = true;
     return id;
@@ -77,7 +76,7 @@ prop_id_t PropertyGraph::allocProp() {
     return propMark_++;
 }
 prop_id_t PropertyGraph::addPropertyToChain(prop_id_t& chainHead,
-                                            uint32_t key, uint32_t type, uint64_t value) {
+                                            uint32_t key, uint32_t type, uint32_t value) {
     prop_id_t id = allocProp();
     PropRecord& p = props_.ptr[id];
     p.inUse      = true;
@@ -92,26 +91,31 @@ prop_id_t PropertyGraph::addPropertyToChain(prop_id_t& chainHead,
     return id;
 }
 prop_id_t PropertyGraph::addNodeProperty(node_id_t nodeId, uint32_t key, uint32_t type, uint32_t value) {
-   return addPropertyToChain(node(nodeId).payload, key, type, value);
+    return addPropertyToChain(node(nodeId).payload, key, type, value);
 }
 prop_id_t PropertyGraph::addRelProperty(rel_id_t relId, uint32_t key, uint32_t type, uint32_t value) {
-   return addPropertyToChain(rel(relId).payload, key, type, value);
+    return addPropertyToChain(rel(relId).payload, key, type, value);
 }
 void PropertyGraph::setPropertyValue(prop_id_t id, uint32_t value) {
-   props_.ptr[id].value = value;
+    props_.ptr[id].value = value;
 }
 void PropertyGraph::removeProperty(prop_id_t id, prop_id_t& chainHead) {
-   PropRecord& p = props_.ptr[id];
-   assert(p.inUse);
-   if (p.prevPropId != GRAPH_NONE)
-      props_.ptr[p.prevPropId].nextPropId = p.nextPropId;
-   else
-      chainHead = p.nextPropId;
-   if (p.nextPropId != GRAPH_NONE)
-      props_.ptr[p.nextPropId].prevPropId = p.prevPropId;
-   p.inUse = false;
-   freeProps_.push_back(id);
+    PropRecord& p = props_.ptr[id];
+    assert(p.inUse);
+    if (p.prevPropId != GRAPH_NONE)
+        props_.ptr[p.prevPropId].nextPropId = p.nextPropId;
+    else
+        chainHead = p.nextPropId;
+    if (p.nextPropId != GRAPH_NONE)
+        props_.ptr[p.nextPropId].prevPropId = p.prevPropId;
+    p.inUse = false;
+    freeProps_.push_back(id);
 }
-
+PropertyGraph* PropertyGraph::create(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity) {
+    return new PropertyGraph(nodeCapacity, relCapacity, propCapacity);
+}
+void PropertyGraph::destroy(PropertyGraph* g) {
+   delete g;
+}
 } // namespace lingodb::runtime
 

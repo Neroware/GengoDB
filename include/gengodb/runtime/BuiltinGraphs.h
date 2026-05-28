@@ -78,7 +78,7 @@ public:
     PropertyGraph(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);
     ~PropertyGraph() = default;
 
-    node_id_t addNode(uint32_t label = 0);
+    node_id_t addNode();
     void removeNode(node_id_t node);
     rel_id_t addRelationship(node_id_t from, node_id_t to, uint32_t typeId);
     void removeRelationship(rel_id_t rel);
@@ -96,15 +96,15 @@ public:
     uint8_t* nodeStorePtr() const { return graph_.nodeStorePtr(); }
     uint8_t* relStorePtr() const { return graph_.relStorePtr(); }
     uint8_t* propStorePtr() const { return reinterpret_cast<uint8_t*>(props_.ptr); }
-    int32_t  nodeHighWater() const { return graph_.nodeHighWater(); }
-    int32_t  relHighWater() const { return graph_.relHighWater(); }
-    int32_t  propHighWater() const { return propMark_; }
+    int32_t nodeHighWater() const { return graph_.nodeHighWater(); }
+    int32_t relHighWater() const { return graph_.relHighWater(); }
+    int32_t propHighWater() const { return propMark_; }
 
     static PropertyGraph* create(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);
     static void destroy(PropertyGraph* g);
 
 private:
-    prop_id_t addPropertyToChain(prop_id_t& chainHead, uint32_t key, uint32_t type, uint64_t value);
+    prop_id_t addPropertyToChain(prop_id_t& chainHead, uint32_t key, uint32_t type, uint32_t value);
     prop_id_t allocProp();
 
 private:
