@@ -10,6 +10,8 @@
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorDialect.h"
 #include "lingodb/compiler/Dialect/SubOperator/Transforms/Passes.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamDialect.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
+#include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
 #include "lingodb/compiler/Dialect/util/UtilDialect.h"
 #include "lingodb/compiler/mlir-support/eval.h"
 #include "lingodb/execution/BackendPasses.h"
@@ -33,6 +35,7 @@
 #include <mlir/Dialect/ControlFlow/IR/ControlFlow.h>
 int main(int argc, char** argv) {
    using namespace lingodb::compiler::dialect;
+   using namespace gengodb::compiler::dialect;
 
    if (argc == 2 && std::string(argv[1]) == "--features") {
       printFeatures();
@@ -72,6 +75,8 @@ int main(int argc, char** argv) {
    registry.insert<relalg::RelAlgDialect>();
    registry.insert<tuples::TupleStreamDialect>();
    registry.insert<subop::SubOperatorDialect>();
+   registry.insert<gsubop::GraphSubOpDialect>();
+   registry.insert<gpm::GPMDialect>();
    registry.insert<db::DBDialect>();
    registry.insert<lingodb::compiler::dialect::arrow::ArrowDialect>();
    registry.insert<mlir::func::FuncDialect>();

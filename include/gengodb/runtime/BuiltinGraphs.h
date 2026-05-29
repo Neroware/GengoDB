@@ -20,6 +20,12 @@ public:
     const BuiltinGraph::Type TYPE = BuiltinGraph::Type::BUILTIN_SIMPLE_GRAPH;
     struct SimpleProp {
         uint8_t data[N_BYTES_SIMPLE_PROPERTY] = {0};
+        template<typename T>
+        static SimpleProp from(T data) {
+            SimpleProp prop;
+            memcpy((void*) prop.data, &data, sizeof(T));
+            return prop;
+        }
     };
     using Base = Graph<SimpleProp, SimpleProp>;
     using NodeEntry = Base::NodeEntry;
@@ -36,8 +42,12 @@ public:
     void removeRelationship(rel_id_t id) { graph_.removeRelationship(id); }
 
     void setNodeValue(node_id_t id, SimpleProp v) { graph_.node(id).payload = v; }
+    template<typename T>
+    void setNodeValue(node_id_t id, T v) { setNodeValue(id, SimpleProp::from<T>(v)); }
     SimpleProp getNodeValue(node_id_t id) const { return graph_.node(id).payload; }
     void setRelValue(rel_id_t id, SimpleProp v) { graph_.rel(id).payload = v; }
+    template<typename T>
+    void setRelValue(rel_id_t id, T v) { setRelValue(id, SimpleProp::from<T>(v)); }
     SimpleProp getRelValue(rel_id_t id) const { return graph_.rel(id).payload; }
 
     NodeEntry& node(node_id_t id) const { return graph_.node(id); }

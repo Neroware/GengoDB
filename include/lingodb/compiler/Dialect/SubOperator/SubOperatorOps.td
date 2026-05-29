@@ -490,6 +490,24 @@ def LoopContinueOp : SubOperator_Op<"loop_continue",[Terminator]> {
     let assemblyFormat = [{ `(` $cond_state `:` type($cond_state) `[`custom<CustMemberAttr>($cond_member) `]` `)` ($values^ `:` type($values))?  attr-dict }];
 }
 
+def StepOp : SubOperator_Op<"step",[SubOperator,ContainsNestedSubOps]> {
+  let summary = "step";
+  let regions = (region SizedRegion<1>:$bodyRegion);
+  let arguments = (ins Variadic<AnyType>: $args);
+  let results = (outs Variadic<AnyType>:$res);
+  let hasCustomAssemblyFormat = 1;
+  let extraClassDeclaration = [{
+    llvm::SmallVector<Member> getWrittenMembers();
+    llvm::SmallVector<Member> getReadMembers();
+            mlir::Block* getBody(){ return &getRegion().front();}
+
+  }];
+}
+def StepReturnOp : SubOperator_Op<"step_return",[Terminator]> {
+    let arguments = (ins Variadic<AnyType>:$values);
+    let assemblyFormat = [{ ($values^ `:` type($values))?  attr-dict }];
+}
+
 def SetTrackedCountOp : SubOperator_Op<"set_tracked_count",[SubOperator,DeclareOpInterfaceMethods<StateUsingSubOperator>]> {
    let summary = "set tracked count";
    let arguments = (ins SimpleState:$tupleCount, I32Attr:$resultId, Member:$readState);
