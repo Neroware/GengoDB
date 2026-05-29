@@ -3,9 +3,12 @@
 namespace lingodb::runtime {
 
 SimpleGraph* SimpleGraph::create(int32_t nodeCapacity, int32_t relCapacity) {
-    return new SimpleGraph(nodeCapacity, relCapacity);
+    auto sgraph = new SimpleGraph(nodeCapacity, relCapacity);
+    auto graphPtr = reinterpret_cast<const uint8_t*>(sgraph);
+    GraphStorage::add(sgraph->nodeStorePtr(), nodeCapacity * sizeof(PropertyGraph::Base::NodeEntry), graphPtr);
+    GraphStorage::add(sgraph->relStorePtr(), relCapacity * sizeof(PropertyGraph::Base::RelEntry), graphPtr);
+    return sgraph;
 }
-
 BuiltinGraph::Type BuiltinGraph::type(const void* ptr) {
     return *reinterpret_cast<const BuiltinGraph::Type*>(ptr);
 }
@@ -112,7 +115,12 @@ void PropertyGraph::removeProperty(prop_id_t id, prop_id_t& chainHead) {
     freeProps_.push_back(id);
 }
 PropertyGraph* PropertyGraph::create(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity) {
-    return new PropertyGraph(nodeCapacity, relCapacity, propCapacity);
+    auto pgraph = new PropertyGraph(nodeCapacity, relCapacity, propCapacity);
+    auto graphPtr = reinterpret_cast<const uint8_t*>(pgraph);
+    GraphStorage::add(pgraph->nodeStorePtr(), nodeCapacity * sizeof(PropertyGraph::Base::NodeEntry), graphPtr);
+    GraphStorage::add(pgraph->relStorePtr(), relCapacity * sizeof(PropertyGraph::Base::RelEntry), graphPtr);
+    GraphStorage::add(pgraph->propStorePtr(), propCapacity * sizeof(PropertyGraph::PropRecord), graphPtr);
+    return pgraph;
 }
 void PropertyGraph::destroy(PropertyGraph* g) {
    delete g;

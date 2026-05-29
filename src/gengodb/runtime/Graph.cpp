@@ -18,10 +18,10 @@ struct GraphStorageHelper {
         return nodeCount() + relCount();
     }
     inline node_id_t nodeId(uint8_t* node) const {
-        return (graph_->nodeStorePtr() - node) / sizeof(typename GraphT::Base::NodeEntry);
+        return (node - graph_->nodeStorePtr()) / sizeof(typename GraphT::Base::NodeEntry);
     }
     inline rel_id_t relId(uint8_t* rel) const {
-        return (graph_->relStorePtr() - rel) / sizeof(typename GraphT::Base::RelEntry);
+        return (rel - graph_->relStorePtr()) / sizeof(typename GraphT::Base::RelEntry);
     }
     inline uint8_t* getRelationshipLListHeadOf(uint8_t* ref) {
         auto node = reinterpret_cast<GraphT::Base::NodeEntry*>(ref);
@@ -227,7 +227,7 @@ prop_id_t GraphStorage::propId(uint8_t* prop) {
         case BuiltinGraph::Type::BUILTIN_PROPERTY_GRAPH: {
             GraphStorageHelper<PropertyGraph> helper(graph);
             auto pgraph = helper.getStorage();
-            return (pgraph->propStorePtr() - prop) / sizeof(PropertyGraph::PropRecord);
+            return (prop - pgraph->propStorePtr()) / sizeof(PropertyGraph::PropRecord);
         }
         default: assert(false && "should not happen");
     }
