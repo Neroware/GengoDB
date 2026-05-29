@@ -1,5 +1,5 @@
-#ifndef LINGODB_RUNTIME_GRAPH_H
-#define LINGODB_RUNTIME_GRAPH_H
+#ifndef GENGODB_RUNTIME_GRAPH_H
+#define GENGODB_RUNTIME_GRAPH_H
 
 #include "lingodb/runtime/Buffer.h"
 #include "lingodb/runtime/helpers.h"
@@ -233,4 +233,4 @@ private:
 
 } // namespace lingodb::runtime
 
-#endif // LINGODB_RUNTIME_GRAPH_H
+#endif // GENGODB_RUNTIME_GRAPH_H

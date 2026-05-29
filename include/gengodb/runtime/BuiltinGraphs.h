@@ -1,3 +1,6 @@
+#ifndef GENGODB_RUNTIME_BUILTINGRAPHS_H
+#define GENGODB_RUNTIME_BUILTINGRAPHS_H
+
 #include "gengodb/runtime/Graph.h"
 
 #define N_BYTES_SIMPLE_PROPERTY 24 // Change if needed
@@ -134,3 +137,5 @@ static_assert(offsetof(PropertyGraph::RelEntry, payload)     == 29); // firstPro
 static_assert(offsetof(PropertyGraph::RelEntry, firstInChainMarker) == 33);
 
 } // namespace lingodb::runtime
+
+#endif // GENGODB_RUNTIME_BUILTINGRAPHS_H

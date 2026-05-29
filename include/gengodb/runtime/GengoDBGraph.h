@@ -1,0 +1,47 @@
+#ifndef GENGODB_RUNTIME_GENGODBGRAPH_H
+#define GENGODB_RUNTIME_GENGODBGRAPH_H
+
+#include "gengodb/runtime/BuiltinGraphs.h"
+#include "lingodb/utility/Serialization.h"
+
+#include <memory>
+#include <string>
+
+namespace lingodb::runtime {
+
+class GengoDBGraph {
+public:
+   static constexpr int32_t DEFAULT_CAPACITY = 1024;
+
+   explicit GengoDBGraph(std::string fileName,
+        int32_t nodeCapacity = DEFAULT_CAPACITY,
+        int32_t relCapacity = DEFAULT_CAPACITY,
+        int32_t propCapacity = DEFAULT_CAPACITY) 
+            : storage_(nodeCapacity, relCapacity, propCapacity),
+                fileName_(std::move(fileName)) {}
+
+   virtual ~GengoDBGraph() = default;
+
+   PropertyGraph& storage() { return storage_; }
+   const PropertyGraph& storage() const { return storage_; }
+
+   void setDBDir(std::string dir) { dbDir_ = std::move(dir); }
+   void ensureLoaded();
+   void flush();
+
+   // Catalog serialization: only the file name is persisted; the binary data
+   // is stored separately in the db directory.
+   void serialize(lingodb::utility::Serializer& serializer) const;
+   static std::unique_ptr<GengoDBGraph> deserialize(lingodb::utility::Deserializer& deserializer);
+
+   static std::unique_ptr<GengoDBGraph> create(std::string name);
+
+private:
+   PropertyGraph storage_;
+   std::string fileName_;
+   std::string dbDir_;
+   bool loaded_ = false;
+};
+
+} // namespace lingodb::runtime
+#endif // GENGODB_RUNTIME_GENGODBGRAPH_H
