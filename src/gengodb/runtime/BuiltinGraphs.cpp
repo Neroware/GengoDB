@@ -6,10 +6,10 @@ SimpleGraph* SimpleGraph::create(int32_t nodeCapacity, int32_t relCapacity) {
     return new SimpleGraph(nodeCapacity, relCapacity);
 }
 
-BuiltinGraph::Type BuiltinGraph::type(void* ptr) {
+BuiltinGraph::Type BuiltinGraph::type(const void* ptr) {
     return *reinterpret_cast<const BuiltinGraph::Type*>(ptr);
 }
-int64_t BuiltinGraph::typeId(void* ptr) {
+int64_t BuiltinGraph::typeId(const void* ptr) {
     return static_cast<int64_t>(type(ptr));
 }
 

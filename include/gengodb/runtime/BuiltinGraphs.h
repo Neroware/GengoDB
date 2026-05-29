@@ -3,15 +3,15 @@
 #define N_BYTES_SIMPLE_PROPERTY 24 // Change if needed
 
 namespace lingodb::runtime {
-
 struct BuiltinGraph {
     enum Type {
         BUILTIN_SIMPLE_GRAPH = 0,
         BUILTIN_PROPERTY_GRAPH = 1
     };
-    static int64_t typeId(void* ptr);
-    static Type type(void* ptr);
+    static int64_t typeId(const void* ptr);
+    static Type type(const void* ptr);
 };
+
 class SimpleGraph {
 public:
     const BuiltinGraph::Type TYPE = BuiltinGraph::Type::BUILTIN_SIMPLE_GRAPH;
@@ -42,8 +42,10 @@ public:
 
     uint8_t* nodeStorePtr() const { return graph_.nodeStorePtr(); }
     uint8_t* relStorePtr() const { return graph_.relStorePtr(); }
-    int32_t  nodeHighWater() const { return graph_.nodeHighWater(); }
-    int32_t  relHighWater() const { return graph_.relHighWater(); }
+    int32_t nodeHighWater() const { return graph_.nodeHighWater(); }
+    int32_t relHighWater() const { return graph_.relHighWater(); }
+    size_t freeNodes() const { return graph_.freeNodes(); }
+    size_t freeRels() const { return graph_.freeRels(); }
 
     static SimpleGraph* create(int32_t nodeCapacity, int32_t relCapacity);
     static void destroy(SimpleGraph* g) { delete g; }
@@ -99,6 +101,9 @@ public:
     int32_t nodeHighWater() const { return graph_.nodeHighWater(); }
     int32_t relHighWater() const { return graph_.relHighWater(); }
     int32_t propHighWater() const { return propMark_; }
+    size_t freeNodes() const { return graph_.freeNodes(); }
+    size_t freeRels() const { return graph_.freeRels(); }
+    size_t freeProps() const { return freeProps_.size(); }
 
     static PropertyGraph* create(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);
     static void destroy(PropertyGraph* g);

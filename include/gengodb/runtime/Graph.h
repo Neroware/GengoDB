@@ -59,6 +59,8 @@ public:
     uint8_t* relStorePtr() const { return reinterpret_cast<uint8_t*>(rels_.ptr); }
     int32_t nodeHighWater() const { return nodeMark_; }
     int32_t relHighWater() const { return relMark_; }
+    size_t freeNodes() const { return freeNodes_.size(); }
+    size_t freeRels() const { return freeRels_.size(); }
     node_id_t addNode(NodePayload initPayload) {
         node_id_t id = allocNode();
         NodeEntry& n = nodes_.ptr[id];
@@ -188,6 +190,46 @@ private:
    std::vector<node_id_t> freeNodes_;
    std::vector<rel_id_t> freeRels_;
 }; // Graph
+
+// Keeps track of allocated graph memory
+struct GraphStorage {
+    using prop_id_t = int32_t;
+    static void add(const uint8_t* start, size_t len, const uint8_t* graph);
+    static size_t nodeCount(const uint8_t* ref);
+    static size_t relCount(const uint8_t* ref);
+    static size_t propCount(const uint8_t* ref);
+    static uint8_t* nodeStorePtr(const uint8_t* ref);
+    static uint8_t* relStorePtr(const uint8_t* ref);
+    static uint8_t* propStorePtr(const uint8_t* ref);
+    static int32_t nodeHighWater(const uint8_t* ref);
+    static int32_t relHighWater(const uint8_t* ref);
+    static int32_t propHighWater(const uint8_t* ref);
+    static BufferIterator* createNodeIterator(uint8_t* ref);
+    static BufferIterator* createRelIterator(uint8_t* ref);
+    static BufferIterator* createPropIterator(uint8_t* ref);
+    static node_id_t nodeId(uint8_t* node);
+    static rel_id_t relId(uint8_t* rel);
+    static prop_id_t propId(uint8_t* prop);
+    static uint8_t* getRelationshipLListHeadOf(uint8_t* node);
+    static uint8_t* getNodePropertyLListHeadOf(uint8_t* node);
+    static uint8_t* getRelPropertyLListHeadOf(uint8_t* rel);
+private:
+    static const uint8_t* lookupGraph(const uint8_t* ref) {
+        for (const auto& mem : mem_) {
+            if (std::get<0>(mem) == ref 
+                || (std::get<0>(mem) <= ref && ref < std::get<0>(mem) + std::get<1>(mem))) {
+                    return std::get<2>(mem);   
+            }
+        }
+        assert(false && "unknown graph storage");
+    }
+    template<class GraphT>
+    static const GraphT* lookupGraph(const uint8_t* ref) {
+        throw std::runtime_error("unsupported graph type");
+    }
+    // Stores allocated memory ranges
+    static std::vector<std::tuple<const uint8_t*, size_t, const uint8_t*>> mem_;
+}; // GraphStorage
 
 } // namespace lingodb::runtime
 
