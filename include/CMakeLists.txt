@@ -1,1 +1,2 @@
 add_subdirectory(lingodb/compiler)
+add_subdirectory(gengodb/compiler)
