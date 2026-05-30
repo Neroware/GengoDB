@@ -14,6 +14,8 @@
 #include "lingodb/compiler/Dialect/util/UtilOps.h"
 #include "lingodb/compiler/runtime/ArrowColumn.h"
 #include "lingodb/compiler/runtime/ArrowTable.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
 #include "lingodb/compiler/runtime/Buffer.h"
 #include "lingodb/compiler/runtime/DataSourceIteration.h"
 #include "lingodb/compiler/runtime/EntryLock.h"
@@ -30,6 +32,9 @@
 #include "lingodb/compiler/runtime/SimpleState.h"
 #include "lingodb/compiler/runtime/ThreadLocal.h"
 #include "lingodb/compiler/runtime/Tracing.h"
+#include "lingodb/gengodb/runtime/Graph.h"
+#include "lingodb/gengodb/runtime/BuiltinGraphs.h"
+#include "lingodb/gengodb/runtime/GraphData.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -60,6 +65,7 @@ using namespace mlir;
 #endif
 namespace {
 using namespace lingodb::compiler::dialect;
+using namespace gengodb::compiler::dialect;
 namespace rt = lingodb::compiler::runtime;
 using Member = subop::Member;
 struct SubOpToControlFlowLoweringPass
@@ -526,6 +532,7 @@ class SubOpRewriter {
    auto getDictionaryAttr(llvm::ArrayRef<mlir::NamedAttribute> v) { return builder.getDictionaryAttr(v); }
    auto getI8Type() { return builder.getI8Type(); }
    auto getI1Type() { return builder.getI1Type(); }
+   auto getI32Type() { return builder.getI32Type(); }
    auto getI64Type() { return builder.getI64Type(); }
    auto getStringAttr(const Twine& bytes) { return builder.getStringAttr(bytes); }
    auto getPtrType() { return barePtrType; }
@@ -626,7 +633,7 @@ class SubOpRewriter {
    template <typename OpTy, typename... Args>
    OpTy create(Location location, Args&&... args) {
       OpTy res = builder.create<OpTy>(location, std::forward<Args>(args)...);
-      if (res->getDialect()->getNamespace() == "subop" || mlir::isa<mlir::UnrealizedConversionCastOp>(res.getOperation())) {
+      if (res->getDialect()->getNamespace() == "subop" || res->getDialect()->getNamespace() == "gsubop" || mlir::isa<mlir::UnrealizedConversionCastOp>(res.getOperation())) {
          toRewrite.push_back(res.getOperation());
          //   rewrite(res.getOperation());
       }
@@ -642,17 +649,17 @@ class SubOpRewriter {
       }
       ResultRange opResults = res->getResults();
       results.assign(opResults.begin(), opResults.end());
-      if (res->getDialect()->getNamespace() == "subop" || mlir::isa<mlir::UnrealizedConversionCastOp>(res.getOperation())) {
+      if (res->getDialect()->getNamespace() == "subop" || res->getDialect()->getNamespace() == "gsubop" || mlir::isa<mlir::UnrealizedConversionCastOp>(res.getOperation())) {
          toRewrite.push_back(res.getOperation());
          //   rewrite(res.getOperation());
       }
    }
    void registerOpInserted(mlir::Operation* op) {
-      if (op->getDialect()->getNamespace() == "subop") {
+      if (op->getDialect()->getNamespace() == "subop" || op->getDialect()->getNamespace() == "gsubop") {
          toRewrite.push_back(op);
       } else {
          op->walk([&](mlir::Operation* nestedOp) {
-            if (nestedOp->getDialect()->getNamespace() != "subop") {
+            if (nestedOp->getDialect()->getNamespace() != "subop" || nestedOp->getDialect()->getNamespace() != "gsubop") {
                for (auto& operand : nestedOp->getOpOperands()) {
                   operand.set(getMapped(operand.get()));
                }
@@ -787,15 +794,15 @@ class SubOpRewriter {
    }
 
    bool shouldRewrite(mlir::Operation* op) {
-      if (op->getDialect()->getNamespace() == "subop") {
+      if (op->getDialect()->getNamespace() == "subop" || op->getDialect()->getNamespace() == "gsubop") {
          return true;
       }
       if (auto unrealizedCast = mlir::dyn_cast_or_null<mlir::UnrealizedConversionCastOp>(op)) {
          return llvm::any_of(unrealizedCast.getOutputs().getTypes(), [&](mlir::Type t) {
-                   return t.getDialect().getNamespace() == "subop";
+                   return t.getDialect().getNamespace() == "subop" || t.getDialect().getNamespace() == "gsubop";
                 }) ||
             llvm::any_of(unrealizedCast.getInputs().getTypes(), [&](mlir::Type t) {
-                   return t.getDialect().getNamespace() == "subop";
+                   return t.getDialect().getNamespace() == "subop" || t.getDialect().getNamespace() == "gsubop";
                 });
       }
       return false;
@@ -821,7 +828,7 @@ class SubOpRewriter {
    }
    void insertAndRewrite(mlir::Operation* op) {
       builder.insert(op);
-      if (op->getDialect()->getNamespace() == "subop") {
+      if (op->getDialect()->getNamespace() == "subop" || op->getDialect()->getNamespace() == "gsubop") {
          rewrite(op);
       }
    }
@@ -1084,7 +1091,7 @@ class UnrealizedConversionCastLowering : public SubOpConversionPattern<mlir::Unr
          for (auto z : llvm::zip(op.getOutputs(), adaptor.getInputs())) {
             auto [output, input] = z;
             output.replaceUsesWithIf(input, [&](auto& use) -> bool {
-               bool res = !(use.getOwner()->getDialect()->getNamespace() == "subop" || mlir::isa<mlir::UnrealizedConversionCastOp>(use.getOwner()));
+               bool res = !(use.getOwner()->getDialect()->getNamespace() == "subop" || use.getOwner()->getDialect()->getNamespace() == "gsubop" || mlir::isa<mlir::UnrealizedConversionCastOp>(use.getOwner()));
                return res;
             });
          }
@@ -1098,7 +1105,7 @@ class UnrealizedConversionCastLowering : public SubOpConversionPattern<mlir::Unr
          for (auto z : llvm::zip(op.getOutputs(), op.getInputs())) {
             auto [output, input] = z;
             output.replaceUsesWithIf(input, [&](auto& use) -> bool {
-               bool res = !(use.getOwner()->getDialect()->getNamespace() == "subop" || mlir::isa<mlir::UnrealizedConversionCastOp>(use.getOwner()));
+               bool res = !(use.getOwner()->getDialect()->getNamespace() == "subop" || use.getOwner()->getDialect()->getNamespace() == "gsubop" || mlir::isa<mlir::UnrealizedConversionCastOp>(use.getOwner()));
                return res;
             });
          }
@@ -1110,7 +1117,7 @@ class UnrealizedConversionCastLowering : public SubOpConversionPattern<mlir::Unr
          for (auto z : llvm::zip(op.getOutputs(), newOp.getOutputs())) {
             auto [output, newOutput] = z;
             output.replaceUsesWithIf(newOutput, [&](auto& use) -> bool {
-               bool res = !(use.getOwner()->getDialect()->getNamespace() == "subop" || mlir::isa<mlir::UnrealizedConversionCastOp>(use.getOwner()));
+               bool res = !(use.getOwner()->getDialect()->getNamespace() == "subop" || use.getOwner()->getDialect()->getNamespace() == "gsubop" || mlir::isa<mlir::UnrealizedConversionCastOp>(use.getOwner()));
                return res;
             });
             rewriter.replaceOp(op, newOp.getOutputs());
