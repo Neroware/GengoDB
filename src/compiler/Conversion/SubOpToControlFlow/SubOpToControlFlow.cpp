@@ -4034,6 +4034,64 @@ static llvm::SmallVector<T> repeat(T val, size_t times) {
    return res;
 }
 
+class StepLowering : public SubOpConversionPattern<subop::StepOp> {
+   public:
+   using SubOpConversionPattern<subop::StepOp>::SubOpConversionPattern;
+
+   LogicalResult matchAndRewrite(subop::StepOp stepOp, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
+      auto* b = stepOp.getBody();
+      auto* terminator = b->getTerminator();
+      auto stepReturn = mlir::cast<subop::StepReturnOp>(terminator);
+      auto nestedExecutionGroup = mlir::dyn_cast_or_null<subop::NestedExecutionGroupOp>(&stepOp.getBody()->front());
+      if (!nestedExecutionGroup) {
+         stepOp.emitError("StepOp should have a NestedExecutionGroupOp as the first operation in the region");
+         return failure();
+      }
+
+      for (size_t i = 0; i < stepOp.getBody()->getNumArguments(); i++) {
+         rewriter.map(stepOp.getBody()->getArgument(i), adaptor.getArgs()[i]);
+      }
+      mlir::IRMapping nestedGroupResultMapping;
+
+      mlir::IRMapping outerMapping;
+      for (auto [i, b] : llvm::zip(nestedExecutionGroup.getInputs(), nestedExecutionGroup.getRegion().front().getArguments())) {
+         outerMapping.map(b, rewriter.getMapped(i));
+      }
+      for (auto& op : nestedExecutionGroup.getRegion().front().getOperations()) {
+         if (auto step = mlir::dyn_cast_or_null<subop::ExecutionStepOp>(&op)) {
+            auto guard = rewriter.nest(outerMapping, step);
+            for (auto [param, arg, isThreadLocal] : llvm::zip(step.getInputs(), step.getSubOps().front().getArguments(), step.getIsThreadLocal())) {
+               mlir::Value input = outerMapping.lookup(param);
+               rewriter.map(arg, input);
+            }
+            mlir::IRMapping cloneMapping;
+            std::vector<mlir::Operation*> ops;
+            for (auto& op : step.getSubOps().front()) {
+               if (&op == step.getSubOps().front().getTerminator())
+                  break;
+               ops.push_back(&op);
+            }
+            for (auto* op : ops) {
+               op->remove();
+               rewriter.insertAndRewrite(op);
+            }
+            auto returnOp = mlir::cast<subop::ExecutionStepReturnOp>(step.getSubOps().front().getTerminator());
+            for (auto [i, o] : llvm::zip(returnOp.getInputs(), step.getResults())) {
+               auto mapped = rewriter.getMapped(i);
+               outerMapping.map(o, mapped);
+            }
+         } else if (auto returnOp = mlir::dyn_cast_or_null<subop::NestedExecutionGroupReturnOp>(&op)) {
+            for (auto [i, o] : llvm::zip(returnOp.getInputs(), nestedExecutionGroup.getResults())) {
+               nestedGroupResultMapping.map(o, outerMapping.lookup(i));
+            }
+         }
+      }
+
+      rewriter.replaceOp(stepOp, stepReturn->getOperands());
+      return success();
+   }
+};
+
 class LoopLowering : public SubOpConversionPattern<subop::LoopOp> {
    public:
    using SubOpConversionPattern<subop::LoopOp>::SubOpConversionPattern;
@@ -4228,6 +4286,54 @@ class LockLowering : public SubOpTupleStreamConsumerConversionPattern<subop::Loc
       rt::EntryLock::unlock(rewriter, lockOp->getLoc())({lockPtr});
    }
 };
+
+// Graph
+
+class CreateGraphLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::CreateGraphOp> {
+   public:
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::CreateGraphOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::CreateGraphOp createOp) const override {
+      return mlir::isa<gsubop::GraphType>(createOp.getType()) ? success() : failure();
+   }
+   void rewrite(gsubop::CreateGraphOp createOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto loc = createOp->getLoc();
+      auto nodes = rewriter.create<arith::ConstantOp>(loc, rewriter.getIntegerAttr(rewriter.getI64Type(), createOp.getNumNodes()));
+      auto rels = rewriter.create<arith::ConstantOp>(loc, rewriter.getIntegerAttr(rewriter.getI64Type(), createOp.getNumRels()));
+      auto props = rewriter.create<arith::ConstantOp>(loc, rewriter.getIntegerAttr(rewriter.getI64Type(), createOp.getNumProps()));
+      auto g = rt::GraphData::allocPropertyGraphState(rewriter, loc)({nodes, rels, props})[0];
+      rewriter.replaceOp(createOp, g);
+   }
+};
+
+class CreateBuiltinGraphLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::CreateBuiltinGraphOp> {
+   public:
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::CreateBuiltinGraphOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::CreateBuiltinGraphOp createOp) const override {
+      return mlir::isa<gsubop::GraphType>(createOp.getType()) ? success() : failure();
+   }
+   void rewrite(gsubop::CreateBuiltinGraphOp createOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto loc = createOp->getLoc();
+      auto graphId = createOp.getGraphId();
+      auto graphIdI32 = rewriter.create<arith::ConstantOp>(loc, rewriter.getIntegerAttr(rewriter.getI32Type(), static_cast<int>(graphId)));
+      auto g = rt::GraphData::allocAndPopulateBuiltinGraph(rewriter, loc)({graphIdI32})[0];
+      rewriter.replaceOp(createOp, g);
+   }
+};
+
+class GetExternalGraphLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::GetExternalGraphOp> {
+   public:
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::GetExternalGraphOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::GetExternalGraphOp op) const override {
+      return mlir::isa<gsubop::GraphType>(op.getType()) ? success() : failure();
+   }
+   void rewrite(gsubop::GetExternalGraphOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      mlir::Value name = rewriter.create<util::CreateConstVarLen>(op->getLoc(), util::VarLen32Type::get(rewriter.getContext()), op.getName());
+      mlir::Value uniqueId = rewriter.create<util::CreateConstVarLen>(op->getLoc(), util::VarLen32Type::get(rewriter.getContext()), op.getGraphId());
+      rewriter.replaceOp(op, rt::GraphData::getGraph(rewriter, op->getLoc())({name, uniqueId})[0]);
+   }
+};
+
+
 }; // namespace
 namespace {
 PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* ctxt) {
@@ -4332,6 +4438,7 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    patterns.insertPattern<InFlightLowering>(typeConverter, ctxt);
    patterns.insertPattern<GenerateLowering>(typeConverter, ctxt);
    patterns.insertPattern<LoopLowering>(typeConverter, ctxt);
+   patterns.insertPattern<StepLowering>(typeConverter, ctxt);
    patterns.insertPattern<NestedExecutionGroupLowering>(typeConverter, ctxt);
    //rewriter.insertPattern<GetSingleValLowering>(typeConverter, ctxt);
    patterns.insertPattern<SetTrackedCountLowering>(typeConverter, ctxt);
@@ -4480,6 +4587,34 @@ void SubOpToControlFlowLoweringPass::runOnOperation() {
          return util::RefType::get(t.getContext(), getHashMultiMapEntryType(hashMultiMapType, typeConverter));
       }
       return mlir::TupleType::get(t.getContext(), {util::RefType::get(t.getContext(), mlir::IntegerType::get(ctxt, 8)), mlir::IndexType::get(t.getContext())});
+   });
+   //Graph
+   typeConverter.addConversion([&](gsubop::GraphType t) -> Type {
+      return util::RefType::get(t.getContext(), mlir::IntegerType::get(ctxt, 8));
+   });
+   typeConverter.addConversion([&](gsubop::EdgeSetType t) -> Type {
+      return util::RefType::get(t.getContext(), mlir::IntegerType::get(ctxt, 8));
+   });
+   typeConverter.addConversion([&](gsubop::NodeSetType t) -> Type {
+      return util::RefType::get(t.getContext(), mlir::IntegerType::get(ctxt, 8));
+   });
+   typeConverter.addConversion([&](gsubop::NodeRefType t) -> Type {
+      return mlir::IntegerType::get(ctxt, 32);
+   });
+   typeConverter.addConversion([&](gsubop::EdgeRefType t) -> Type {
+      return mlir::IntegerType::get(ctxt, 32);
+   });
+   typeConverter.addConversion([&](gsubop::PropertySetType t) -> Type {
+      return util::RefType::get(t.getContext(), mlir::IntegerType::get(ctxt, 8));
+   });
+   typeConverter.addConversion([&](gsubop::TypedPropertyRefType t) -> Type {
+      return mlir::IntegerType::get(ctxt, 32);
+   });
+   typeConverter.addConversion([&](gsubop::PropertyRefType t) -> Type {
+      return mlir::IntegerType::get(ctxt, 32);
+   });
+   typeConverter.addConversion([&](gsubop::TypeIdentifierType t) -> Type {
+      return mlir::IntegerType::get(ctxt, 32);
    });
 
    //basic tuple stream manipulation
