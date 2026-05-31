@@ -115,6 +115,7 @@ uint8_t* GraphData::allocAndPopulateBuiltinGraph(int32_t builtin) {
             g->addRelationship(3, 4);
             g->addRelationship(4, 1);
             g->addRelationship(0, 3);
+            g->registerGraph();
             return reinterpret_cast<uint8_t*>(g);
         } break;
         case 2: {
@@ -141,6 +142,7 @@ uint8_t* GraphData::allocAndPopulateBuiltinGraph(int32_t builtin) {
             g->addRelProperty(1, 11, 11, 1000);
             g->addRelProperty(2, 22, 22, 2000);
             g->addRelProperty(3, 33, 33, 3000);
+            g->registerGraph();
             return reinterpret_cast<uint8_t*>(g);
         } break;
         default: {
@@ -167,6 +169,7 @@ uint8_t* GraphData::allocAndPopulateBuiltinGraph(int32_t builtin) {
             g->setNodeValue<uint64_t>(3, 33);
             g->setNodeValue<uint64_t>(4, 44);
             g->setNodeValue<uint64_t>(5, 55);
+            g->registerGraph();
             return reinterpret_cast<uint8_t*>(g);
         }
     };

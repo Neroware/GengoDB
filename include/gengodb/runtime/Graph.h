@@ -218,12 +218,15 @@ struct GraphStorage {
 private:
     static const uint8_t* lookupGraph(const uint8_t* ref) {
         for (const auto& mem : mem_) {
-            if (std::get<0>(mem) == ref 
+            // auto a_ = std::get<0>(mem);
+            // auto b_ = std::get<1>(mem);
+            // auto c_ = std::get<2>(mem);
+            if (std::get<2>(mem) == ref 
                 || (std::get<0>(mem) <= ref && ref < std::get<0>(mem) + std::get<1>(mem))) {
                     return std::get<2>(mem);   
             }
         }
-        assert(false && "unknown graph storage");
+        assert(false && "unknown graph storage; did you register your graph?");
     }
     template<class GraphT>
     static const GraphT* lookupGraph(const uint8_t* ref) {
