@@ -35,6 +35,7 @@
 #include "lingodb/gengodb/runtime/Graph.h"
 #include "lingodb/gengodb/runtime/BuiltinGraphs.h"
 #include "lingodb/gengodb/runtime/GraphData.h"
+#include "gengodb/compiler/Conversion/GraphSubOpToCF/GraphHelpers.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -944,6 +945,8 @@ static mlir::TupleType getHashMultiMapValueType(subop::HashMultiMapType t, mlir:
    auto i8PtrType = util::RefType::get(t.getContext(), IntegerType::get(t.getContext(), 8));
    return mlir::TupleType::get(t.getContext(), {i8PtrType, valTupleType});
 }
+
+#include "gengodb/compiler/Conversion/GraphSubOpToCF/GraphEntryTypes.inc"
 
 static TupleType convertTuple(TupleType tupleType, TypeConverter& typeConverter) {
    llvm::SmallVector<Type> types;
@@ -4614,22 +4617,22 @@ void SubOpToControlFlowLoweringPass::runOnOperation() {
       return util::RefType::get(t.getContext(), mlir::IntegerType::get(ctxt, 8));
    });
    typeConverter.addConversion([&](gsubop::NodeRefType t) -> Type {
-      return mlir::IntegerType::get(ctxt, 32);
+      return util::RefType::get(t.getContext(), getNodeEntryType(t, typeConverter));
    });
    typeConverter.addConversion([&](gsubop::EdgeRefType t) -> Type {
-      return mlir::IntegerType::get(ctxt, 32);
+      return util::RefType::get(t.getContext(), getEdgeEntryType(t, typeConverter));
    });
    typeConverter.addConversion([&](gsubop::PropertySetType t) -> Type {
-      return util::RefType::get(t.getContext(), mlir::IntegerType::get(ctxt, 8));
+      return IntegerType::get(ctxt, 32); //util::RefType::get(t.getContext(), mlir::IntegerType::get(ctxt, 8));
    });
    typeConverter.addConversion([&](gsubop::TypedPropertyRefType t) -> Type {
-      return mlir::IntegerType::get(ctxt, 32);
+      return util::RefType::get(t.getContext(), getPropertyType(t, typeConverter));
    });
    typeConverter.addConversion([&](gsubop::PropertyRefType t) -> Type {
-      return mlir::IntegerType::get(ctxt, 32);
+      return util::RefType::get(t.getContext(), getPropertyEntryType(t, typeConverter));
    });
    typeConverter.addConversion([&](gsubop::TypeIdentifierType t) -> Type {
-      return mlir::IntegerType::get(ctxt, 32);
+      return util::RefType::get(t.getContext(), mlir::IntegerType::get(ctxt, 32));
    });
 
    //basic tuple stream manipulation
