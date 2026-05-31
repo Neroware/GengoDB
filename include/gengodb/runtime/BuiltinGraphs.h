@@ -32,7 +32,8 @@ public:
     using RelEntry  = Base::RelEntry;
 
     SimpleGraph(int32_t nodeCapacity, int32_t relCapacity)
-        : graph_(nodeCapacity, relCapacity) {}
+        : graph_(nodeCapacity, relCapacity),
+        nodeCap_(nodeCapacity), relCap_(relCapacity) {}
 
     node_id_t addNode(SimpleProp value = {0}) { return graph_.addNode(value); }
     rel_id_t addRelationship(node_id_t from, node_id_t to, SimpleProp value = {0}) {
@@ -60,11 +61,13 @@ public:
     size_t freeNodes() const { return graph_.freeNodes(); }
     size_t freeRels() const { return graph_.freeRels(); }
 
+    void registerGraph() const;
     static SimpleGraph* create(int32_t nodeCapacity, int32_t relCapacity);
     static void destroy(SimpleGraph* g) { delete g; }
 
 private:
    Base graph_;
+   int32_t nodeCap_, relCap_;
 }; // SimpleGraph
 
 static_assert(sizeof(SimpleGraph::NodeEntry)            == 11 + N_BYTES_SIMPLE_PROPERTY + 1);
@@ -121,6 +124,7 @@ public:
     size_t freeRels() const { return graph_.freeRels(); }
     size_t freeProps() const { return freeProps_.size(); }
 
+    void registerGraph() const;
     static PropertyGraph* create(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);
     static void destroy(PropertyGraph* g);
 
@@ -133,6 +137,7 @@ private:
     LegacyFixedSizedBuffer<PropRecord> props_;
     int32_t propMark_, propCap_;
     std::vector<prop_id_t> freeProps_;
+    int32_t nodeCap_, relCap_;
 
 }; // PropertyGraph
 
