@@ -26,7 +26,7 @@ void PropertyGraph::registerGraph() const {
         reinterpret_cast<const uint8_t*>(this));
     GraphStorage::add(relStorePtr(), relCap_ * sizeof(PropertyGraph::Base::RelEntry), 
         reinterpret_cast<const uint8_t*>(this));
-    GraphStorage::add(relStorePtr(), propCap_ * sizeof(PropertyGraph::PropRecord), 
+    GraphStorage::add(propStorePtr(), propCap_ * sizeof(PropertyGraph::PropRecord), 
         reinterpret_cast<const uint8_t*>(this));
 }
 void PropertyGraph::deregisterGraph() const {
