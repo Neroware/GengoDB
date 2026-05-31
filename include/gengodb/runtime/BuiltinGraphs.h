@@ -67,10 +67,10 @@ private:
    Base graph_;
 }; // SimpleGraph
 
-static_assert(sizeof(SimpleGraph::NodeEntry) == 11 + N_BYTES_SIMPLE_PROPERTY);
-static_assert(offsetof(SimpleGraph::NodeEntry, payload) == 5);
-static_assert(sizeof(SimpleGraph::RelEntry) == 30 + N_BYTES_SIMPLE_PROPERTY);
-static_assert(offsetof(SimpleGraph::RelEntry, payload) == 29);
+static_assert(sizeof(SimpleGraph::NodeEntry)            == 11 + N_BYTES_SIMPLE_PROPERTY + 1);
+static_assert(offsetof(SimpleGraph::NodeEntry, payload) == 11);
+static_assert(sizeof(SimpleGraph::RelEntry)             == 30 + N_BYTES_SIMPLE_PROPERTY + 2);
+static_assert(offsetof(SimpleGraph::RelEntry, payload)  == 30);
 
 using prop_id_t = int32_t;
 
@@ -81,13 +81,13 @@ public:
     using RelEntry  = Base::RelEntry;
     const BuiltinGraph::Type TYPE = BuiltinGraph::Type::BUILTIN_PROPERTY_GRAPH;
 
-    struct __attribute__((packed)) PropRecord {
-        bool  inUse;
+    struct PropRecord {
         prop_id_t nextPropId;
         prop_id_t prevPropId;
         uint32_t  key;
         uint32_t  type;
         uint32_t  value;
+        bool      inUse;
     };
 
     PropertyGraph(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);
@@ -133,18 +133,19 @@ private:
 
 }; // PropertyGraph
 
-static_assert(sizeof(PropertyGraph::NodeEntry)               == 15);
-static_assert(offsetof(PropertyGraph::NodeEntry, inUse)      ==  0);
-static_assert(offsetof(PropertyGraph::NodeEntry, firstRelId) ==  1);
-static_assert(offsetof(PropertyGraph::NodeEntry, payload)    ==  5); // firstPropId
-static_assert(offsetof(PropertyGraph::NodeEntry, labels)     ==  9);
-static_assert(offsetof(PropertyGraph::NodeEntry, extra)      == 14);
+static_assert(sizeof(PropertyGraph::NodeEntry)               == 16);
+static_assert(offsetof(PropertyGraph::NodeEntry, firstRelId) ==  0);
+static_assert(offsetof(PropertyGraph::NodeEntry, inUse)      ==  4);
+static_assert(offsetof(PropertyGraph::NodeEntry, labels)     ==  5);
+static_assert(offsetof(PropertyGraph::NodeEntry, extra)      == 10);
+static_assert(offsetof(PropertyGraph::NodeEntry, payload)    == 12); // firstPropId, needs 1 byte padding
 
-static_assert(sizeof(PropertyGraph::RelEntry)                == 34);
-static_assert(offsetof(PropertyGraph::RelEntry, inUse)       ==  0);
-static_assert(offsetof(PropertyGraph::RelEntry, firstNodeId) ==  1);
-static_assert(offsetof(PropertyGraph::RelEntry, payload)     == 29); // firstPropId
-static_assert(offsetof(PropertyGraph::RelEntry, firstInChainMarker) == 33);
+static_assert(sizeof(PropertyGraph::RelEntry)                       == 36);
+static_assert(offsetof(PropertyGraph::RelEntry, firstNodeId)        == 0);
+static_assert(offsetof(PropertyGraph::RelEntry, inUse)              == 28);
+static_assert(offsetof(PropertyGraph::RelEntry, firstInChainMarker) == 29);
+static_assert(offsetof(PropertyGraph::RelEntry, payload)            == 32); // firstPropId, needs 2 bytes padding
+
 
 } // namespace lingodb::runtime
 

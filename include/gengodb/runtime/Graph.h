@@ -15,23 +15,18 @@ using rel_id_t  = int32_t;
 using rel_type_t  = int32_t;
 static constexpr int32_t GRAPH_NONE = -1;
 
-// Generic doubly-linked adjacency-list property graph following the storage
-// model described in "Graph Databases" (Robinson, Webber & Eifrem, 2nd ed.,
-// Figure 6-4).
+// Generic doubly-linked adjacency-list graph data structure with fixed size entries.
 template <typename NodePayload, typename RelPayload>
 class Graph {
 public:
-    // NodeEntry: fixed base (5 bytes) followed by the node payload.
-    struct __attribute__((packed)) NodeEntry {
-        bool        inUse;
+    struct NodeEntry {
         node_id_t   firstRelId;
+        bool        inUse;
+        uint8_t     labels[5] = {0};
+        uint8_t     extra = 0;
         NodePayload payload;
-        uint8_t labels[5] = {0};
-        uint8_t extra = 0;
     };
-    // RelEntry: fixed base (29 bytes) followed by the rel payload.
-    struct __attribute__((packed)) RelEntry {
-        bool       inUse;
+    struct RelEntry {
         node_id_t  firstNodeId;
         node_id_t  secondNodeId;
         rel_type_t typeId;
@@ -39,8 +34,9 @@ public:
         rel_id_t   firstNextRelId;
         rel_id_t   secondPrevRelId;
         rel_id_t   secondNextRelId;
-        RelPayload payload;
+        bool       inUse;
         uint8_t    firstInChainMarker = 0;
+        RelPayload payload;
     };
     Graph(int32_t nodeCapacity, int32_t relCapacity)
       : nodes_(nodeCapacity), rels_(relCapacity),
