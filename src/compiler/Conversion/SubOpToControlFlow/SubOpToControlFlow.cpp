@@ -4874,6 +4874,58 @@ class EdgeRefGatherOpLowering : public SubOpTupleStreamConsumerConversionPattern
    }
 };
 
+class NodeRefScatterOpLowering : public SubOpTupleStreamConsumerConversionPattern<subop::ScatterOp, 2> {
+   public:
+   using SubOpTupleStreamConsumerConversionPattern<subop::ScatterOp, 2>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(subop::ScatterOp scatterOp) const override {
+      return mlir::isa<gsubop::NodeRefType>(scatterOp.getRef().getColumn().type) ? success() : failure();
+   }
+   void rewrite(subop::ScatterOp scatterOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto refType = scatterOp.getRef().getColumn().type;
+      auto referenceType = mlir::cast<gsubop::NodeRefType>(refType);
+      auto ctxt = scatterOp.getContext();
+      auto loc = scatterOp.getLoc();
+      auto ref = mapping.resolve(scatterOp, scatterOp.getRef());
+      auto propertyMembers = referenceType.getPropertyMembers();
+      EntryStorageHelper storageHelper(scatterOp, propertyMembers, false, typeConverter);
+      auto nodeEntryType = getNodeEntryType(referenceType, *typeConverter);
+      auto propertyType = nodeEntryType.getTypes()[gsubop::NODE_ENTRY_PROPERTY_PTR];
+      auto propRef = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, propertyType), ref, gsubop::NODE_ENTRY_PROPERTY_PTR);
+      auto values = storageHelper.getValueMap(propRef, rewriter, loc);
+      for (auto x : scatterOp.getMapping().getMapping()) {
+         values.set(x.first, mapping.resolve(scatterOp, x.second));
+      }
+      values.store();
+      rewriter.eraseOp(scatterOp);
+   }
+};
+
+class EdgeRefScatterOpLowering : public SubOpTupleStreamConsumerConversionPattern<subop::ScatterOp, 2> {
+   public:
+   using SubOpTupleStreamConsumerConversionPattern<subop::ScatterOp, 2>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(subop::ScatterOp scatterOp) const override {
+      return mlir::isa<gsubop::EdgeRefType>(scatterOp.getRef().getColumn().type) ? success() : failure();
+   }
+   void rewrite(subop::ScatterOp scatterOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto refType = scatterOp.getRef().getColumn().type;
+      auto referenceType = mlir::cast<gsubop::EdgeRefType>(refType);
+      auto ctxt = scatterOp.getContext();
+      auto loc = scatterOp.getLoc();
+      auto ref = mapping.resolve(scatterOp, scatterOp.getRef());
+      auto writtenMembers = scatterOp.getWrittenMembers();
+      EntryStorageHelper storageHelper(scatterOp, referenceType.getPropertyMembers(), false, typeConverter);
+      auto edgeEntryType = getEdgeEntryType(referenceType, *typeConverter);
+      auto propertyType = edgeEntryType.getTypes()[gsubop::RELATIONSHIP_ENTRY_PROPERTY_PTR];
+      auto propRef = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, propertyType), ref, gsubop::RELATIONSHIP_ENTRY_PROPERTY_PTR);
+      auto values = storageHelper.getValueMap(propRef, rewriter, loc);
+      for (auto x : scatterOp.getMapping().getMapping()) {
+         values.set(x.first, mapping.resolve(scatterOp, x.second));
+      }
+      values.store();
+      rewriter.eraseOp(scatterOp);
+   }
+};
+
 }; // namespace
 namespace {
 PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* ctxt) {
@@ -4909,8 +4961,8 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    patterns.insertPattern<ScanEdgeSetLowering>(typeConverter, ctxt);
    patterns.insertPattern<NodeRefGatherOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<EdgeRefGatherOpLowering>(typeConverter, ctxt);
-   //patterns.insertPattern<NodeRefScatterOpLowering>(typeConverter, ctxt);
-   //patterns.insertPattern<EdgeRefScatterOpLowering>(typeConverter, ctxt);
+   patterns.insertPattern<NodeRefScatterOpLowering>(typeConverter, ctxt);
+   patterns.insertPattern<EdgeRefScatterOpLowering>(typeConverter, ctxt);
    //patterns.insertPattern<NodeCountOpLowering>(typeConverter, ctxt);
    //patterns.insertPattern<EdgeCountOpLowering>(typeConverter, ctxt);
    //patterns.insertPattern<ReduceGraphRefLowering>(typeConverter, ctxt);
