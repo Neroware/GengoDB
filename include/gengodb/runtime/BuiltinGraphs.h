@@ -3,9 +3,9 @@
 
 #include "gengodb/runtime/Graph.h"
 
-// TODO Write constexpr for size and padding!
-#define N_BYTES_SIMPLE_PROPERTY 8 // Change if needed
-#define N_BYTES_SIMPLE_PADDING 4  // Change if needed
+// Currently supports alignment 8
+#define N_BYTES_SIMPLE_PROPERTY 24 // Change if needed
+#define N_BYTES_SIMPLE_PADDING  4 // Change if needed
 
 namespace lingodb::runtime {
 struct BuiltinGraph {
