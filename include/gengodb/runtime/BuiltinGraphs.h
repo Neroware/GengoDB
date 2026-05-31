@@ -3,7 +3,9 @@
 
 #include "gengodb/runtime/Graph.h"
 
-#define N_BYTES_SIMPLE_PROPERTY 24 // Change if needed
+// TODO Write constexpr for size and padding!
+#define N_BYTES_SIMPLE_PROPERTY 8 // Change if needed
+#define N_BYTES_SIMPLE_PADDING 4  // Change if needed
 
 namespace lingodb::runtime {
 struct BuiltinGraph {
@@ -19,7 +21,7 @@ class SimpleGraph {
 public:
     const BuiltinGraph::Type TYPE = BuiltinGraph::Type::BUILTIN_SIMPLE_GRAPH;
     struct SimpleProp {
-        uint8_t data[N_BYTES_SIMPLE_PROPERTY] = {0};
+        uint8_t data[N_BYTES_SIMPLE_PROPERTY + N_BYTES_SIMPLE_PADDING]   = {0};
         template<typename T>
         static SimpleProp from(T data) {
             SimpleProp prop;
@@ -72,9 +74,9 @@ private:
    int32_t nodeCap_, relCap_;
 }; // SimpleGraph
 
-static_assert(sizeof(SimpleGraph::NodeEntry)            == 11 + N_BYTES_SIMPLE_PROPERTY + 1);
+static_assert(sizeof(SimpleGraph::NodeEntry)            == 11 + N_BYTES_SIMPLE_PROPERTY + N_BYTES_SIMPLE_PADDING + 1);
 static_assert(offsetof(SimpleGraph::NodeEntry, payload) == 11);
-static_assert(sizeof(SimpleGraph::RelEntry)             == 30 + N_BYTES_SIMPLE_PROPERTY + 2);
+static_assert(sizeof(SimpleGraph::RelEntry)             == 30 + N_BYTES_SIMPLE_PROPERTY + N_BYTES_SIMPLE_PADDING + 2);
 static_assert(offsetof(SimpleGraph::RelEntry, payload)  == 30);
 
 using prop_id_t = int32_t;
