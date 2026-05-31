@@ -4333,6 +4333,21 @@ class GetExternalGraphLowering : public SubOpTupleStreamConsumerConversionPatter
    }
 };
 
+class ScanGraphLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::ScanGraphOp> {
+   public:
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::ScanGraphOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::ScanGraphOp scanGraphOp) const override {
+      return mlir::isa<gsubop::GraphType>(scanGraphOp.getGraph().getType()) ? success() : failure();
+   }
+   void rewrite(gsubop::ScanGraphOp scanGraphOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto loc = scanGraphOp->getLoc();
+      auto vx = rt::GraphStorage::nodeStorePtr(rewriter, loc)({adaptor.getGraph()})[0];
+      auto ex = rt::GraphStorage::relStorePtr(rewriter, loc)({adaptor.getGraph()})[0];
+      mapping.define(scanGraphOp.getNodeSet(), vx);
+      mapping.define(scanGraphOp.getEdgeSet(), ex);
+      rewriter.replaceTupleStream(scanGraphOp, mapping);
+   }
+};
 
 }; // namespace
 namespace {
