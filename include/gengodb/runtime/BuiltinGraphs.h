@@ -3,10 +3,6 @@
 
 #include "gengodb/runtime/Graph.h"
 
-// Currently supports alignment 8
-#define N_BYTES_SIMPLE_PROPERTY 24 // Change if needed
-#define N_BYTES_SIMPLE_PADDING  4 // Change if needed
-
 namespace lingodb::runtime {
 struct BuiltinGraph {
     enum Type {
@@ -20,16 +16,7 @@ struct BuiltinGraph {
 class SimpleGraph {
 public:
     const BuiltinGraph::Type TYPE = BuiltinGraph::Type::BUILTIN_SIMPLE_GRAPH;
-    struct SimpleProp {
-        uint8_t data[N_BYTES_SIMPLE_PROPERTY + N_BYTES_SIMPLE_PADDING]   = {0};
-        template<typename T>
-        static SimpleProp from(T data) {
-            SimpleProp prop;
-            memcpy((void*) prop.data, &data, sizeof(T));
-            return prop;
-        }
-    };
-    using Base = Graph<SimpleProp, SimpleProp>;
+    using Base = Graph<uint64_t, uint64_t>;
     using NodeEntry = Base::NodeEntry;
     using RelEntry  = Base::RelEntry;
 
@@ -37,21 +24,17 @@ public:
         : graph_(nodeCapacity, relCapacity),
         nodeCap_(nodeCapacity), relCap_(relCapacity) {}
 
-    node_id_t addNode(SimpleProp value = {0}) { return graph_.addNode(value); }
-    rel_id_t addRelationship(node_id_t from, node_id_t to, SimpleProp value = {0}) {
+    node_id_t addNode(uint64_t value = 0) { return graph_.addNode(value); }
+    rel_id_t addRelationship(node_id_t from, node_id_t to, uint64_t value = 0) {
         return graph_.addRelationship(from, to, /*typeId=*/0, value);
     }
     void removeNode(node_id_t id) { graph_.removeNode(id); }
     void removeRelationship(rel_id_t id) { graph_.removeRelationship(id); }
 
-    void setNodeValue(node_id_t id, SimpleProp v) { graph_.node(id).payload = v; }
-    template<typename T>
-    void setNodeValue(node_id_t id, T v) { setNodeValue(id, SimpleProp::from<T>(v)); }
-    SimpleProp getNodeValue(node_id_t id) const { return graph_.node(id).payload; }
-    void setRelValue(rel_id_t id, SimpleProp v) { graph_.rel(id).payload = v; }
-    template<typename T>
-    void setRelValue(rel_id_t id, T v) { setRelValue(id, SimpleProp::from<T>(v)); }
-    SimpleProp getRelValue(rel_id_t id) const { return graph_.rel(id).payload; }
+    void setNodeValue(node_id_t id, uint64_t v) { graph_.node(id).payload = v; }
+    uint64_t getNodeValue(node_id_t id) const { return graph_.node(id).payload; }
+    void setRelValue(rel_id_t id, uint64_t v) { graph_.rel(id).payload = v; }
+    uint64_t getRelValue(rel_id_t id) const { return graph_.rel(id).payload; }
 
     NodeEntry& node(node_id_t id) const { return graph_.node(id); }
     RelEntry& rel(rel_id_t id) const { return graph_.rel(id); }
@@ -74,10 +57,10 @@ private:
    int32_t nodeCap_, relCap_;
 }; // SimpleGraph
 
-static_assert(sizeof(SimpleGraph::NodeEntry)            == 11 + N_BYTES_SIMPLE_PROPERTY + N_BYTES_SIMPLE_PADDING + 1);
-static_assert(offsetof(SimpleGraph::NodeEntry, payload) == 11);
-static_assert(sizeof(SimpleGraph::RelEntry)             == 30 + N_BYTES_SIMPLE_PROPERTY + N_BYTES_SIMPLE_PADDING + 2);
-static_assert(offsetof(SimpleGraph::RelEntry, payload)  == 30);
+static_assert(sizeof(SimpleGraph::NodeEntry)            == 24);
+static_assert(offsetof(SimpleGraph::NodeEntry, payload) == 16);
+static_assert(sizeof(SimpleGraph::RelEntry)             == 40);
+static_assert(offsetof(SimpleGraph::RelEntry, payload)  == 32);
 
 using prop_id_t = int32_t;
 
