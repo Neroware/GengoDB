@@ -42,6 +42,11 @@ public:
       : nodes_(nodeCapacity), rels_(relCapacity),
         nodeMark_(0), relMark_(0),
         nodeCap_(nodeCapacity), relCap_(relCapacity) {}
+    Graph(node_id_t nodeHighWater, LegacyFixedSizedBuffer<NodeEntry>&& nodes,
+        rel_id_t relHighWater, LegacyFixedSizedBuffer<RelEntry>&& rels)
+            : nodes_(std::move(nodes)), rels_(std::move(rels)),
+            nodeMark_(nodeHighWater), relMark_(relHighWater),
+            nodeCap_(nodeHighWater), relCap_(relHighWater) {}
    ~Graph() = default;
     NodeEntry& node(node_id_t id) const {
         assert(id >= 0 && id < nodeMark_);

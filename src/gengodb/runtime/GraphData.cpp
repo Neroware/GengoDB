@@ -4,6 +4,104 @@
 
 namespace lingodb::runtime {
 
+std::unique_ptr<Neo4JGraph> GraphData::serialize(const PropertyGraph& pg) {
+   auto neo = std::make_unique<Neo4JGraph>(
+      static_cast<size_t>(pg.nodeHighWater()),
+      static_cast<size_t>(pg.relHighWater()),
+      static_cast<size_t>(pg.propHighWater()));
+
+   const auto* pgNodes = reinterpret_cast<const PropertyGraph::NodeEntry*>(pg.nodeStorePtr());
+   for (size_t i = 0; i < neo->nNodes; i++) {
+      const auto& src = pgNodes[i];
+      auto& dst       = neo->nodes.ptr[i];
+      dst.inUse       = src.inUse;
+      dst.firstRelId  = src.firstRelId;
+      dst.firstPropId = static_cast<uint32_t>(src.payload);
+      std::memcpy(dst.labels, src.labels, 5);
+      dst.extra = src.extra;
+   }
+
+   const auto* pgRels = reinterpret_cast<const PropertyGraph::RelEntry*>(pg.relStorePtr());
+   for (size_t i = 0; i < neo->nRels; i++) {
+      const auto& src        = pgRels[i];
+      auto& dst              = neo->rels.ptr[i];
+      dst.inUse              = src.inUse;
+      dst.firstNodeId        = src.firstNodeId;
+      dst.secondNodeId       = src.secondNodeId;
+      dst.typeId             = src.typeId;
+      dst.firstPrevRelId     = src.firstPrevRelId;
+      dst.firstNextRelId     = src.firstNextRelId;
+      dst.secondPrevRelId    = src.secondPrevRelId;
+      dst.secondNextRelId    = src.secondNextRelId;
+      dst.firstPropId        = static_cast<uint32_t>(src.payload);
+      dst.firstInChainMarker = src.firstInChainMarker;
+   }
+
+   const auto* pgProps = reinterpret_cast<const PropertyGraph::PropRecord*>(pg.propStorePtr());
+   for (size_t i = 0; i < neo->nProps; i++) {
+      const auto& src  = pgProps[i];
+      auto& dst        = neo->props.ptr[i];
+      dst.inUse        = src.inUse;
+      dst.nextPropId   = src.nextPropId;
+      dst.prevPropId   = src.prevPropId;
+      dst.key          = src.key;
+      dst.type         = src.type;
+      dst.value        = src.value;
+   }
+
+   return neo;
+}
+
+PropertyGraph* GraphData::deserialize(const Neo4JGraph& g) {
+    LegacyFixedSizedBuffer<PropertyGraph::NodeEntry> nodes(g.nNodes);
+    for (size_t i = 0; i < g.nNodes; i++) {
+        const auto& src  = g.nodes.ptr[i];
+        auto& dst        = nodes.ptr[i];
+        dst.firstRelId   = src.firstRelId;
+        dst.inUse        = src.inUse;
+        std::memcpy(dst.labels, src.labels, 5);
+        dst.extra        = src.extra;
+        dst.payload      = static_cast<prop_id_t>(src.firstPropId);
+    }
+
+    LegacyFixedSizedBuffer<PropertyGraph::RelEntry> rels(g.nRels);
+    for (size_t i = 0; i < g.nRels; i++) {
+        const auto& src        = g.rels.ptr[i];
+        auto& dst              = rels.ptr[i];
+        dst.firstNodeId        = src.firstNodeId;
+        dst.secondNodeId       = src.secondNodeId;
+        dst.typeId             = src.typeId;
+        dst.firstPrevRelId     = src.firstPrevRelId;
+        dst.firstNextRelId     = src.firstNextRelId;
+        dst.secondPrevRelId    = src.secondPrevRelId;
+        dst.secondNextRelId    = src.secondNextRelId;
+        dst.inUse              = src.inUse;
+        dst.firstInChainMarker = src.firstInChainMarker;
+        dst.payload            = static_cast<prop_id_t>(src.firstPropId);
+   }
+
+    LegacyFixedSizedBuffer<PropertyGraph::PropRecord> propsBuf(g.nProps);
+    for (size_t i = 0; i < g.nProps; i++) {
+        const auto& src  = g.props.ptr[i];
+        auto& dst        = propsBuf.ptr[i];
+        dst.nextPropId   = src.nextPropId;
+        dst.prevPropId   = src.prevPropId;
+        dst.key          = src.key;
+        dst.type         = src.type;
+        dst.value        = src.value;
+        dst.inUse        = src.inUse;
+    }
+
+    PropertyGraph* res = new PropertyGraph(
+        static_cast<node_id_t>(g.nNodes), std::move(nodes),
+        static_cast<rel_id_t>(g.nRels), std::move(rels),
+        static_cast<int32_t>(g.nProps), std::move(propsBuf));
+    GraphStorage::add(res->nodeStorePtr(), g.nNodes * sizeof(PropertyGraph::Base::NodeEntry), (uint8_t*) res);
+    GraphStorage::add(res->relStorePtr(), g.nRels * sizeof(PropertyGraph::Base::RelEntry), (uint8_t*) res);
+    GraphStorage::add(res->propStorePtr(), g.nProps * sizeof(PropertyGraph::PropRecord), (uint8_t*) res);
+    return res;
+}
+
 uint8_t* GraphData::allocAndPopulateBuiltinGraph(int32_t builtin) {
     auto* context = getCurrentExecutionContext();
     assert(context);

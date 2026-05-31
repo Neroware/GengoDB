@@ -5,18 +5,23 @@
 
 namespace lingodb::runtime {
 
+struct Neo4JGraph;
 struct GraphData {
     static uint8_t* allocAndPopulateBuiltinGraph(int32_t builtin);
     static SimpleGraph* allocSimpleGraphState(size_t nodeBufLen, size_t relBufLen);
     static PropertyGraph* allocPropertyGraphState(size_t nodeBufLen, size_t relBufLen, size_t propBufLen);
     static void createGraph(lingodb::runtime::VarLen32 meta);
     static PropertyGraph* getGraph(lingodb::runtime::VarLen32 name, lingodb::runtime::VarLen32 iri);
+    static std::unique_ptr<Neo4JGraph> serialize(const PropertyGraph& pg);
+    static PropertyGraph* deserialize(const Neo4JGraph& g);
 }; // GraphHelper
 
 // Neo4J doubly-linked adjacency-list property graph following the storage
 // model described in "Graph Databases" (Robinson, Webber & Eifrem, 2nd ed.,
 // Figure 6-4).
 struct Neo4JGraph {
+    Neo4JGraph(size_t nNodes, size_t nRels, size_t nProps)
+        : nNodes(nNodes), nRels(nRels), nProps(nProps), nodes(nNodes), rels(nRels), props(nProps) {}
     // PropRecord: fixed size (21 bytes)
     struct __attribute__((packed)) PropRecord {
         bool      inUse;

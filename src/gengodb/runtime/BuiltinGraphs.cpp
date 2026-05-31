@@ -21,6 +21,13 @@ PropertyGraph::PropertyGraph(int32_t nodeCapacity, int32_t relCapacity, int32_t 
      props_(propCapacity),
      propMark_(0), propCap_(propCapacity) {}
 
+PropertyGraph::PropertyGraph(node_id_t nodeHighWater, LegacyFixedSizedBuffer<NodeEntry>&& nodes,
+                             rel_id_t relHighWater, LegacyFixedSizedBuffer<RelEntry>&& rels,
+                             int32_t propHighWater, LegacyFixedSizedBuffer<PropRecord>&& props)
+   : graph_(nodeHighWater, std::move(nodes), relHighWater, std::move(rels)),
+     props_(std::move(props)),
+     propMark_(propHighWater), propCap_(propHighWater) {}
+
 PropertyGraph::PropRecord& PropertyGraph::prop(prop_id_t id) const {
     assert(id >= 0 && id < propMark_);
     return props_.ptr[id];

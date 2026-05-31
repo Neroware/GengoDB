@@ -91,6 +91,9 @@ public:
     };
 
     PropertyGraph(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);
+    PropertyGraph(node_id_t nodeHighWater, LegacyFixedSizedBuffer<NodeEntry>&& nodes,
+        rel_id_t relHighWater, LegacyFixedSizedBuffer<RelEntry>&& rels,
+        int32_t propHighWater, LegacyFixedSizedBuffer<PropRecord>&& props);
     ~PropertyGraph() = default;
 
     node_id_t addNode();
