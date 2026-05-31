@@ -5,6 +5,8 @@
 #include <rdf4cpp/Graph.hpp>
 #include <rdf4cpp/parser/RDFFileParser.hpp>
 
+#define GENGODB_DEFAULT_CAPACITY 1024
+
 namespace gengodb::semantics {
 using namespace rdf4cpp::parser;
 
@@ -85,6 +87,8 @@ void RdfGraph::ensureLoaded() {
     if (!loaded) {
         loaded = true;
         if (loadedFromRdfFile) {
+            storage = std::make_unique<runtime::GengoDBGraph>(name, 
+                GENGODB_DEFAULT_CAPACITY, GENGODB_DEFAULT_CAPACITY, GENGODB_DEFAULT_CAPACITY);
             loadTriples();
         }
         storage->ensureLoaded();
