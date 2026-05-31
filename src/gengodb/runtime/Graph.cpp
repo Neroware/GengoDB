@@ -52,6 +52,13 @@ private:
 void GraphStorage::add(const uint8_t* start, size_t len, const uint8_t* graph) {
     mem_.push_back(std::make_tuple(start, len, graph));
 }
+void GraphStorage::remove(const uint8_t* graph) {
+    for (auto& tup : mem_) {
+        if (std::get<2>(tup) != graph)
+            continue;
+        std::get<2>(tup) = nullptr;
+    }
+}
 size_t GraphStorage::nodeCount(const uint8_t* ref) {
     auto graph = lookupGraph(ref);
     switch(BuiltinGraph::typeId(graph)) {

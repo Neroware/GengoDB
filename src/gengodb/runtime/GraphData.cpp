@@ -52,7 +52,7 @@ std::unique_ptr<Neo4JGraph> GraphData::serialize(const PropertyGraph& pg) {
    return neo;
 }
 
-PropertyGraph* GraphData::deserialize(const Neo4JGraph& g) {
+std::unique_ptr<PropertyGraph> GraphData::deserialize(const Neo4JGraph& g) {
     LegacyFixedSizedBuffer<PropertyGraph::NodeEntry> nodes(g.nNodes);
     for (size_t i = 0; i < g.nNodes; i++) {
         const auto& src  = g.nodes.ptr[i];
@@ -92,14 +92,11 @@ PropertyGraph* GraphData::deserialize(const Neo4JGraph& g) {
         dst.inUse        = src.inUse;
     }
 
-    PropertyGraph* res = new PropertyGraph(
+    return std::make_unique<PropertyGraph>(
         static_cast<node_id_t>(g.nNodes), std::move(nodes),
         static_cast<rel_id_t>(g.nRels), std::move(rels),
         static_cast<int32_t>(g.nProps), std::move(propsBuf));
-    GraphStorage::add(res->nodeStorePtr(), g.nNodes * sizeof(PropertyGraph::Base::NodeEntry), (uint8_t*) res);
-    GraphStorage::add(res->relStorePtr(), g.nRels * sizeof(PropertyGraph::Base::RelEntry), (uint8_t*) res);
-    GraphStorage::add(res->propStorePtr(), g.nProps * sizeof(PropertyGraph::PropRecord), (uint8_t*) res);
-    return res;
+    
 }
 
 uint8_t* GraphData::allocAndPopulateBuiltinGraph(int32_t builtin) {

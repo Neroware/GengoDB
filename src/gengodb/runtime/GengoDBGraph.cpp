@@ -20,12 +20,12 @@ static std::string graphPath(const std::string& dbDir, const std::string& fileNa
 static constexpr uint32_t GRAPH_FILE_MAGIC = 0x47524150; // "GRAP"
 
 void GengoDBGraph::flush() {
-   if (dbDir_.empty() || fileName_.empty()) return;
+   if (!storage_ || dbDir_.empty() || fileName_.empty()) return;
    std::string path = graphPath(dbDir_, fileName_);
    std::FILE* f = std::fopen(path.c_str(), "wb");
    if (!f) throw std::runtime_error("GengoDBGraph::flush: cannot open " + path);
 
-   auto neo = GraphData::serialize(storage_);
+   auto neo = GraphData::serialize(*storage_);
    uint32_t header[4] = {
       GRAPH_FILE_MAGIC,
       static_cast<uint32_t>(neo->nNodes),
@@ -42,7 +42,7 @@ void GengoDBGraph::flush() {
 void GengoDBGraph::ensureLoaded() {
    if (loaded_) return;
    loaded_ = true;
-   if (storage_.nodeHighWater() > 0) return; // already populated in-memory
+   if (storage_) return; // already populated in-memory
    if (dbDir_.empty() || fileName_.empty()) return;
 
    std::string path = graphPath(dbDir_, fileName_);
@@ -64,7 +64,8 @@ void GengoDBGraph::ensureLoaded() {
    std::fread(neo.props.ptr, sizeof(Neo4JGraph::PropRecord), neo.nProps, f);
    std::fclose(f);
 
-   storage_ = *GraphData::deserialize(neo);
+   storage_ = GraphData::deserialize(neo);
+   storage_->registerGraph();
 }
 void GengoDBGraph::serialize(lingodb::utility::Serializer& serializer) const {
    serializer.writeProperty<std::string>(1, fileName_);

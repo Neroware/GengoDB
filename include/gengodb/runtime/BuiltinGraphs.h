@@ -62,6 +62,8 @@ public:
     size_t freeRels() const { return graph_.freeRels(); }
 
     void registerGraph() const;
+    void deregisterGraph() const;
+
     static SimpleGraph* create(int32_t nodeCapacity, int32_t relCapacity);
     static void destroy(SimpleGraph* g) { delete g; }
 
@@ -125,6 +127,8 @@ public:
     size_t freeProps() const { return freeProps_.size(); }
 
     void registerGraph() const;
+    void deregisterGraph() const;
+
     static PropertyGraph* create(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);
     static void destroy(PropertyGraph* g);
 

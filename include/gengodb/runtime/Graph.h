@@ -196,6 +196,7 @@ private:
 struct GraphStorage {
     using prop_id_t = int32_t;
     static void add(const uint8_t* start, size_t len, const uint8_t* graph);
+    static void remove(const uint8_t* graph);
     static size_t nodeCount(const uint8_t* ref);
     static size_t relCount(const uint8_t* ref);
     static size_t propCount(const uint8_t* ref);

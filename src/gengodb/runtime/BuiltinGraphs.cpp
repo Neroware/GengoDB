@@ -11,6 +11,9 @@ void SimpleGraph::registerGraph() const {
     GraphStorage::add(relStorePtr(), relCap_ * sizeof(SimpleGraph::Base::RelEntry), 
         reinterpret_cast<const uint8_t*>(this));
 }
+void SimpleGraph::deregisterGraph() const {
+    GraphStorage::remove(reinterpret_cast<const uint8_t*>(this));
+}
 BuiltinGraph::Type BuiltinGraph::type(const void* ptr) {
     return *reinterpret_cast<const BuiltinGraph::Type*>(ptr);
 }
@@ -25,6 +28,9 @@ void PropertyGraph::registerGraph() const {
         reinterpret_cast<const uint8_t*>(this));
     GraphStorage::add(relStorePtr(), propCap_ * sizeof(PropertyGraph::PropRecord), 
         reinterpret_cast<const uint8_t*>(this));
+}
+void PropertyGraph::deregisterGraph() const {
+    GraphStorage::remove(reinterpret_cast<const uint8_t*>(this));
 }
 PropertyGraph::PropertyGraph(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity)
     : graph_(nodeCapacity, relCapacity), props_(propCapacity), 

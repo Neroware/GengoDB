@@ -11,19 +11,18 @@ namespace lingodb::runtime {
 
 class GengoDBGraph {
 public:
-   static constexpr int32_t DEFAULT_CAPACITY = 1024;
+   explicit GengoDBGraph(std::string fileName)
+      : storage_(nullptr),
+      fileName_(std::move(fileName)) {}
+   explicit GengoDBGraph(std::string fileName, 
+      int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity) 
+         : storage_(std::make_unique<PropertyGraph>(nodeCapacity, relCapacity, propCapacity)),
+         fileName_(std::move(fileName)) { storage_->registerGraph(); }
 
-   explicit GengoDBGraph(std::string fileName,
-        int32_t nodeCapacity = DEFAULT_CAPACITY,
-        int32_t relCapacity = DEFAULT_CAPACITY,
-        int32_t propCapacity = DEFAULT_CAPACITY) 
-            : storage_(nodeCapacity, relCapacity, propCapacity),
-                fileName_(std::move(fileName)) {}
+   virtual ~GengoDBGraph() { if(storage_) storage_->deregisterGraph(); }
 
-   virtual ~GengoDBGraph() = default;
-
-   PropertyGraph& storage() { return storage_; }
-   const PropertyGraph& storage() const { return storage_; }
+   PropertyGraph& storage() { return *storage_; }
+   const PropertyGraph& storage() const { return *storage_; }
 
    void setDBDir(std::string dir) { dbDir_ = std::move(dir); }
    void ensureLoaded();
@@ -37,7 +36,7 @@ public:
    static std::unique_ptr<GengoDBGraph> create(std::string name);
 
 private:
-   PropertyGraph storage_;
+   std::unique_ptr<PropertyGraph> storage_;
    std::string fileName_;
    std::string dbDir_;
    bool loaded_ = false;
