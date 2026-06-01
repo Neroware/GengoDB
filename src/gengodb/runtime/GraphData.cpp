@@ -92,7 +92,7 @@ void GraphData::deserialize(PropertyGraph& pg, const Neo4JGraph& g) {
 uint8_t* GraphData::allocAndPopulateBuiltinGraph(int32_t builtin) {
     switch (builtin) {
         case 1: {
-            auto g = SimpleGraph::create(16, 256);
+            auto g = PageRankGraph::create(16, 256);
             for (int i = 0; i < 5; i++) {
                 g->addNode();
             }

@@ -142,5 +142,20 @@ PropertyGraph* PropertyGraph::create(int32_t nodeCapacity, int32_t relCapacity, 
 void PropertyGraph::destroy(PropertyGraph* g) {
    delete g;
 }
+
+PageRankGraph* PageRankGraph::create(int32_t nodeCapacity, int32_t relCapacity) {
+    return new PageRankGraph(nodeCapacity, relCapacity);
+}
+void PageRankGraph::registerGraph() {
+    GraphStorage::add(nodeStorePtr(), nodeCap_ * sizeof(PageRankGraph::Base::NodeEntry),
+        reinterpret_cast<const uint8_t*>(this));
+    GraphStorage::add(relStorePtr(), relCap_ * sizeof(PageRankGraph::Base::RelEntry),
+        reinterpret_cast<const uint8_t*>(this));
+    getCurrentExecutionContext()->registerState({this, [&](void* ptr) {
+        GraphStorage::remove(reinterpret_cast<const uint8_t*>(this));
+        delete reinterpret_cast<PageRankGraph*>(ptr);
+    }});
+}
+
 } // namespace lingodb::runtime
 

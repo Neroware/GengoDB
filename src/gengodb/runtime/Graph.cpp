@@ -48,6 +48,11 @@ private:
         assert(BuiltinGraph::type(pgraph) == BuiltinGraph::Type::BUILTIN_PROPERTY_GRAPH);
         return reinterpret_cast<const PropertyGraph*>(pgraph);
     }
+    template<>
+    inline const PageRankGraph* convertType(const uint8_t* graph) {
+        assert(BuiltinGraph::type(graph) == BuiltinGraph::Type::BUILTIN_PAGERANK_GRAPH);
+        return reinterpret_cast<const PageRankGraph*>(graph);
+    }
 }; // GraphStorageHelper
 void GraphStorage::add(const uint8_t* start, size_t len, const uint8_t* graph) {
     mem_.push_back(std::make_tuple(start, len, graph));
@@ -66,6 +71,8 @@ size_t GraphStorage::nodeCount(const uint8_t* ref) {
             return GraphStorageHelper<SimpleGraph>(graph).nodeCount();
         case BuiltinGraph::Type::BUILTIN_PROPERTY_GRAPH:
             return GraphStorageHelper<PropertyGraph>(graph).nodeCount();
+        case BuiltinGraph::Type::BUILTIN_PAGERANK_GRAPH:
+            return GraphStorageHelper<PageRankGraph>(graph).nodeCount();
         default: assert(false && "should not happen");
     }
 }
@@ -76,6 +83,8 @@ size_t GraphStorage::relCount(const uint8_t* ref) {
             return GraphStorageHelper<SimpleGraph>(graph).relCount();
         case BuiltinGraph::Type::BUILTIN_PROPERTY_GRAPH:
             return GraphStorageHelper<PropertyGraph>(graph).relCount();
+        case BuiltinGraph::Type::BUILTIN_PAGERANK_GRAPH:
+            return GraphStorageHelper<PageRankGraph>(graph).relCount();
         default: assert(false && "should not happen");
     }
 }
@@ -88,6 +97,8 @@ size_t GraphStorage::propCount(const uint8_t* ref) {
             auto pgraph = GraphStorageHelper<PropertyGraph>(graph).getStorage();
             return static_cast<size_t>(pgraph->propHighWater()) - pgraph->freeProps();
         }
+        case BuiltinGraph::Type::BUILTIN_PAGERANK_GRAPH:
+            return GraphStorageHelper<PageRankGraph>(graph).propCount();
         default: assert(false && "should not happen");
     }
 }
@@ -98,6 +109,8 @@ uint8_t* GraphStorage::nodeStorePtr(const uint8_t* ref) {
             return GraphStorageHelper<SimpleGraph>(graph).nodeStorePtr();
         case BuiltinGraph::Type::BUILTIN_PROPERTY_GRAPH:
             return GraphStorageHelper<PropertyGraph>(graph).nodeStorePtr();
+        case BuiltinGraph::Type::BUILTIN_PAGERANK_GRAPH:
+            return GraphStorageHelper<PageRankGraph>(graph).nodeStorePtr();
         default: assert(false && "should not happen");
     }
 }
@@ -108,6 +121,8 @@ uint8_t* GraphStorage::relStorePtr(const uint8_t* ref) {
             return GraphStorageHelper<SimpleGraph>(graph).relStorePtr();
         case BuiltinGraph::Type::BUILTIN_PROPERTY_GRAPH:
             return GraphStorageHelper<PropertyGraph>(graph).relStorePtr();
+        case BuiltinGraph::Type::BUILTIN_PAGERANK_GRAPH:
+            return GraphStorageHelper<PageRankGraph>(graph).relStorePtr();
         default: assert(false && "should not happen");
     }
 }
@@ -126,6 +141,8 @@ int32_t GraphStorage::nodeHighWater(const uint8_t* ref) {
             return GraphStorageHelper<SimpleGraph>(graph).nodeHighWater();
         case BuiltinGraph::Type::BUILTIN_PROPERTY_GRAPH:
             return GraphStorageHelper<PropertyGraph>(graph).nodeHighWater();
+        case BuiltinGraph::Type::BUILTIN_PAGERANK_GRAPH:
+            return GraphStorageHelper<PageRankGraph>(graph).nodeHighWater();
         default: assert(false && "should not happen");
     }
 }
@@ -136,6 +153,8 @@ int32_t GraphStorage::relHighWater(const uint8_t* ref) {
             return GraphStorageHelper<SimpleGraph>(graph).relHighWater();
         case BuiltinGraph::Type::BUILTIN_PROPERTY_GRAPH:
             return GraphStorageHelper<PropertyGraph>(graph).relHighWater();
+        case BuiltinGraph::Type::BUILTIN_PAGERANK_GRAPH:
+            return GraphStorageHelper<PageRankGraph>(graph).relHighWater();
         default: assert(false && "should not happen");
     }
 }
@@ -178,6 +197,11 @@ BufferIterator* GraphStorage::createNodeIterator(uint8_t* ref) {
             return new GraphTableIterator(
                 sizeof(PropertyGraph::NodeEntry), helper.nodeHighWater(), helper.nodeStorePtr());
         }
+        case BuiltinGraph::Type::BUILTIN_PAGERANK_GRAPH: {
+            GraphStorageHelper<PageRankGraph> helper(graph);
+            return new GraphTableIterator(
+                sizeof(PageRankGraph::NodeEntry), helper.nodeHighWater(), helper.nodeStorePtr());
+        }
         default: assert(false && "should not happen");
     }
 }
@@ -193,6 +217,11 @@ BufferIterator* GraphStorage::createRelIterator(uint8_t* ref) {
             GraphStorageHelper<PropertyGraph> helper(graph);
             return new GraphTableIterator(
                 sizeof(PropertyGraph::RelEntry), helper.relHighWater(), helper.relStorePtr());
+        }
+        case BuiltinGraph::Type::BUILTIN_PAGERANK_GRAPH: {
+            GraphStorageHelper<PageRankGraph> helper(graph);
+            return new GraphTableIterator(
+                sizeof(PageRankGraph::RelEntry), helper.relHighWater(), helper.relStorePtr());
         }
         default: assert(false && "should not happen");
     }
@@ -215,6 +244,8 @@ node_id_t GraphStorage::nodeId(uint8_t* node) {
             return GraphStorageHelper<SimpleGraph>(graph).nodeId(node);
         case BuiltinGraph::Type::BUILTIN_PROPERTY_GRAPH:
             return GraphStorageHelper<PropertyGraph>(graph).nodeId(node);
+        case BuiltinGraph::Type::BUILTIN_PAGERANK_GRAPH:
+            return GraphStorageHelper<PageRankGraph>(graph).nodeId(node);
         default: assert(false && "should not happen");
     }
 }
@@ -225,6 +256,8 @@ rel_id_t GraphStorage::relId(uint8_t* rel) {
             return GraphStorageHelper<SimpleGraph>(graph).relId(rel);
         case BuiltinGraph::Type::BUILTIN_PROPERTY_GRAPH:
             return GraphStorageHelper<PropertyGraph>(graph).relId(rel);
+        case BuiltinGraph::Type::BUILTIN_PAGERANK_GRAPH:
+            return GraphStorageHelper<PageRankGraph>(graph).relId(rel);
         default: assert(false && "should not happen");
     }
 }
@@ -246,6 +279,8 @@ uint8_t* GraphStorage::getRelationshipLListHeadOf(uint8_t* ref) {
             return GraphStorageHelper<SimpleGraph>(graph).getRelationshipLListHeadOf(ref);
         case BuiltinGraph::Type::BUILTIN_PROPERTY_GRAPH:
             return GraphStorageHelper<PropertyGraph>(graph).getRelationshipLListHeadOf(ref);
+        case BuiltinGraph::Type::BUILTIN_PAGERANK_GRAPH:
+            return GraphStorageHelper<PageRankGraph>(graph).getRelationshipLListHeadOf(ref);
         default: assert(false && "should not happen");
     }
 }
@@ -284,6 +319,12 @@ const SimpleGraph* GraphStorage::lookupGraph<SimpleGraph>(const uint8_t* ref) {
     const uint8_t* ptr = lookupGraph(ref);
     assert(BuiltinGraph::type(ptr) == BuiltinGraph::BUILTIN_SIMPLE_GRAPH);
     return reinterpret_cast<const SimpleGraph*>(ptr);
+}
+template<>
+const PageRankGraph* GraphStorage::lookupGraph<PageRankGraph>(const uint8_t* ref) {
+    const uint8_t* ptr = lookupGraph(ref);
+    assert(BuiltinGraph::type(ptr) == BuiltinGraph::BUILTIN_PAGERANK_GRAPH);
+    return reinterpret_cast<const PageRankGraph*>(ptr);
 }
 std::vector<std::tuple<const uint8_t*, size_t, const uint8_t*>> GraphStorage::mem_;
 
