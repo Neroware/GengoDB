@@ -42,7 +42,7 @@ void GengoDBGraph::flush() {
 void GengoDBGraph::ensureLoaded() {
    if (loaded_) return;
    loaded_ = true;
-   if (storage_) return; // already populated in-memory
+   if (storage_->nodeHighWater() > 0) return; // already populated in-memory
    if (dbDir_.empty() || fileName_.empty()) return;
 
    std::string path = graphPath(dbDir_, fileName_);
@@ -64,8 +64,7 @@ void GengoDBGraph::ensureLoaded() {
    std::fread(neo.props.ptr, sizeof(Neo4JGraph::PropRecord), neo.nProps, f);
    std::fclose(f);
 
-   storage_ = GraphData::deserialize(neo);
-   storage_->registerGraph();
+   GraphData::deserialize(*storage_, neo);
 }
 void GengoDBGraph::serialize(lingodb::utility::Serializer& serializer) const {
    serializer.writeProperty<std::string>(1, fileName_);

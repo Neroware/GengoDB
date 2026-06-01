@@ -5,14 +5,15 @@ namespace lingodb::runtime {
 SimpleGraph* SimpleGraph::create(int32_t nodeCapacity, int32_t relCapacity) {
     return new SimpleGraph(nodeCapacity, relCapacity);
 }
-void SimpleGraph::registerGraph() const {
+void SimpleGraph::registerGraph() {
     GraphStorage::add(nodeStorePtr(), nodeCap_ * sizeof(SimpleGraph::Base::NodeEntry), 
         reinterpret_cast<const uint8_t*>(this));
     GraphStorage::add(relStorePtr(), relCap_ * sizeof(SimpleGraph::Base::RelEntry), 
         reinterpret_cast<const uint8_t*>(this));
-}
-void SimpleGraph::deregisterGraph() const {
-    GraphStorage::remove(reinterpret_cast<const uint8_t*>(this));
+    getCurrentExecutionContext()->registerState({this, [&](void* ptr){
+        GraphStorage::remove(reinterpret_cast<const uint8_t*>(this));
+        delete reinterpret_cast<SimpleGraph*>(ptr);
+    }});
 }
 BuiltinGraph::Type BuiltinGraph::type(const void* ptr) {
     return *reinterpret_cast<const BuiltinGraph::Type*>(ptr);
@@ -21,33 +22,30 @@ int64_t BuiltinGraph::typeId(const void* ptr) {
     return static_cast<int64_t>(type(ptr));
 }
 
-void PropertyGraph::registerGraph() const {
+void PropertyGraph::registerGraph() {
     GraphStorage::add(nodeStorePtr(), nodeCap_ * sizeof(PropertyGraph::Base::NodeEntry), 
         reinterpret_cast<const uint8_t*>(this));
     GraphStorage::add(relStorePtr(), relCap_ * sizeof(PropertyGraph::Base::RelEntry), 
         reinterpret_cast<const uint8_t*>(this));
     GraphStorage::add(propStorePtr(), propCap_ * sizeof(PropertyGraph::PropRecord), 
         reinterpret_cast<const uint8_t*>(this));
-}
-void PropertyGraph::deregisterGraph() const {
-    GraphStorage::remove(reinterpret_cast<const uint8_t*>(this));
+    getCurrentExecutionContext()->registerState({this, [&](void* ptr){
+        GraphStorage::remove(reinterpret_cast<const uint8_t*>(this));
+        delete reinterpret_cast<PropertyGraph*>(ptr);
+    }});
 }
 PropertyGraph::PropertyGraph(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity)
     : graph_(nodeCapacity, relCapacity), props_(propCapacity), 
     propMark_(0), propCap_(propCapacity), 
     nodeCap_(nodeCapacity), relCap_(relCapacity) {}
 
-PropertyGraph::PropertyGraph(node_id_t nodeHighWater, LegacyFixedSizedBuffer<NodeEntry>&& nodes,
-    rel_id_t relHighWater, LegacyFixedSizedBuffer<RelEntry>&& rels,
-    int32_t propHighWater, LegacyFixedSizedBuffer<PropRecord>&& props)
-        : graph_(nodeHighWater, std::move(nodes), relHighWater, std::move(rels)),
-        props_(std::move(props)),
-        propMark_(propHighWater), propCap_(propHighWater),
-        nodeCap_(nodeHighWater), relCap_(relHighWater) {}
-
 PropertyGraph::PropRecord& PropertyGraph::prop(prop_id_t id) const {
     assert(id >= 0 && id < propMark_);
     return props_.ptr[id];
+}
+PropertyGraph::PropRecord& PropertyGraph::newProp() {
+    assert(propMark_ < propCap_ && "prop capacity exceeded");
+    return props_.ptr[propMark_++];
 }
 node_id_t PropertyGraph::addNode() {
     node_id_t id = graph_.addNode(/*initPayload=*/GRAPH_NONE);

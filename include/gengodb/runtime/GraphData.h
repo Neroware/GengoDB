@@ -13,7 +13,7 @@ struct GraphData {
     static void createGraph(lingodb::runtime::VarLen32 meta);
     static PropertyGraph* getGraph(lingodb::runtime::VarLen32 name, lingodb::runtime::VarLen32 iri);
     static std::unique_ptr<Neo4JGraph> serialize(const PropertyGraph& pg);
-    static std::unique_ptr<PropertyGraph> deserialize(const Neo4JGraph& g);
+    static void deserialize(PropertyGraph& dst, const Neo4JGraph& g);
 }; // GraphHelper
 
 // Neo4J doubly-linked adjacency-list property graph following the storage

@@ -150,9 +150,6 @@ struct LegacyFixedSizedBuffer {
    LegacyFixedSizedBuffer(size_t size) : ptr((T*) malloc(size * sizeof(T))) {
       runtime::MemoryHelper::zero((uint8_t*) ptr, size * sizeof(T));
    }
-   LegacyFixedSizedBuffer(LegacyFixedSizedBuffer&& other) noexcept : ptr(other.ptr) { other.ptr = nullptr; }
-   LegacyFixedSizedBuffer(const LegacyFixedSizedBuffer&) = delete;
-   LegacyFixedSizedBuffer& operator=(const LegacyFixedSizedBuffer&) = delete;
    T* ptr;
    void setNewSize(size_t newSize) {
       free(ptr);

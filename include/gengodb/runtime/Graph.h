@@ -87,7 +87,7 @@ public:
             linkRelToNode(id, to, /*nodeIsFirst=*/false);
         return id;
    }
-   void removeRelationship(rel_id_t id) {
+    void removeRelationship(rel_id_t id) {
         RelEntry& r = rels_.ptr[id];
         assert(r.inUse);
         unlinkRelFromNode(id, r.firstNodeId);
@@ -95,10 +95,10 @@ public:
             unlinkRelFromNode(id, r.secondNodeId);
         r.inUse = false;
         freeRels_.push_back(id);
-   }
-   // Removes all relationships incident to the node, then frees the node.
-   // Does NOT clean up relationship/node payloads.
-   void removeNode(node_id_t id) {
+    }
+    // Removes all relationships incident to the node, then frees the node.
+    // Does NOT clean up relationship/node payloads.
+    void removeNode(node_id_t id) {
         NodeEntry& n = nodes_.ptr[id];
         assert(n.inUse);
         rel_id_t cur = n.firstRelId;
@@ -111,7 +111,20 @@ public:
         n.inUse = false;
         n.firstRelId = GRAPH_NONE;
         freeNodes_.push_back(id);
-   }
+    }
+    void clear() {
+        nodeMark_ = relMark_ = 0;
+        freeNodes_.clear();
+        freeRels_.clear();
+    }
+    NodeEntry& newNode() {
+        assert(nodeMark_ < nodeCap_ && "node capacity exceeded");
+        return nodes_.ptr[nodeMark_++];
+    }
+    RelEntry& newRel() {
+        assert(relMark_ < relCap_ && "rel capacity exceeded");
+        return rels_.ptr[relMark_++];
+    }
 
 private:
     node_id_t allocNode() {

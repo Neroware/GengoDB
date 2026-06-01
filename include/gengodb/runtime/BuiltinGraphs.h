@@ -38,6 +38,8 @@ public:
 
     NodeEntry& node(node_id_t id) const { return graph_.node(id); }
     RelEntry& rel(rel_id_t id) const { return graph_.rel(id); }
+    NodeEntry& newNode() { return graph_.newNode(); }
+    RelEntry& newRel() { return graph_.newRel(); }
 
     uint8_t* nodeStorePtr() const { return graph_.nodeStorePtr(); }
     uint8_t* relStorePtr() const { return graph_.relStorePtr(); }
@@ -46,11 +48,11 @@ public:
     size_t freeNodes() const { return graph_.freeNodes(); }
     size_t freeRels() const { return graph_.freeRels(); }
 
-    void registerGraph() const;
-    void deregisterGraph() const;
+    void registerGraph();
 
     static SimpleGraph* create(int32_t nodeCapacity, int32_t relCapacity);
     static void destroy(SimpleGraph* g) { delete g; }
+    void clear() { graph_.clear(); }
 
 private:
    Base graph_;
@@ -81,9 +83,6 @@ public:
     };
 
     PropertyGraph(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);
-    PropertyGraph(node_id_t nodeHighWater, LegacyFixedSizedBuffer<NodeEntry>&& nodes,
-        rel_id_t relHighWater, LegacyFixedSizedBuffer<RelEntry>&& rels,
-        int32_t propHighWater, LegacyFixedSizedBuffer<PropRecord>&& props);
     ~PropertyGraph() = default;
 
     node_id_t addNode();
@@ -100,6 +99,10 @@ public:
     NodeEntry& node(node_id_t id) const { return graph_.node(id); }
     RelEntry& rel(rel_id_t id) const { return graph_.rel(id); }
     PropRecord& prop(prop_id_t id) const;
+    
+    NodeEntry& newNode() { return graph_.newNode(); }
+    RelEntry& newRel() { return graph_.newRel(); }
+    PropRecord& newProp();
 
     uint8_t* nodeStorePtr() const { return graph_.nodeStorePtr(); }
     uint8_t* relStorePtr() const { return graph_.relStorePtr(); }
@@ -111,11 +114,11 @@ public:
     size_t freeRels() const { return graph_.freeRels(); }
     size_t freeProps() const { return freeProps_.size(); }
 
-    void registerGraph() const;
-    void deregisterGraph() const;
+    void registerGraph();
 
     static PropertyGraph* create(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);
     static void destroy(PropertyGraph* g);
+    void clear() { graph_.clear(); propMark_ = 0; freeProps_.clear(); }
 
 private:
     prop_id_t addPropertyToChain(prop_id_t& chainHead, uint32_t key, uint32_t type, uint32_t value);

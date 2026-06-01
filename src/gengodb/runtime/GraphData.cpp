@@ -52,22 +52,20 @@ std::unique_ptr<Neo4JGraph> GraphData::serialize(const PropertyGraph& pg) {
    return neo;
 }
 
-std::unique_ptr<PropertyGraph> GraphData::deserialize(const Neo4JGraph& g) {
-    LegacyFixedSizedBuffer<PropertyGraph::NodeEntry> nodes(g.nNodes);
+void GraphData::deserialize(PropertyGraph& pg, const Neo4JGraph& g) {
+    pg.clear();
     for (size_t i = 0; i < g.nNodes; i++) {
         const auto& src  = g.nodes.ptr[i];
-        auto& dst        = nodes.ptr[i];
+        auto& dst        = pg.newNode();
         dst.firstRelId   = src.firstRelId;
         dst.inUse        = src.inUse;
         std::memcpy(dst.labels, src.labels, 5);
         dst.extra        = src.extra;
         dst.payload      = static_cast<prop_id_t>(src.firstPropId);
     }
-
-    LegacyFixedSizedBuffer<PropertyGraph::RelEntry> rels(g.nRels);
     for (size_t i = 0; i < g.nRels; i++) {
         const auto& src        = g.rels.ptr[i];
-        auto& dst              = rels.ptr[i];
+        auto& dst              = pg.newRel();
         dst.firstNodeId        = src.firstNodeId;
         dst.secondNodeId       = src.secondNodeId;
         dst.typeId             = src.typeId;
@@ -78,12 +76,10 @@ std::unique_ptr<PropertyGraph> GraphData::deserialize(const Neo4JGraph& g) {
         dst.inUse              = src.inUse;
         dst.firstInChainMarker = src.firstInChainMarker;
         dst.payload            = static_cast<prop_id_t>(src.firstPropId);
-   }
-
-    LegacyFixedSizedBuffer<PropertyGraph::PropRecord> propsBuf(g.nProps);
+    }
     for (size_t i = 0; i < g.nProps; i++) {
         const auto& src  = g.props.ptr[i];
-        auto& dst        = propsBuf.ptr[i];
+        auto& dst        = pg.newProp();
         dst.nextPropId   = src.nextPropId;
         dst.prevPropId   = src.prevPropId;
         dst.key          = src.key;
@@ -91,21 +87,12 @@ std::unique_ptr<PropertyGraph> GraphData::deserialize(const Neo4JGraph& g) {
         dst.value        = src.value;
         dst.inUse        = src.inUse;
     }
-
-    return std::make_unique<PropertyGraph>(
-        static_cast<node_id_t>(g.nNodes), std::move(nodes),
-        static_cast<rel_id_t>(g.nRels), std::move(rels),
-        static_cast<int32_t>(g.nProps), std::move(propsBuf));
-    
 }
 
 uint8_t* GraphData::allocAndPopulateBuiltinGraph(int32_t builtin) {
-    auto* context = getCurrentExecutionContext();
-    assert(context);
     switch (builtin) {
         case 1: {
             auto g = SimpleGraph::create(16, 256);
-            context->registerState({g, [](void* p) { delete (reinterpret_cast<SimpleGraph*>(p)); }});
             for (int i = 0; i < 5; i++) {
                 g->addNode();
             }
@@ -120,7 +107,6 @@ uint8_t* GraphData::allocAndPopulateBuiltinGraph(int32_t builtin) {
         } break;
         case 2: {
             auto g = PropertyGraph::create(16, 256, 256);
-            context->registerState({g, [](void* p) { delete (reinterpret_cast<PropertyGraph*>(p)); }});
             for (int i = 0; i < 6; i++) {
                 g->addNode();
             }
@@ -147,7 +133,6 @@ uint8_t* GraphData::allocAndPopulateBuiltinGraph(int32_t builtin) {
         } break;
         default: {
             auto g = SimpleGraph::create(16, 256);
-            context->registerState({g, [](void* p) { delete (reinterpret_cast<SimpleGraph*>(p)); }});
             for (int i = 0; i < 6; i++) {
                 g->addNode();
             }
@@ -175,18 +160,14 @@ uint8_t* GraphData::allocAndPopulateBuiltinGraph(int32_t builtin) {
     };
 }
 PropertyGraph* GraphData::allocPropertyGraphState(size_t nodeBufLen, size_t relBufLen, size_t propBufLen) {
-    auto* context = getCurrentExecutionContext();
-    assert(context);
-    auto ptr = static_cast<void*>(PropertyGraph::create(nodeBufLen, relBufLen, propBufLen));
-    context->registerState({ptr, [](void* p) { delete (reinterpret_cast<PropertyGraph*>(p)); }});
-    return static_cast<PropertyGraph*>(ptr);
+    auto g = PropertyGraph::create(nodeBufLen, relBufLen, propBufLen);
+    g->registerGraph();
+    return g;
 }
 SimpleGraph* GraphData::allocSimpleGraphState(size_t nodeBufLen, size_t relBufLen) {
-    auto* context = getCurrentExecutionContext();
-    assert(context);
-    auto ptr = static_cast<void*>(SimpleGraph::create(nodeBufLen, relBufLen));
-    context->registerState({ptr, [](void* p) { delete (reinterpret_cast<SimpleGraph*>(p)); }});
-    return static_cast<SimpleGraph*>(ptr);
+    auto g = SimpleGraph::create(nodeBufLen, relBufLen);
+    g->registerGraph();
+    return g;
 }
 void GraphData::createGraph(lingodb::runtime::VarLen32 meta) {
     // TODO implement
@@ -201,7 +182,7 @@ PropertyGraph* GraphData::getGraph(lingodb::runtime::VarLen32 name, lingodb::run
             throw std::runtime_error("Found graph record but IRIs do not match!");
         }
         auto& pgraph = graph->getStorage();
-        getCurrentExecutionContext()->registerState({&pgraph, [](void* ptr){ delete reinterpret_cast<PropertyGraph*>(ptr); }});
+        pgraph.registerGraph();
         return &pgraph;
     } else {
         // TODO Load local file (file://) or download graph from the semantic web (http://)
