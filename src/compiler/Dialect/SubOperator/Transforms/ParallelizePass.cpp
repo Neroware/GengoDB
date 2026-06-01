@@ -328,8 +328,8 @@ class ParallelizePass : public mlir::PassWrapper<ParallelizePass, mlir::Operatio
                         for (auto x : executionStepOp.getOperands()) {
                            threadLocalNotPossibleAnymore.insert(x);
                         }
-                        llvm::dbgs() << "not parallel: ";
-                        scanRefsOp.dump();
+                        // llvm::dbgs() << "not parallel: ";
+                        // scanRefsOp.dump();
                      }
                   }
                }

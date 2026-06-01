@@ -1,0 +1,65 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "MLIR-DB-OPT",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/mlir-db-opt",
+            "args": ["--lower-subop", "./test/gengodb/graph/snippets/property_graph/property_table.mlir"],
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "preLaunchTask": "CMake: build"
+        },
+        {
+            "name": "Print GPM",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/mlir-db-opt",
+            "args": ["./test/gengodb/gpm/snippets/triple_pattern.mlir"],
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "preLaunchTask": "CMake: build"
+        },
+        {
+            "name": "RUN-MLIR",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/run-mlir",
+            "args": ["./test/gengodb/graph/snippets/property_graph/property_table.mlir"],
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "preLaunchTask": "CMake: build"
+        },
+        {
+            "name": "Generate RDF Catalog",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/gen-rdf-catalog",
+            "args": ["./resources/ttl/"],
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "preLaunchTask": "CMake: build"
+        },
+        {
+            "name": "PAGERANK-CF",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/mlir-db-opt",
+            "args": ["--lower-subop", "./test/gengodb/graph/snippets/pagerank.mlir"],
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "preLaunchTask": "CMake: build"
+        },
+        {
+            "name": "PAGERANK",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/run-mlir",
+            "args": ["./test/gengodb/graph/snippets/pagerank.mlir"],
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "preLaunchTask": "CMake: build"
+        },
+    ]
+}

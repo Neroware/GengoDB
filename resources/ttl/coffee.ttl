@@ -1,0 +1,20 @@
+@prefix ex: <http://example.org/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+ex:bob ex:drinks ex:coffee .
+ex:bob ex:age "30"^^xsd:int .
+ex:bob ex:awake "true"^^xsd:boolean .
+# ex:bob ex:name "Bob"^^xsd:string .
+
+ex:coffee ex:temp "65"^^xsd:int .
+ex:coffee ex:strong "true"^^xsd:boolean .
+
+ex:bob ex:cup _:cup1 .
+
+_:cup1 ex:contains ex:coffee .
+_:cup1 ex:size "1"^^xsd:int .
+_:cup1 ex:clean "true"^^xsd:boolean .
+
+_:sip1 ex:who ex:bob .
+_:sip1 ex:what ex:coffee .
+_:sip1 ex:count "3"^^xsd:int .

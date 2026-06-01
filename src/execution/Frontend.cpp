@@ -7,6 +7,7 @@
 #include "lingodb/compiler/Dialect/RelAlg/Passes.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorDialect.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorOps.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamDialect.h"
 #include "lingodb/compiler/Dialect/util/UtilDialect.h"
 #include "lingodb/compiler/frontend/driver.h"
@@ -36,11 +37,13 @@
 #include <iostream>
 void lingodb::execution::initializeContext(mlir::MLIRContext& context, bool includeLLVM) {
    using namespace lingodb::compiler::dialect;
+   using namespace gengodb::compiler::dialect;
    mlir::DialectRegistry registry;
    registry.insert<mlir::BuiltinDialect>();
    registry.insert<relalg::RelAlgDialect>();
    registry.insert<tuples::TupleStreamDialect>();
    registry.insert<subop::SubOperatorDialect>();
+   registry.insert<gsubop::GraphSubOpDialect>();
    registry.insert<db::DBDialect>();
    registry.insert<lingodb::compiler::dialect::arrow::ArrowDialect>();
    registry.insert<mlir::func::FuncDialect>();

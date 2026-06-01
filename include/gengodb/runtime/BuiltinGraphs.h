@@ -1,0 +1,221 @@
+#ifndef GENGODB_RUNTIME_BUILTINGRAPHS_H
+#define GENGODB_RUNTIME_BUILTINGRAPHS_H
+
+#include "gengodb/runtime/Graph.h"
+
+namespace lingodb::runtime {
+struct BuiltinGraph {
+    enum Type {
+        BUILTIN_SIMPLE_GRAPH = 0,
+        BUILTIN_PROPERTY_GRAPH = 1,
+        BUILTIN_PAGERANK_GRAPH = 2
+    };
+    static int64_t typeId(const void* ptr);
+    static Type type(const void* ptr);
+};
+
+class SimpleGraph {
+public:
+    const BuiltinGraph::Type TYPE = BuiltinGraph::Type::BUILTIN_SIMPLE_GRAPH;
+    using Base = Graph<uint64_t, uint64_t>;
+    using NodeEntry = Base::NodeEntry;
+    using RelEntry  = Base::RelEntry;
+
+    SimpleGraph(int32_t nodeCapacity, int32_t relCapacity)
+        : graph_(nodeCapacity, relCapacity),
+        nodeCap_(nodeCapacity), relCap_(relCapacity) {}
+
+    node_id_t addNode(uint64_t value = 0) { return graph_.addNode(value); }
+    rel_id_t addRelationship(node_id_t from, node_id_t to, uint64_t value = 0) {
+        return graph_.addRelationship(from, to, /*typeId=*/0, value);
+    }
+    void removeNode(node_id_t id) { graph_.removeNode(id); }
+    void removeRelationship(rel_id_t id) { graph_.removeRelationship(id); }
+
+    void setNodeValue(node_id_t id, uint64_t v) { graph_.node(id).payload = v; }
+    uint64_t getNodeValue(node_id_t id) const { return graph_.node(id).payload; }
+    void setRelValue(rel_id_t id, uint64_t v) { graph_.rel(id).payload = v; }
+    uint64_t getRelValue(rel_id_t id) const { return graph_.rel(id).payload; }
+
+    NodeEntry& node(node_id_t id) const { return graph_.node(id); }
+    RelEntry& rel(rel_id_t id) const { return graph_.rel(id); }
+    NodeEntry& newNode() { return graph_.newNode(); }
+    RelEntry& newRel() { return graph_.newRel(); }
+
+    uint8_t* nodeStorePtr() const { return graph_.nodeStorePtr(); }
+    uint8_t* relStorePtr() const { return graph_.relStorePtr(); }
+    int32_t nodeHighWater() const { return graph_.nodeHighWater(); }
+    int32_t relHighWater() const { return graph_.relHighWater(); }
+    size_t freeNodes() const { return graph_.freeNodes(); }
+    size_t freeRels() const { return graph_.freeRels(); }
+
+    void registerGraph();
+
+    static SimpleGraph* create(int32_t nodeCapacity, int32_t relCapacity);
+    static void destroy(SimpleGraph* g) { delete g; }
+    void clear() { graph_.clear(); }
+
+private:
+   Base graph_;
+   int32_t nodeCap_, relCap_;
+}; // SimpleGraph
+
+static_assert(sizeof(SimpleGraph::NodeEntry)            == 24);
+static_assert(offsetof(SimpleGraph::NodeEntry, payload) == 16);
+static_assert(sizeof(SimpleGraph::RelEntry)             == 40);
+static_assert(offsetof(SimpleGraph::RelEntry, payload)  == 32);
+
+using prop_id_t = int32_t;
+
+class PropertyGraph {
+public:
+    using Base = Graph<prop_id_t, prop_id_t>;
+    using NodeEntry = Base::NodeEntry;
+    using RelEntry  = Base::RelEntry;
+    const BuiltinGraph::Type TYPE = BuiltinGraph::Type::BUILTIN_PROPERTY_GRAPH;
+
+    struct PropRecord {
+        prop_id_t nextPropId;
+        prop_id_t prevPropId;
+        uint32_t  key;
+        uint32_t  type;
+        uint32_t  value;
+        bool      inUse;
+    };
+
+    PropertyGraph(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);
+    ~PropertyGraph() = default;
+
+    node_id_t addNode();
+    void removeNode(node_id_t node);
+    rel_id_t addRelationship(node_id_t from, node_id_t to, uint32_t typeId);
+    void removeRelationship(rel_id_t rel);
+    
+    prop_id_t addNodeProperty(node_id_t node, uint32_t key, uint32_t type, uint32_t value = 0);
+    prop_id_t addRelProperty(rel_id_t rel, uint32_t key, uint32_t type, uint32_t value = 0);
+    void setPropertyValue(prop_id_t prop, uint32_t value);
+    // Removes prop from its chain; chainHead is updated if prop was the head.
+    void removeProperty(prop_id_t prop, prop_id_t& chainHead);
+
+    NodeEntry& node(node_id_t id) const { return graph_.node(id); }
+    RelEntry& rel(rel_id_t id) const { return graph_.rel(id); }
+    PropRecord& prop(prop_id_t id) const;
+    
+    NodeEntry& newNode() { return graph_.newNode(); }
+    RelEntry& newRel() { return graph_.newRel(); }
+    PropRecord& newProp();
+
+    uint8_t* nodeStorePtr() const { return graph_.nodeStorePtr(); }
+    uint8_t* relStorePtr() const { return graph_.relStorePtr(); }
+    uint8_t* propStorePtr() const { return reinterpret_cast<uint8_t*>(props_.ptr); }
+    int32_t nodeHighWater() const { return graph_.nodeHighWater(); }
+    int32_t relHighWater() const { return graph_.relHighWater(); }
+    int32_t propHighWater() const { return propMark_; }
+    size_t freeNodes() const { return graph_.freeNodes(); }
+    size_t freeRels() const { return graph_.freeRels(); }
+    size_t freeProps() const { return freeProps_.size(); }
+
+    void registerGraph();
+
+    static PropertyGraph* create(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);
+    static void destroy(PropertyGraph* g);
+    void clear() { graph_.clear(); propMark_ = 0; freeProps_.clear(); }
+
+private:
+    prop_id_t addPropertyToChain(prop_id_t& chainHead, uint32_t key, uint32_t type, uint32_t value);
+    prop_id_t allocProp();
+
+private:
+    Base graph_;
+    LegacyFixedSizedBuffer<PropRecord> props_;
+    int32_t propMark_, propCap_;
+    std::vector<prop_id_t> freeProps_;
+    int32_t nodeCap_, relCap_;
+
+}; // PropertyGraph
+
+static_assert(sizeof(PropertyGraph::NodeEntry)               == 16);
+static_assert(offsetof(PropertyGraph::NodeEntry, firstRelId) ==  0);
+static_assert(offsetof(PropertyGraph::NodeEntry, inUse)      ==  4);
+static_assert(offsetof(PropertyGraph::NodeEntry, labels)     ==  5);
+static_assert(offsetof(PropertyGraph::NodeEntry, extra)      == 10);
+static_assert(offsetof(PropertyGraph::NodeEntry, payload)    == 12); // firstPropId, needs 1 byte padding
+
+static_assert(sizeof(PropertyGraph::RelEntry)                       == 36);
+static_assert(offsetof(PropertyGraph::RelEntry, firstNodeId)        == 0);
+static_assert(offsetof(PropertyGraph::RelEntry, inUse)              == 28);
+static_assert(offsetof(PropertyGraph::RelEntry, firstInChainMarker) == 29);
+static_assert(offsetof(PropertyGraph::RelEntry, payload)            == 32); // firstPropId, needs 2 bytes padding
+
+struct PageRankPayload {
+    double  rank;
+    double  nextRank;
+    int32_t outDegree;
+};
+static_assert(sizeof(PageRankPayload)                    == 24);
+static_assert(offsetof(PageRankPayload, rank)            ==  0);
+static_assert(offsetof(PageRankPayload, nextRank)        ==  8);
+static_assert(offsetof(PageRankPayload, outDegree)       == 16);
+
+// TODO Replace with a choice of aligned graph types!
+// If we need three components and alignment 8, 
+// we can define a graph with Payload {i64, i64, i64}
+// This should be easy to generate for Claude...
+class PageRankGraph {
+public:
+    const BuiltinGraph::Type TYPE = BuiltinGraph::Type::BUILTIN_PAGERANK_GRAPH;
+    using Base = Graph<PageRankPayload, uint64_t>;
+    using NodeEntry = Base::NodeEntry;
+    using RelEntry  = Base::RelEntry;
+
+    PageRankGraph(int32_t nodeCapacity, int32_t relCapacity)
+        : graph_(nodeCapacity, relCapacity),
+          nodeCap_(nodeCapacity), relCap_(relCapacity) {}
+
+    node_id_t addNode() {
+        return graph_.addNode(PageRankPayload{0.0, 0.0, 0});
+    }
+    rel_id_t addRelationship(node_id_t from, node_id_t to) {
+        return graph_.addRelationship(from, to, /*typeId=*/0, /*payload=*/0u);
+    }
+    void removeNode(node_id_t id)        { graph_.removeNode(id); }
+    void removeRelationship(rel_id_t id) { graph_.removeRelationship(id); }
+
+    void    setRank(node_id_t id, double v)      { graph_.node(id).payload.rank = v; }
+    double  getRank(node_id_t id) const           { return graph_.node(id).payload.rank; }
+    void    setNextRank(node_id_t id, double v)   { graph_.node(id).payload.nextRank = v; }
+    double  getNextRank(node_id_t id) const        { return graph_.node(id).payload.nextRank; }
+    void    setOutDegree(node_id_t id, int32_t v) { graph_.node(id).payload.outDegree = v; }
+    int32_t getOutDegree(node_id_t id) const       { return graph_.node(id).payload.outDegree; }
+
+    NodeEntry& node(node_id_t id) const { return graph_.node(id); }
+    RelEntry&  rel(rel_id_t id)   const { return graph_.rel(id); }
+    NodeEntry& newNode()                { return graph_.newNode(); }
+    RelEntry&  newRel()                 { return graph_.newRel(); }
+
+    uint8_t* nodeStorePtr() const  { return graph_.nodeStorePtr(); }
+    uint8_t* relStorePtr()  const  { return graph_.relStorePtr(); }
+    int32_t  nodeHighWater() const { return graph_.nodeHighWater(); }
+    int32_t  relHighWater()  const { return graph_.relHighWater(); }
+    size_t   freeNodes() const     { return graph_.freeNodes(); }
+    size_t   freeRels()  const     { return graph_.freeRels(); }
+
+    void registerGraph();
+
+    static PageRankGraph* create(int32_t nodeCapacity, int32_t relCapacity);
+    static void destroy(PageRankGraph* g) { delete g; }
+    void clear() { graph_.clear(); }
+
+private:
+    Base graph_;
+    int32_t nodeCap_, relCap_;
+}; // PageRankGraph
+
+static_assert(sizeof(PageRankGraph::NodeEntry)            == 40);
+static_assert(offsetof(PageRankGraph::NodeEntry, payload) == 16);
+static_assert(sizeof(PageRankGraph::RelEntry)             == 40);
+static_assert(offsetof(PageRankGraph::RelEntry, payload)  == 32);
+
+} // namespace lingodb::runtime
+
+#endif // GENGODB_RUNTIME_BUILTINGRAPHS_H

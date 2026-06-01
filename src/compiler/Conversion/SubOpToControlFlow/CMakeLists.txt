@@ -22,6 +22,8 @@ add_mlir_conversion_library(MLIRSubOpToControlFlow
         db-rt-defs
         tracing-rt-defs
         lock-rt-defs
+        graph-rt-defs
+        builtin-graph-rt-defs
         LINK_COMPONENTS
         Core
 
@@ -30,5 +32,6 @@ add_mlir_conversion_library(MLIRSubOpToControlFlow
         MLIRDB
         MLIRArrow
         MLIRSubOperator
+        MLIRGraphSubOp
         runtime_funcs_ptr
 )

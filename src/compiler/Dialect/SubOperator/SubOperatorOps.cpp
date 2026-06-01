@@ -791,6 +791,52 @@ void subop::LoopOp::print(::mlir::OpAsmPrinter& p) {
    p.printRegion(getRegion(), false, true);
    p.printOptionalAttrDict(getOperation()->getAttrs());
 }
+ParseResult subop::StepOp::parse(::mlir::OpAsmParser& parser, ::mlir::OperationState& result) {
+   llvm::SmallVector<OpAsmParser::UnresolvedOperand> args;
+   llvm::SmallVector<Type> argTypes;
+   llvm::SmallVector<OpAsmParser::Argument> arguments;
+   llvm::SmallVector<Type> argumentTypes;
+
+   if (parser.parseOperandList(args) || parser.parseOptionalColonTypeList(argTypes)) {
+      return failure();
+   }
+   if (parser.resolveOperands(args, argTypes, parser.getCurrentLocation(), result.operands).failed()) {
+      return failure();
+   }
+   if (parser.parseLParen() || parser.parseArgumentList(arguments) || parser.parseRParen() || parser.parseOptionalArrowTypeList(argumentTypes)) {
+      return failure();
+   }
+   if (arguments.size() != argumentTypes.size()) {
+      return failure();
+   }
+   for (auto i = 0ul; i < arguments.size(); i++) {
+      arguments[i].type = argumentTypes[i];
+   }
+   result.types.insert(result.types.end(), argumentTypes.begin(), argumentTypes.end());
+   Region* body = result.addRegion();
+   if (parser.parseRegion(*body, arguments)) return failure();
+   if (parser.parseOptionalAttrDict(result.attributes))
+      return ::mlir::failure();
+   return success();
+}
+void subop::StepOp::print(::mlir::OpAsmPrinter& p) {
+   if (!getArgs().empty()) {
+      p << getArgs() << " : " << getArgs().getTypes();
+   }
+   p << " (";
+   for (size_t i = 0; i < getRegion().getNumArguments(); i++) {
+      if (i != 0) {
+         p << " ,";
+      }
+      p << getRegion().getArguments()[i];
+   }
+   p << ")";
+   if (!getResultTypes().empty()) {
+      p << "-> " << getResultTypes();
+   }
+   p.printRegion(getRegion(), false, true);
+   p.printOptionalAttrDict(getOperation()->getAttrs());
+}
 
 ::mlir::ParseResult subop::CreateSegmentTreeView::parse(::mlir::OpAsmParser& parser, ::mlir::OperationState& result) {
    auto& memberManager = parser.getContext()->getOrLoadDialect<subop::SubOperatorDialect>()->getMemberManager();
@@ -1179,6 +1225,34 @@ mlir::Operation* subop::NestedMapOp::cloneSubOp(mlir::OpBuilder& builder, mlir::
    cloneRegionInto(builder, mapping, columnMapping, getRegion(), newMap.getRegion());
    mapResults(mapping, this->getOperation(), newMap.getOperation());
    return newMap;
+}
+llvm::SmallVector<subop::Member> subop::StepOp::getReadMembers() {
+   llvm::SmallVector<subop::Member> res;
+   for (auto arg : getArgs()) {
+      if (auto stateType = mlir::dyn_cast_or_null<subop::State>(arg.getType())) {
+         auto members = stateType.getMembers().getMembers();
+         res.insert(res.end(), members.begin(), members.end());
+      }
+   }
+   this->getRegion().walk([&](subop::SubOperator subop) {
+      auto read = subop.getReadMembers();
+      res.insert(res.end(), read.begin(), read.end());
+   });
+   return res;
+}
+llvm::SmallVector<subop::Member> subop::StepOp::getWrittenMembers() {
+   llvm::SmallVector<subop::Member> res;
+   this->getRegion().walk([&](subop::SubOperator subop) {
+      auto written = subop.getWrittenMembers();
+      res.insert(res.end(), written.begin(), written.end());
+   });
+   for (auto resT : getResultTypes()) {
+      if (auto stateType = mlir::dyn_cast_or_null<subop::State>(resT)) {
+         auto members = stateType.getMembers().getMembers();
+         res.insert(res.end(), members.begin(), members.end());
+      }
+   }
+   return res;
 }
 llvm::SmallVector<subop::Member> subop::LoopOp::getReadMembers() {
    llvm::SmallVector<subop::Member> res;
