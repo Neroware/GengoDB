@@ -157,10 +157,14 @@ static_assert(offsetof(PageRankPayload, rank)            ==  0);
 static_assert(offsetof(PageRankPayload, nextRank)        ==  8);
 static_assert(offsetof(PageRankPayload, outDegree)       == 16);
 
+// TODO Replace with a choice of aligned graph types!
+// If we need three components and alignment 8, 
+// we can define a graph with Payload {i64, i64, i64}
+// This should be easy to generate for Claude...
 class PageRankGraph {
 public:
     const BuiltinGraph::Type TYPE = BuiltinGraph::Type::BUILTIN_PAGERANK_GRAPH;
-    using Base = Graph<PageRankPayload, uint32_t>;
+    using Base = Graph<PageRankPayload, uint64_t>;
     using NodeEntry = Base::NodeEntry;
     using RelEntry  = Base::RelEntry;
 
@@ -172,9 +176,7 @@ public:
         return graph_.addNode(PageRankPayload{0.0, 0.0, 0});
     }
     rel_id_t addRelationship(node_id_t from, node_id_t to) {
-        rel_id_t id = graph_.addRelationship(from, to, /*typeId=*/0, /*payload=*/0u);
-        graph_.node(from).payload.outDegree++;
-        return id;
+        return graph_.addRelationship(from, to, /*typeId=*/0, /*payload=*/0u);
     }
     void removeNode(node_id_t id)        { graph_.removeNode(id); }
     void removeRelationship(rel_id_t id) { graph_.removeRelationship(id); }
@@ -211,7 +213,7 @@ private:
 
 static_assert(sizeof(PageRankGraph::NodeEntry)            == 40);
 static_assert(offsetof(PageRankGraph::NodeEntry, payload) == 16);
-static_assert(sizeof(PageRankGraph::RelEntry)             == 36);
+static_assert(sizeof(PageRankGraph::RelEntry)             == 40);
 static_assert(offsetof(PageRankGraph::RelEntry, payload)  == 32);
 
 } // namespace lingodb::runtime

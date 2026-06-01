@@ -730,12 +730,48 @@ class SubOpRewriter {
       }
    }
 
+   // template <class AdaptorType>
+   // void inlineBlock(mlir::Block* block, mlir::ValueRange values, const std::function<void(AdaptorType)> processTerminator) {
+   //    for (auto z : llvm::zip(block->getArguments(), values)) {
+   //       std::get<0>(z).replaceAllUsesWith(std::get<1>(z));
+   //    }
+   //    llvm::SmallVector<mlir::Operation*> toInsert;
+   //    mlir::Operation* terminator;
+   //    for (auto& op : block->getOperations()) {
+   //       if (&op != block->getTerminator()) {
+   //          toInsert.push_back(&op);
+   //       } else {
+   //          terminator = &op;
+   //          break;
+   //       }
+   //    }
+   //    for (auto* op : toInsert) {
+   //       op->remove();
+   //       llvm::SmallVector<mlir::Value> res;
+   //       if (builder.tryFold(op, res).succeeded()) {
+   //          op->replaceAllUsesWith(res);
+   //          eraseOp(op);
+   //       } else {
+   //          builder.insert(op);
+   //          registerOpInserted(op);
+   //       }
+   //    }
+   //    llvm::SmallVector<mlir::Value> adaptorVals;
+   //    for (auto operand : terminator->getOperands()) {
+   //       adaptorVals.push_back(getMapped(operand));
+   //    }
+   //    AdaptorType adaptor(adaptorVals);
+   //    processTerminator(adaptor);
+   //    terminator->remove();
+   //    eraseOp(terminator);
+   // }
+   // TODO Fix this!
    template <class AdaptorType>
    void inlineBlock(mlir::Block* block, mlir::ValueRange values, const std::function<void(AdaptorType)> processTerminator) {
       for (auto z : llvm::zip(block->getArguments(), values)) {
          std::get<0>(z).replaceAllUsesWith(std::get<1>(z));
       }
-      llvm::SmallVector<mlir::Operation*> toInsert;
+      std::vector<mlir::Operation*> toInsert;
       mlir::Operation* terminator;
       for (auto& op : block->getOperations()) {
          if (&op != block->getTerminator()) {
@@ -747,16 +783,10 @@ class SubOpRewriter {
       }
       for (auto* op : toInsert) {
          op->remove();
-         llvm::SmallVector<mlir::Value> res;
-         if (builder.tryFold(op, res).succeeded()) {
-            op->replaceAllUsesWith(res);
-            eraseOp(op);
-         } else {
-            builder.insert(op);
-            registerOpInserted(op);
-         }
+         builder.insert(op);
+         registerOpInserted(op);
       }
-      llvm::SmallVector<mlir::Value> adaptorVals;
+      std::vector<mlir::Value> adaptorVals;
       for (auto operand : terminator->getOperands()) {
          adaptorVals.push_back(getMapped(operand));
       }
