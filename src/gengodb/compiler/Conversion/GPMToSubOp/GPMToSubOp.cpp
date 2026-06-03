@@ -42,10 +42,8 @@ namespace {
 using namespace lingodb::compiler::dialect;
 using namespace gengodb::compiler::dialect;
 using Member = subop::Member;
-using MemberCollector = llvm::SmallVector<Member>;
-using DefMappingCollector = llvm::SmallVector<subop::DefMappingPairT>;
-using RefMappingCollector = llvm::SmallVector<subop::RefMappingPairT>;
-using RequiredColumnsMap = llvm::DenseMap<Operator, relalg::ColumnSet>;
+using LocalIdentifierMapping = llvm::DenseMap<mlir::StringRef, mlir::Value>;
+using BlankNodeMapping = llvm::DenseMap<gpm::BasicGraphPatternOp, LocalIdentifierMapping>;
 struct GPMToSubOpLoweringPass
    : public PassWrapper<GPMToSubOpLoweringPass, OperationPass<ModuleOp>> {
    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(GPMToSubOpLoweringPass)
@@ -127,6 +125,26 @@ class NamedGraphLowering : public OpConversionPattern<gpm::NamedGraphOp> {
    }
 };
 
+class BasicGraphPatternLowering : public OpConversionPattern<gpm::BasicGraphPatternOp> {
+   const BlankNodeMapping& blankNodes;
+   public:
+   BasicGraphPatternLowering(TypeConverter& typeConverter, MLIRContext* context, const BlankNodeMapping& blankNodes)
+      : OpConversionPattern<gpm::BasicGraphPatternOp>(typeConverter, context), blankNodes(blankNodes) {}
+   LogicalResult matchAndRewrite(gpm::BasicGraphPatternOp basicGraphPatternOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      return failure();
+   }
+};
+
+class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
+   const BlankNodeMapping& blankNodes;
+   public:
+   TriplePatternLowering(TypeConverter& typeConverter, MLIRContext* context, const BlankNodeMapping& blankNodes)
+      : OpConversionPattern<gpm::TriplePatternOp>(typeConverter, context), blankNodes(blankNodes) {}
+   LogicalResult matchAndRewrite(gpm::TriplePatternOp triplePatternOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      return failure();
+   }
+};
+
 void GPMToSubOpLoweringPass::runOnOperation() {
    auto module = getOperation();
    getContext().getLoadedDialect<util::UtilDialect>()->getFunctionHelper().setParentModule(module);
@@ -164,7 +182,11 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    ctxt->loadDialect<gsubop::GraphSubOpDialect>();
    RewritePatternSet patterns(ctxt);
 
+   BlankNodeMapping blankNodes;
+
    patterns.insert<NamedGraphLowering>(typeConverter, ctxt);
+   patterns.insert<BasicGraphPatternLowering>(typeConverter, ctxt, blankNodes);
+   patterns.insert<TriplePatternLowering>(typeConverter, ctxt, blankNodes);
 
    if (failed(applyFullConversion(module, target, std::move(patterns))))
       signalPassFailure();
