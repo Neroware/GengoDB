@@ -29,11 +29,11 @@ def TriplePatternOp : GPM_Op<"triple_pattern", [Pure,GPMOperator]> {
   let hasVerifier = 1;
 }
 
-def BaseGraphOp : GPM_Op<"basegraph", [Pure,GPMOperator]> {
-  let summary = "base graph";
+def NamedGraphOp : GPM_Op<"named_graph", [Pure,GPMOperator]> {
+  let summary = "named graph";
   let arguments = (ins StrAttr:$graph, ColumnDefAttr:$def);
   let results = (outs TupleStream:$res);
-  let assemblyFormat = [{  `graph` `:` $graph `,` `column` `:` custom<CustDef>($def) attr-dict }];
+  let assemblyFormat = [{  `name` `:` $graph `,` `column` `:` custom<CustDef>($def) attr-dict }];
 }
 
 def BasicGraphPatternOp : GPM_Op<"basic_graph_pattern", [Pure,GPMOperator]> {

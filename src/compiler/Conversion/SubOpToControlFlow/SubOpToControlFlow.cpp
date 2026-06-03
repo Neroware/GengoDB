@@ -5312,7 +5312,11 @@ class FilterByGraphTypeLowering : public SubOpTupleStreamConsumerConversionPatte
       if (nodeRefType) {
          typeI32 = rt::GraphStorage::nodeId(rewriter, loc)({ptr})[0];
       }
-      else if (relRefType || propRefType) {
+      else if (relRefType) {
+         auto typeI32Ref = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, rewriter.getI32Type()), ref, gsubop::RELATIONSHIP_ENTRY_RELATIONSHIP_TYPE_PTR);
+         typeI32 = rewriter.create<util::LoadOp>(loc, typeI32Ref);
+      }
+      else {
          auto typeI32Ref = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, rewriter.getI32Type()), ref, gsubop::PROPERTY_ENTRY_PROPERTY_KEY_PTR);
          typeI32 = rewriter.create<util::LoadOp>(loc, typeI32Ref);
       }

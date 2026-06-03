@@ -9,6 +9,8 @@
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorDialect.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorOps.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpsTypes.h"
 #include "lingodb/compiler/Dialect/SubOperator/Utils.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
 #include "lingodb/compiler/Dialect/util/FunctionHelper.h"
@@ -43,6 +45,7 @@ using Member = subop::Member;
 using MemberCollector = llvm::SmallVector<Member>;
 using DefMappingCollector = llvm::SmallVector<subop::DefMappingPairT>;
 using RefMappingCollector = llvm::SmallVector<subop::RefMappingPairT>;
+using RequiredColumnsMap = llvm::DenseMap<Operator, relalg::ColumnSet>;
 struct GPMToSubOpLoweringPass
    : public PassWrapper<GPMToSubOpLoweringPass, OperationPass<ModuleOp>> {
    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(GPMToSubOpLoweringPass)
@@ -54,9 +57,86 @@ struct GPMToSubOpLoweringPass
    }
    void runOnOperation() final;
 };
+// static std::string extractIriTail(llvm::StringRef iri) {
+//    iri = iri.split('#').first;
+//    iri = iri.split('?').first;
+//    auto slash = iri.rfind('/');
+//    if (slash != llvm::StringRef::npos) {
+//       iri = iri.drop_front(slash + 1);
+//    }
+//    auto dot = iri.rfind('.');
+//    if (dot != llvm::StringRef::npos && dot != 0) {
+//       iri = iri.take_front(dot);
+//    }
+//    return iri.str();
+// }
+static Member createMember(MLIRContext* context, std::string name, mlir::Type type) {
+   auto& memberManager = context->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
+   return memberManager.createMember(name, type);
+}
+static subop::StateMembersAttr createStateMembersAttr(MLIRContext* context, const llvm::SmallVector<Member>& members) {
+   return subop::StateMembersAttr::get(context, members);
+}
+
+static relalg::ColumnSet getRequired(Operator op, llvm::DenseMap<Operator, relalg::ColumnSet>& requiredCols, relalg::AvailabilityCache& cache) {
+   if (requiredCols.count(op)) {
+      return requiredCols[op];
+   }
+   auto available = op.getAvailableColumns(cache);
+
+   relalg::ColumnSet required;
+   for (auto* user : op->getUsers()) {
+      if (auto consumingOp = mlir::dyn_cast_or_null<Operator>(user)) {
+         required.insert(getRequired(consumingOp, requiredCols, cache));
+         required.insert(consumingOp.getUsedColumns());
+      }
+   }
+   auto res = available.intersect(required);
+   requiredCols.insert({op, res});
+   return res;
+}
+
+class NamedGraphLowering : public OpConversionPattern<gpm::NamedGraphOp> {
+   public:
+   NamedGraphLowering(TypeConverter& typeConverter, MLIRContext* context)
+      : OpConversionPattern<gpm::NamedGraphOp>(typeConverter, context) {}
+   LogicalResult matchAndRewrite(gpm::NamedGraphOp namedGraphOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      auto ctxt = rewriter.getContext();
+      auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      
+      std::string graphName = namedGraphOp.getDef().getName().getLeafReference().str();
+      auto graphNameAttr = StringAttr::get(ctxt, graphName);
+
+      auto allItType = gsubop::GraphSetIteratorType::get(ctxt, mlir::ArrayAttr::get(ctxt, {StringAttr::get(ctxt, "all")}));
+      auto nodeSetItMember = createMember(ctxt, graphName + "_vx_it", allItType);
+      auto nodeSetType = gsubop::NodeSetType::get(ctxt, createStateMembersAttr(ctxt, {nodeSetItMember}));
+      auto edgeSetItMember = createMember(ctxt, graphName + "_ex_it", allItType);
+      auto edgeSetType = gsubop::EdgeSetType::get(ctxt, createStateMembersAttr(ctxt, {edgeSetItMember}));
+      auto nodeSetMember = createMember(ctxt, graphName + "_vx", nodeSetType);
+      auto edgeSetMember = createMember(ctxt, graphName + "_ex", edgeSetType);
+      auto graphType = gsubop::GraphType::get(ctxt, createStateMembersAttr(ctxt, {nodeSetMember}), createStateMembersAttr(ctxt, {edgeSetMember}));
+      
+      auto nodeSetDef = columnManager.createDef(graphName, "nodes");
+      nodeSetDef.getColumn().type = nodeSetType;
+      auto edgeSetDef = columnManager.createDef(graphName, "edges");
+      edgeSetDef.getColumn().type = edgeSetType;
+      mlir::Value graphRef = rewriter.create<gsubop::GetExternalGraphOp>(namedGraphOp->getLoc(), graphType, graphNameAttr, namedGraphOp.getGraph());
+      rewriter.replaceOpWithNewOp<gsubop::ScanGraphOp>(namedGraphOp, graphRef, nodeSetDef, edgeSetDef);
+      // graphRef.getDefiningOp()->getParentOfType<mlir::ModuleOp>().dump();
+      return success();
+   }
+};
+
 void GPMToSubOpLoweringPass::runOnOperation() {
    auto module = getOperation();
    getContext().getLoadedDialect<util::UtilDialect>()->getFunctionHelper().setParentModule(module);
+
+   llvm::DenseMap<Operator, relalg::ColumnSet> requiredColumns;
+
+   relalg::AvailabilityCache availabilityCache;
+   getOperation().walk([&](Operator op) {
+      requiredColumns[op] = getRequired(op, requiredColumns, availabilityCache);
+   });
 
    // Define Conversion Target
    ConversionTarget target(getContext());
@@ -81,9 +161,10 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    TypeConverter typeConverter;
    typeConverter.addConversion([](tuples::TupleStreamType t) { return t; });
    auto* ctxt = &getContext();
+   ctxt->loadDialect<gsubop::GraphSubOpDialect>();
    RewritePatternSet patterns(ctxt);
 
-   // patterns.insert<BaseTableLowering>(typeConverter, ctxt);
+   patterns.insert<NamedGraphLowering>(typeConverter, ctxt);
 
    if (failed(applyFullConversion(module, target, std::move(patterns))))
       signalPassFailure();
