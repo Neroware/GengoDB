@@ -8,7 +8,7 @@ struct BuiltinGraph {
     enum Type {
         BUILTIN_SIMPLE_GRAPH = 0,
         BUILTIN_PROPERTY_GRAPH = 1,
-        BUILTIN_PAGERANK_GRAPH = 2
+        BUILTIN_ALIGN_8X3_8X1_GRAPH = 2
     };
     static int64_t typeId(const void* ptr);
     static Type type(const void* ptr);
@@ -147,46 +147,33 @@ static_assert(offsetof(PropertyGraph::RelEntry, inUse)              == 28);
 static_assert(offsetof(PropertyGraph::RelEntry, firstInChainMarker) == 29);
 static_assert(offsetof(PropertyGraph::RelEntry, payload)            == 32); // firstPropId, needs 2 bytes padding
 
-struct PageRankPayload {
-    double  rank;
-    double  nextRank;
-    int32_t outDegree;
-};
-static_assert(sizeof(PageRankPayload)                    == 24);
-static_assert(offsetof(PageRankPayload, rank)            ==  0);
-static_assert(offsetof(PageRankPayload, nextRank)        ==  8);
-static_assert(offsetof(PageRankPayload, outDegree)       == 16);
 
-// TODO Replace with a choice of aligned graph types!
-// If we need three components and alignment 8, 
-// we can define a graph with Payload {i64, i64, i64}
-// This should be easy to generate for Claude...
-class PageRankGraph {
+// A graph with payload alignment 8, 24 bytes node data, 8 bytes rel data.
+class AlignmentGraph_8x3_8x1 {
 public:
-    const BuiltinGraph::Type TYPE = BuiltinGraph::Type::BUILTIN_PAGERANK_GRAPH;
-    using Base = Graph<PageRankPayload, uint64_t>;
+    struct Payload {
+        uint64_t a;
+        uint64_t b;
+        uint64_t c;
+    };
+
+    const BuiltinGraph::Type TYPE = BuiltinGraph::Type::BUILTIN_ALIGN_8X3_8X1_GRAPH;
+    using Base = Graph<Payload, uint64_t>;
     using NodeEntry = Base::NodeEntry;
     using RelEntry  = Base::RelEntry;
 
-    PageRankGraph(int32_t nodeCapacity, int32_t relCapacity)
+    AlignmentGraph_8x3_8x1(int32_t nodeCapacity, int32_t relCapacity)
         : graph_(nodeCapacity, relCapacity),
           nodeCap_(nodeCapacity), relCap_(relCapacity) {}
 
     node_id_t addNode() {
-        return graph_.addNode(PageRankPayload{0.0, 0.0, 0});
+        return graph_.addNode(Payload{0, 0, 0});
     }
     rel_id_t addRelationship(node_id_t from, node_id_t to) {
         return graph_.addRelationship(from, to, /*typeId=*/0, /*payload=*/0u);
     }
     void removeNode(node_id_t id)        { graph_.removeNode(id); }
     void removeRelationship(rel_id_t id) { graph_.removeRelationship(id); }
-
-    void    setRank(node_id_t id, double v)      { graph_.node(id).payload.rank = v; }
-    double  getRank(node_id_t id) const           { return graph_.node(id).payload.rank; }
-    void    setNextRank(node_id_t id, double v)   { graph_.node(id).payload.nextRank = v; }
-    double  getNextRank(node_id_t id) const        { return graph_.node(id).payload.nextRank; }
-    void    setOutDegree(node_id_t id, int32_t v) { graph_.node(id).payload.outDegree = v; }
-    int32_t getOutDegree(node_id_t id) const       { return graph_.node(id).payload.outDegree; }
 
     NodeEntry& node(node_id_t id) const { return graph_.node(id); }
     RelEntry&  rel(rel_id_t id)   const { return graph_.rel(id); }
@@ -202,19 +189,24 @@ public:
 
     void registerGraph();
 
-    static PageRankGraph* create(int32_t nodeCapacity, int32_t relCapacity);
-    static void destroy(PageRankGraph* g) { delete g; }
+    static AlignmentGraph_8x3_8x1* create(int32_t nodeCapacity, int32_t relCapacity);
+    static void destroy(AlignmentGraph_8x3_8x1* g) { delete g; }
     void clear() { graph_.clear(); }
 
 private:
     Base graph_;
     int32_t nodeCap_, relCap_;
-}; // PageRankGraph
+}; // AlignmentGraph_8x3_8x1
 
-static_assert(sizeof(PageRankGraph::NodeEntry)            == 40);
-static_assert(offsetof(PageRankGraph::NodeEntry, payload) == 16);
-static_assert(sizeof(PageRankGraph::RelEntry)             == 40);
-static_assert(offsetof(PageRankGraph::RelEntry, payload)  == 32);
+static_assert(sizeof(AlignmentGraph_8x3_8x1::Payload)      == 24);
+static_assert(offsetof(AlignmentGraph_8x3_8x1::Payload, a) ==  0);
+static_assert(offsetof(AlignmentGraph_8x3_8x1::Payload, b) ==  8);
+static_assert(offsetof(AlignmentGraph_8x3_8x1::Payload, c) == 16);
+
+static_assert(sizeof(AlignmentGraph_8x3_8x1::NodeEntry)            == 40);
+static_assert(offsetof(AlignmentGraph_8x3_8x1::NodeEntry, payload) == 16);
+static_assert(sizeof(AlignmentGraph_8x3_8x1::RelEntry)             == 40);
+static_assert(offsetof(AlignmentGraph_8x3_8x1::RelEntry, payload)  == 32);
 
 } // namespace lingodb::runtime
 
