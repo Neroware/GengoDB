@@ -43,7 +43,7 @@ using namespace lingodb::compiler::dialect;
 using namespace gengodb::compiler::dialect;
 using Member = subop::Member;
 using LocalIdentifierMapping = llvm::DenseMap<mlir::StringRef, mlir::Value>;
-using BlankNodeMapping = llvm::DenseMap<gpm::BasicGraphPatternOp, LocalIdentifierMapping>;
+using BlankNodeMapping = llvm::DenseMap<Operation*, std::shared_ptr<LocalIdentifierMapping>>;
 struct GPMToSubOpLoweringPass
    : public PassWrapper<GPMToSubOpLoweringPass, OperationPass<ModuleOp>> {
    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(GPMToSubOpLoweringPass)
@@ -102,21 +102,22 @@ class NamedGraphLowering : public OpConversionPattern<gpm::NamedGraphOp> {
       auto ctxt = rewriter.getContext();
       auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
       
+      std::string graphGroup = namedGraphOp.getDef().getName().getRootReference().str();
       std::string graphName = namedGraphOp.getDef().getName().getLeafReference().str();
       auto graphNameAttr = StringAttr::get(ctxt, graphName);
 
       auto allItType = gsubop::GraphSetIteratorType::get(ctxt, mlir::ArrayAttr::get(ctxt, {StringAttr::get(ctxt, "all")}));
-      auto nodeSetItMember = createMember(ctxt, graphName + "_vx_it", allItType);
+      auto nodeSetItMember = createMember(ctxt, graphGroup + "_" + graphName + "_vx_it", allItType);
       auto nodeSetType = gsubop::NodeSetType::get(ctxt, createStateMembersAttr(ctxt, {nodeSetItMember}));
-      auto edgeSetItMember = createMember(ctxt, graphName + "_ex_it", allItType);
+      auto edgeSetItMember = createMember(ctxt, graphGroup + "_" + graphName + "_ex_it", allItType);
       auto edgeSetType = gsubop::EdgeSetType::get(ctxt, createStateMembersAttr(ctxt, {edgeSetItMember}));
-      auto nodeSetMember = createMember(ctxt, graphName + "_vx", nodeSetType);
-      auto edgeSetMember = createMember(ctxt, graphName + "_ex", edgeSetType);
+      auto nodeSetMember = createMember(ctxt, graphGroup + "_" + graphName + "_vx", nodeSetType);
+      auto edgeSetMember = createMember(ctxt, graphGroup + "_" + graphName + "_ex", edgeSetType);
       auto graphType = gsubop::GraphType::get(ctxt, createStateMembersAttr(ctxt, {nodeSetMember}), createStateMembersAttr(ctxt, {edgeSetMember}));
       
-      auto nodeSetDef = columnManager.createDef(graphName, "nodes");
+      auto nodeSetDef = columnManager.createDef(graphGroup, graphName + "_nodes");
       nodeSetDef.getColumn().type = nodeSetType;
-      auto edgeSetDef = columnManager.createDef(graphName, "edges");
+      auto edgeSetDef = columnManager.createDef(graphGroup, graphName + "_edges");
       edgeSetDef.getColumn().type = edgeSetType;
       mlir::Value graphRef = rewriter.create<gsubop::GetExternalGraphOp>(namedGraphOp->getLoc(), graphType, graphNameAttr, namedGraphOp.getGraph());
       rewriter.replaceOpWithNewOp<gsubop::ScanGraphOp>(namedGraphOp, graphRef, nodeSetDef, edgeSetDef);
@@ -126,12 +127,36 @@ class NamedGraphLowering : public OpConversionPattern<gpm::NamedGraphOp> {
 };
 
 class BasicGraphPatternLowering : public OpConversionPattern<gpm::BasicGraphPatternOp> {
-   const BlankNodeMapping& blankNodes;
+   BlankNodeMapping& blankNodes;
    public:
-   BasicGraphPatternLowering(TypeConverter& typeConverter, MLIRContext* context, const BlankNodeMapping& blankNodes)
+   BasicGraphPatternLowering(TypeConverter& typeConverter, MLIRContext* context, BlankNodeMapping& blankNodes)
       : OpConversionPattern<gpm::BasicGraphPatternOp>(typeConverter, context), blankNodes(blankNodes) {}
    LogicalResult matchAndRewrite(gpm::BasicGraphPatternOp basicGraphPatternOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
-      return failure();
+      auto& block = basicGraphPatternOp.getPattern().front();
+      IRMapping mapping;
+      auto localIdents = std::make_shared<LocalIdentifierMapping>();
+      if (!block.getArguments().empty()) {
+         mapping.map(block.getArguments()[0], adaptor.getRel());
+      }
+      rewriter.setInsertionPoint(basicGraphPatternOp);
+      mlir::Value lastResult = adaptor.getRel();
+      SmallVector<Operation*> ops;
+      for (auto& op : block.without_terminator()) {
+         ops.push_back(&op);
+      }
+      for (auto* op : ops) {
+         auto* newOp = rewriter.clone(*op, mapping);
+         blankNodes.insert(std::make_pair(newOp, localIdents));
+         for (auto [origRes, newRes] : llvm::zip(op->getResults(), newOp->getResults())) {
+            mapping.map(origRes, newRes);
+         }
+         if (newOp->getNumResults() > 0) {
+            lastResult = newOp->getResult(0);
+         }
+      }
+      rewriter.replaceOp(basicGraphPatternOp, lastResult);
+      // basicGraphPatternOp->getParentOfType<ModuleOp>().dump();
+      return success();
    }
 };
 
@@ -142,6 +167,15 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       : OpConversionPattern<gpm::TriplePatternOp>(typeConverter, context), blankNodes(blankNodes) {}
    LogicalResult matchAndRewrite(gpm::TriplePatternOp triplePatternOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
       return failure();
+   }
+   private:
+   static bool isBound(mlir::Attribute term, const LocalIdentifierMapping& localIdents) {
+      if (mlir::isa<gpm::IdentifierTermAttr>(term)) return true;
+      if (auto var = mlir::dyn_cast<gpm::VariableTermAttr>(term))
+         return var.hasBinding();
+      if (auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(term))
+         return localIdents.count(bnode.getLocalId()) > 0;
+      return false;
    }
 };
 
