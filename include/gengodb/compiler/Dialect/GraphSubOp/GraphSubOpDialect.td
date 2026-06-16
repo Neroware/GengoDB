@@ -129,8 +129,8 @@ def TypedPropertyRef : GraphSubOp_Type<"TypedPropertyRef", "typed_property_ref",
     let parameters = (ins "StateMembersAttr":$members);
     let assemblyFormat = "`<` custom<StateMembers>($members) `>`";
 }
-def TypeIdentifier : GraphSubOp_Type<"TypeIdentifier", "type_identifier", []> {
-    let summary = "type identifier";
+def Identifier : GraphSubOp_Type<"Identifier", "identifier", []> {
+    let summary = "identifier";
 }
 
 //===----------------------------------------------------------------------===//

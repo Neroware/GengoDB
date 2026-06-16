@@ -5272,31 +5272,42 @@ private:
    }
 };
 
-class CreateGraphTypeLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::CreateTypeOp> {
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::CreateTypeOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::CreateTypeOp createTypeOp) const override {
-      return success();
-   }
-   void rewrite(gsubop::CreateTypeOp createTypeOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
-      auto loc = createTypeOp->getLoc();
+class CreateIdentifierLowering : public SubOpConversionPattern<gsubop::CreateIdentifierOp> {
+   using SubOpConversionPattern<gsubop::CreateIdentifierOp>::SubOpConversionPattern;
+   LogicalResult matchAndRewrite(gsubop::CreateIdentifierOp createOp, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
+      auto loc = createOp->getLoc();
       // TODO Do lookup at compile time here!
       int id = 42;
-      auto typeI32 = rewriter.create<arith::ConstantOp>(loc, rewriter.getIntegerAttr(rewriter.getI32Type(), id));
-      mapping.define(createTypeOp.getProducedReference(), typeI32);
-      rewriter.replaceTupleStream(createTypeOp, mapping);
+      mlir::Value typeI32 = rewriter.create<arith::ConstantOp>(loc, rewriter.getIntegerAttr(rewriter.getI32Type(), id));
+      rewriter.replaceOp(createOp, typeI32);
+      return success();
    }
 };
 
-class FilterByGraphTypeLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::FilterByTypeOp> {
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::FilterByTypeOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::FilterByTypeOp filterOp) const override {
+class CreateIdentifierStateLowering : public SubOpConversionPattern<gsubop::CreateIdentifierStateOp> {
+   using SubOpConversionPattern<gsubop::CreateIdentifierStateOp>::SubOpConversionPattern;
+   LogicalResult matchAndRewrite(gsubop::CreateIdentifierStateOp createOp, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
+      auto loc = createOp->getLoc();
+      // TODO Do lookup at compile time here!
+      int id = 1;
+      mlir::Value typeI32 = rewriter.create<arith::ConstantOp>(loc, rewriter.getIntegerAttr(rewriter.getI32Type(), id));
+      mlir::Value ref = rewriter.create<util::AllocaOp>(createOp->getLoc(), typeConverter->convertType(createOp.getType()), mlir::Value());
+      rewriter.create<util::StoreOp>(loc, typeI32, ref, mlir::Value());
+      rewriter.replaceOp(createOp, ref);
+      return success();
+   }
+};
+
+class FilterByIdentifierLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::FilterByIdentifierOp> {
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::FilterByIdentifierOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::FilterByIdentifierOp filterOp) const override {
       if (mlir::isa<gsubop::NodeRefType>(filterOp.getRef().getColumn().type) 
          || mlir::isa<gsubop::EdgeRefType>(filterOp.getRef().getColumn().type) 
          || mlir::isa<gsubop::PropertyRefType>(filterOp.getRef().getColumn().type))
             return success();
       return failure();
    }
-   void rewrite(gsubop::FilterByTypeOp filterOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+   void rewrite(gsubop::FilterByIdentifierOp filterOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
       auto loc = filterOp.getLoc();
       auto ctxt = filterOp.getContext();
       auto nodeRefType = mlir::dyn_cast_or_null<gsubop::NodeRefType>(filterOp.getRef().getColumn().type);
@@ -5308,7 +5319,7 @@ class FilterByGraphTypeLowering : public SubOpTupleStreamConsumerConversionPatte
       refType = propRefType ? getPropertyEntryType(propRefType, *typeConverter) : refType;
       auto ptr = mapping.resolve(filterOp, filterOp.getRef());
       auto ref = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, refType), ptr);
-      auto identI32 = mapping.resolve(filterOp, filterOp.getTypeRef());
+      auto identI32 = adaptor.getIdent();
       mlir::Value typeI32;
       if (nodeRefType) {
          typeI32 = rt::GraphStorage::nodeId(rewriter, loc)({ptr})[0];
@@ -5449,8 +5460,9 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    patterns.insertPattern<LookupGraphSetLowering>(typeConverter, ctxt);
    //PropertyGraph
    patterns.insertPattern<ScanPropertySetLowering>(typeConverter, ctxt);
-   patterns.insertPattern<CreateGraphTypeLowering>(typeConverter, ctxt);
-   patterns.insertPattern<FilterByGraphTypeLowering>(typeConverter, ctxt);
+   patterns.insertPattern<CreateIdentifierLowering>(typeConverter, ctxt);
+   patterns.insertPattern<CreateIdentifierStateLowering>(typeConverter, ctxt);
+   patterns.insertPattern<FilterByIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<CastPropertyRefLowering>(typeConverter, ctxt);
    patterns.insertPattern<TypedPropertyRefGatherOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<TypedPropertyRefScatterOpLowering>(typeConverter, ctxt);
@@ -5707,8 +5719,8 @@ void SubOpToControlFlowLoweringPass::runOnOperation() {
    typeConverter.addConversion([&](gsubop::PropertyRefType t) -> Type {
       return util::RefType::get(t.getContext(), getPropertyEntryType(t, typeConverter));
    });
-   typeConverter.addConversion([&](gsubop::TypeIdentifierType t) -> Type {
-      return util::RefType::get(t.getContext(), mlir::IntegerType::get(ctxt, 32));
+   typeConverter.addConversion([&](gsubop::IdentifierType t) -> Type {
+      return mlir::IntegerType::get(ctxt, 32);
    });
 
    //basic tuple stream manipulation

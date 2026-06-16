@@ -134,25 +134,28 @@ def ScanPropertySetOp : GraphSubOp_Op<"scan_property_set", [Pure,SubOperator,Ref
 }
 
 //===----------------------------------------------------------------------===//
-// Relationship filtering by type
+// Relationship filtering by identifier
 //===----------------------------------------------------------------------===//
 
-def CreateTypeOp : GraphSubOp_Op<"create_type", [Pure,SubOperator,ReferenceProducer]> {
-    let summary = "create graph type";
-    let arguments = (ins TupleStream : $stream, ColumnDefAttr:$typeRef, StrAttr:$type);
-    let results = (outs TupleStream : $res);
-    let assemblyFormat = [{  $stream $type `->`  custom<CustDef>($typeRef) attr-dict }];
-    let extraClassDeclaration = [{
-        lingodb::compiler::dialect::tuples::ColumnDefAttr getProducedReference(){ return getTypeRef(); }
-        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
-    }];
+def CreateIdentifierOp : GraphSubOp_Op<"create_identifier", [Pure]> {
+    let summary = "create type identifier";
+    let arguments = (ins StrAttr:$ident);
+    let results = (outs Identifier : $res);
+    let assemblyFormat = [{  $ident `:` type($res) attr-dict }];
 }
 
-def FilterByTypeOp : GraphSubOp_Op<"filter_by_type", [Pure,SubOperator]> {
-    let summary = "filter graph ref by type";
-    let arguments = (ins TupleStream : $stream, ColumnRefAttr : $ref, ColumnRefAttr : $typeRef);
+def CreateIdentifierStateOp : GraphSubOp_Op<"create_identifier_state", [Pure,StateCreator]> {
+    let summary = "create type identifier state";
+    let arguments = (ins StrAttr:$ident);
+    let results = (outs SimpleState : $res);
+    let assemblyFormat = [{  $ident `:` type($res) attr-dict }];
+}
+
+def FilterByIdentifierOp : GraphSubOp_Op<"filter_by_identifier", [Pure,SubOperator]> {
+    let summary = "filter graph ref by identifier";
+    let arguments = (ins TupleStream : $stream, ColumnRefAttr : $ref, Identifier : $ident);
     let results = (outs TupleStream : $res);
-    let assemblyFormat = [{  $stream custom<CustRef>($ref) `of` `type` custom<CustRef>($typeRef) attr-dict }];
+    let assemblyFormat = [{  $stream custom<CustRef>($ref) `[` $ident `]` attr-dict }];
     let extraClassDeclaration = [{
         mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
     }];

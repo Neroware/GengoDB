@@ -211,15 +211,8 @@ mlir::Operation* gsubop::NodeDegreeOp::cloneSubOp(mlir::OpBuilder& builder, mlir
    return newOp;
 }
 
-mlir::Operation* gsubop::CreateTypeOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
-   auto newOp = builder.create<CreateTypeOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getTypeRef(), getType());
-   mapResults(mapping, this->getOperation(), newOp.getOperation());
-
-   return newOp;
-}
-
-mlir::Operation* gsubop::FilterByTypeOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
-   auto newOp = builder.create<FilterByTypeOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getRef(), getTypeRef());
+mlir::Operation* gsubop::FilterByIdentifierOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
+   auto newOp = builder.create<FilterByIdentifierOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getRef(), getIdent());
    mapResults(mapping, this->getOperation(), newOp.getOperation());
 
    return newOp;
