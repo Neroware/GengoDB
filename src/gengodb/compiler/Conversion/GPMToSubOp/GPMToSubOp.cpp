@@ -13,6 +13,7 @@
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpsTypes.h"
 #include "lingodb/compiler/Dialect/SubOperator/Utils.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
+#include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgDialect.h"
 #include "lingodb/compiler/Dialect/util/FunctionHelper.h"
 #include "lingodb/compiler/Dialect/util/UtilDialect.h"
 #include "lingodb/compiler/Dialect/util/UtilOps.h"
@@ -247,7 +248,10 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
          stream = lowerSubjectFirst(rewriter, loc, stream, triplePatternOp, localIdents, columnManager);
       else if (isBound(triplePatternOp.getO(), localIdents))
          return failure();
-      return failure();
+      else
+         return failure();
+      rewriter.replaceOp(triplePatternOp, stream);
+      return success();
    }
    private:
    mlir::Value lowerSubjectFirst(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, gpm::TriplePatternOp op, LocalIdentifierMapping& localIdents, tuples::ColumnManager& columnManager) const {
@@ -301,8 +305,9 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
          auto [edgeRefColumnDef, edgeRefColumnRef] = createColumn(edgeRefType, group, graph, "edgeref");
          mlir::Value inner = rewriter.create<gsubop::ScanEdgeSetOp>(loc, edgeSetArg, edgeRefColumnDef);
          inner = lowerPredicate(rewriter, loc, inner, op.getP(), edgeRefColumnRef, edgeRefType, columnManager);
+         inner = lowerTerm(rewriter, loc, inner, op.getO(), edgeRefType.getToMembers().getMembers()[0], edgeRefColumnRef, localIdents, columnManager);
          rewriter.create<tuples::ReturnOp>(loc, inner);
-         nestedMapOp->getParentOfType<ModuleOp>().dump();
+         // nestedMapOp->getParentOfType<ModuleOp>().dump();
       }
       stream = nestedMapOp;
       return stream;
@@ -314,8 +319,8 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       }
       else if (auto varPred = mlir::dyn_cast<gpm::VariableTermAttr>(p)) {
          if (varPred.hasBinding()) {
-            auto [bindingDef, bindingRef] = createColumn(rewriter.getI32Type(), "edges", "binding");
-            auto [idDef, idRef] = createColumn(rewriter.getI32Type(), "edges", "id");
+            auto [bindingDef, bindingRef] = createColumn(rewriter.getI32Type(), "edges", "id1"); // TODO add global counter!
+            auto [idDef, idRef] = createColumn(rewriter.getI32Type(), "edges", "id2");
             auto bindingType = mlir::cast<gsubop::EdgeRefType>(varPred.getBindingReference().getColumn().type);
             stream = rewriter.create<subop::GatherOp>(loc, stream, varPred.getBindingReference(), createColumnDefMemberMappingAttr(rewriter.getContext(), {{bindingType.getEdgeMembers().getMembers()[0], bindingDef}}));
             stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRefColumnRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{edgeRefType.getEdgeMembers().getMembers()[0], idDef}}));
@@ -334,6 +339,26 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
             stream = mapOp.getResult();
             stream = rewriter.create<subop::FilterOp>(loc, stream, subop::FilterSemantic::none_true, rewriter.getArrayAttr({filterRef}));
          }
+      }
+      return stream;
+   }
+   mlir::Value lowerTerm(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, mlir::Attribute term, Member nodeMember, tuples::ColumnRefAttr edgeRef, LocalIdentifierMapping& localIdents, tuples::ColumnManager& columnManager) const {
+      if (auto constTerm = mlir::dyn_cast<gpm::IdentifierTermAttr>(term)) {
+         auto [def, ref] = createColumn(nodeMember.internal->type, "nodes", "id");
+         auto ident = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(rewriter.getContext()), constTerm.getIdent());
+         stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeMember, def}}));
+         stream = rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, ref, ident);
+      }
+      else if (auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term)) {
+         if (varTerm.hasBinding()) {
+
+         }
+         else {
+
+         }
+      }
+      else if (auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(term)) {
+         assert(false && "BNodes not yet supported");
       }
       return stream;
    }
@@ -362,6 +387,7 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    target.addLegalDialect<db::DBDialect>();
    target.addLegalDialect<lingodb::compiler::dialect::arrow::ArrowDialect>();
 
+   target.addLegalDialect<relalg::RelAlgDialect>();
    target.addLegalDialect<tuples::TupleStreamDialect>();
    target.addLegalDialect<func::FuncDialect>();
    target.addLegalDialect<memref::MemRefDialect>();
