@@ -279,7 +279,7 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
             nodeRef = columnManager.createRef(def.getColumnPtr().get());
             mlir::Value lookup = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), scan, nodeSetArg, rewriter.getArrayAttr({ref}), def);
             rewriter.create<tuples::ReturnOp>(loc, lookup);
-            nestedMapOp->getParentOfType<ModuleOp>().dump();
+            // nestedMapOp->getParentOfType<ModuleOp>().dump();
          }
          stream = nestedMapOp.getRes();
       }
@@ -300,28 +300,41 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
          auto edgeRefType = createEdgeRefType(ctxt, group, graph);
          auto [edgeRefColumnDef, edgeRefColumnRef] = createColumn(edgeRefType, group, graph, "edgeref");
          mlir::Value inner = rewriter.create<gsubop::ScanEdgeSetOp>(loc, edgeSetArg, edgeRefColumnDef);
-         inner = lowerPredicate(rewriter, loc, inner, op.getP(), edgeRefColumnRef, columnManager);
+         inner = lowerPredicate(rewriter, loc, inner, op.getP(), edgeRefColumnRef, edgeRefType, columnManager);
          rewriter.create<tuples::ReturnOp>(loc, inner);
          nestedMapOp->getParentOfType<ModuleOp>().dump();
       }
       stream = nestedMapOp;
       return stream;
    }
-   mlir::Value lowerPredicate(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, mlir::Attribute p, tuples::ColumnRefAttr edgeRef, tuples::ColumnManager& columnManager) const {
+   mlir::Value lowerPredicate(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, mlir::Attribute p, tuples::ColumnRefAttr edgeRefColumnRef, gsubop::EdgeRefType edgeRefType, tuples::ColumnManager& columnManager) const {
       if (auto constPred = mlir::dyn_cast<gpm::IdentifierTermAttr>(p)) {
-         auto identDef = columnManager.createDef("idents", "pred");
-         stream = rewriter.create<gsubop::CreateIdentifierOp>(loc, stream, identDef, constPred.getIdent());
-         stream = rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, edgeRef, columnManager.createDef(identDef.getName()));
+         auto ident = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(rewriter.getContext()), constPred.getIdent());
+         stream = rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, edgeRefColumnRef, ident);
       }
       else if (auto varPred = mlir::dyn_cast<gpm::VariableTermAttr>(p)) {
-         if (!varPred.hasBinding()) {
-            // TODO filter out edge refs where binding ref and ref given as parameter are not identical.
-         }
-         else {
-            // TODO Scan the entire predicate set as a new binding.
+         if (varPred.hasBinding()) {
+            auto [bindingDef, bindingRef] = createColumn(rewriter.getI32Type(), "edges", "binding");
+            auto [idDef, idRef] = createColumn(rewriter.getI32Type(), "edges", "id");
+            auto bindingType = mlir::cast<gsubop::EdgeRefType>(varPred.getBindingReference().getColumn().type);
+            stream = rewriter.create<subop::GatherOp>(loc, stream, varPred.getBindingReference(), createColumnDefMemberMappingAttr(rewriter.getContext(), {{bindingType.getEdgeMembers().getMembers()[0], bindingDef}}));
+            stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRefColumnRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{edgeRefType.getEdgeMembers().getMembers()[0], idDef}}));
+            auto [filterDef, filterRef] = createColumn(rewriter.getI1Type(), "edges", "filter");
+            auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(rewriter.getContext()), stream, rewriter.getArrayAttr({filterDef}), rewriter.getArrayAttr({bindingRef, idRef}));
+            Block* mapBlock = new Block;
+            auto left = mapBlock->addArgument(rewriter.getI32Type(), loc);
+            auto right = mapBlock->addArgument(rewriter.getI32Type(), loc);
+            mapOp.getRegion().push_back(mapBlock);
+            {
+               mlir::OpBuilder::InsertionGuard guard(rewriter);
+               rewriter.setInsertionPointToStart(mapBlock);
+               mlir::Value val = rewriter.create<arith::CmpIOp>(loc, rewriter.getI1Type(), mlir::arith::CmpIPredicate::eq, left, right);
+               rewriter.create<tuples::ReturnOp>(loc, val);
+            }
+            stream = mapOp.getResult();
+            stream = rewriter.create<subop::FilterOp>(loc, stream, subop::FilterSemantic::none_true, rewriter.getArrayAttr({filterRef}));
          }
       }
-      stream.getDefiningOp()->getParentOfType<ModuleOp>().dump();
       return stream;
    }
 };
