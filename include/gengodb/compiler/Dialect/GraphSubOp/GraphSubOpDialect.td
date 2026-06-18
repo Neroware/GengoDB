@@ -116,13 +116,8 @@ def PropertySet : GraphSubOp_Type<"PropertySet", "property_set", [State,LookupAb
             }
         }];
 }
-def PropertyRef : GraphSubOp_Type<"PropertyRef", "property_ref", [State]> {
+def PropertyRef : GraphSubOp_Type<"PropertyRef", "property_ref", []> {
     let summary = "property reference";
-    let extraClassDeclaration = [{
-            StateMembersAttr getMembers(){
-            return lingodb::compiler::dialect::subop::StateMembersAttr::get(getContext(), {});
-            }
-        }];
 }
 def TypedPropertyRef : GraphSubOp_Type<"TypedPropertyRef", "typed_property_ref", [State]> {
     let summary = "typed property ref";
