@@ -116,11 +116,10 @@ static subop::ColumnDefMemberMappingAttr createColumnDefMemberMappingAttr(MLIRCo
 inline static gsubop::NodeRefType createNodeRefType(MLIRContext* ctxt, std::string group, std::string graph) {
    auto edgeSetType0 = createGraphSetType<gsubop::EdgeSetType>(ctxt, group, graph, "incoming", "incoming");
    auto edgeSetType1 = createGraphSetType<gsubop::EdgeSetType>(ctxt, group, graph, "outgoing", "outgoing");
-   auto propSetType = createGraphSetType<gsubop::PropertySetType>(ctxt, group, graph, "node", "node");
    auto nodeId = createMember(ctxt, memberName(graph, group, "node"), mlir::IntegerType::get(ctxt, 32));
    auto incoming = createMember(ctxt, memberName(graph, group, "incoming"), edgeSetType0);
    auto outgoing = createMember(ctxt, memberName(graph, group, "outgoing"), edgeSetType1);
-   auto property = createMember(ctxt, memberName(graph, group, "property"), propSetType);
+   auto property = createMember(ctxt, memberName(graph, group, "property"), gsubop::PropertyRefType::get(ctxt));
    return gsubop::NodeRefType::get(ctxt, 
       createStateMembersAttr(ctxt, {nodeId}), 
       createStateMembersAttr(ctxt, {incoming}), 
@@ -129,11 +128,10 @@ inline static gsubop::NodeRefType createNodeRefType(MLIRContext* ctxt, std::stri
    );
 }
 inline static gsubop::EdgeRefType createEdgeRefType(MLIRContext* ctxt, std::string group, std::string graph) {
-   auto propSetType = createGraphSetType<gsubop::PropertySetType>(ctxt, group, graph, "edge", "edge");
    auto edgeId = createMember(ctxt, memberName(graph, group, "edge"), mlir::IntegerType::get(ctxt, 32));
    auto from = createMember(ctxt, memberName(graph, group, "from"), createNodeRefType(ctxt, group, graph));
    auto to = createMember(ctxt, memberName(graph, group, "to"), createNodeRefType(ctxt, group, graph));
-   auto property = createMember(ctxt, memberName(graph, group, "property"), propSetType);
+   auto property = createMember(ctxt, memberName(graph, group, "property"), gsubop::PropertyRefType::get(ctxt));
    return gsubop::EdgeRefType::get(ctxt, 
       createStateMembersAttr(ctxt, {edgeId}), 
       createStateMembersAttr(ctxt, {from}), 
@@ -378,8 +376,11 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
          }
          else {
             auto ref = varTerm.getProducedBinding().getName();
-            auto def = createDef(columnManager, ref.getRootReference().str(), ref.getLeafReference().str(), memberManager.getType(nodeMember), false);
-            stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeMember, def}}));
+            auto def = createDef(columnManager, ref.getRootReference().str(), ref.getLeafReference().str(), gsubop::PropertyRefType::get(rewriter.getContext()), false);
+            auto [propRefColumnDef, propRefColumnRef] = createColumn(memberManager.getType(nodeMember), "nodes", "ref");
+            auto nodeRefType = mlir::cast<gsubop::NodeRefType>(memberManager.getType(nodeMember));
+            stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeMember, propRefColumnDef}}));
+            stream = rewriter.create<subop::GatherOp>(loc, stream, propRefColumnRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeRefType.getPropertyMembers().getMembers()[0], def}}));
          }
       }
       else if (auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(term)) {
