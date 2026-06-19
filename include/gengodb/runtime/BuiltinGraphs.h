@@ -3,7 +3,14 @@
 
 #include "gengodb/runtime/Graph.h"
 
+#include "gengodb/semantics/XSDType.h"
+
+namespace gengodb::semantics {
+    class IriDictionary;
+}
+
 namespace lingodb::runtime {
+using namespace gengodb::semantics;
 struct BuiltinGraph {
     enum Type {
         BUILTIN_SIMPLE_GRAPH = 0,
@@ -110,7 +117,15 @@ struct BlobTable {
 private:
     std::vector<std::pair<std::byte*, size_t>> blobs_;
     LegacyFixedSizedBuffer<std::byte> blobData_;
-};
+}; // BlobTable
+
+struct PropertyDataStorage {
+    std::vector<int64_t> lst_i64;
+    std::vector<uint64_t> lst_ui64;
+    std::vector<double> lst_double;
+    gengodb::semantics::IriDictionary* iris;
+    std::unordered_map<xsd::Type, std::unique_ptr<BlobTable>> blobs;
+}; // PropertyDataStorage
 
 class PropertyGraph {
 public:
@@ -166,6 +181,8 @@ public:
     static void destroy(PropertyGraph* g);
     void clear() { graph_.clear(); propMark_ = 0; freeProps_.clear(); }
 
+    PropertyDataStorage* getPropData() { return &propData_; }
+
 private:
     prop_id_t addPropertyToChain(prop_id_t& chainHead, uint32_t key, uint32_t type, uint32_t value);
     prop_id_t allocProp();
@@ -176,6 +193,7 @@ private:
     int32_t propMark_, propCap_;
     std::vector<prop_id_t> freeProps_;
     int32_t nodeCap_, relCap_;
+    PropertyDataStorage propData_;
 
 }; // PropertyGraph
 

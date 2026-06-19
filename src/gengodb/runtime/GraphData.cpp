@@ -2,6 +2,7 @@
 
 #include "gengodb/catalog/GraphCatalogEntry.h"
 #include "gengodb/semantics/XSDType.h"
+#include "gengodb/semantics/RdfGraph.h"
 
 namespace lingodb::runtime {
 using namespace gengodb::semantics;
@@ -196,10 +197,11 @@ namespace {
 
 struct XSDPropertyStringifier {
     xsd::Type type;
-    XSDPropertyStringifier(xsd::Type type) : type(type) {}
+    PropertyGraph* pgraph;
+    XSDPropertyStringifier(xsd::Type type, PropertyGraph* pgraph) : type(type), pgraph(pgraph) {}
     ~XSDPropertyStringifier() = default;
     template<typename T>
-    inline VarLen32 from_inlined(int32_t value) {
+    inline VarLen32 from_inlined(int32_t value) const {
         static_assert(sizeof(T) <= sizeof(int32_t));
         static_assert(std::is_trivially_copyable_v<T>);
         using Raw = std::conditional_t<sizeof(T) == 1, uint8_t,
@@ -209,14 +211,22 @@ struct XSDPropertyStringifier {
         T typed_value = std::bit_cast<T>(raw);
         return VarLen32::fromString("'" + std::to_string(typed_value) + "'^^xsd:" + xsd::to_string(type));
     }
-    inline VarLen32 from_bool(int32_t value) {
+    inline VarLen32 from_bool(int32_t value) const {
         using Raw = std::conditional_t<sizeof(bool) == 1, uint8_t,
                     std::conditional_t<sizeof(bool) == 2, uint16_t,
                     std::conditional_t<sizeof(bool) == 4, uint32_t, void>>>;
         Raw raw = static_cast<Raw>(static_cast<uint32_t>(value));
         bool typed_value = std::bit_cast<bool>(raw);
         return VarLen32::fromString(std::string(typed_value ? "'true'" : "'false'") + "^^xsd:" + xsd::to_string(type));
-    } 
+    }
+    inline VarLen32 from_str(int32_t value) const {
+        auto [ptr, len] = pgraph->getPropData()->blobs[xsd::Type::String]->get(value);
+        return VarLen32::fromString(std::string(reinterpret_cast<const char*>(ptr), len));
+    }
+    inline VarLen32 from_iri(int32_t value) {
+        IRI iri = pgraph->getPropData()->iris->get_iri(value);
+        return VarLen32::fromString("<" + static_cast<std::string>(iri) + ">");
+    }
 };
 
 } // namespace
@@ -226,7 +236,8 @@ VarLen32 XSDPropertyData::castStr(PropertyGraph::PropRecord* prop) {
         assert(false && "should not happen");
     }
     auto xsdtype = xsd::from_int32(static_cast<int32_t>(prop->type)).value();
-    XSDPropertyStringifier xsdStr(xsdtype);
+    XSDPropertyStringifier xsdStr(xsdtype, reinterpret_cast<PropertyGraph*>(
+        GraphStorage::graphPtr(reinterpret_cast<uint8_t*>(prop))));
     switch(xsdtype) {
         case xsd::Type::Boolean:        return xsdStr.from_bool(prop->value);
         case xsd::Type::Float:          return xsdStr.from_inlined<float>(prop->value);
