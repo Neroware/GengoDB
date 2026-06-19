@@ -5352,7 +5352,7 @@ class CastPropertyRefLowering : public SubOpTupleStreamConsumerConversionPattern
          return failure();
       }
       auto propType = propTupType.getTypes()[0];
-      if (mlir::isa<db::StringType>(castOp.getTypedRef().getColumn().type))
+      if (mlir::isa<db::StringType>(propType))
          return success();
       if (!isInlined(propType)) {
          assert(false && "Unsupported property member type.");
@@ -5366,14 +5366,20 @@ class CastPropertyRefLowering : public SubOpTupleStreamConsumerConversionPattern
       auto ref = mapping.resolve(castOp, castOp.getRef());
       auto typedRefType = mlir::cast<gsubop::TypedPropertyRefType>(castOp.getTypedRef().getColumn().type);
       auto propTupType = getPropertyType<EntryStorageHelper>(typedRefType, *typeConverter);
+      auto propType = propTupType.getTypes()[0];
       auto prop = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, rewriter.getI32Type()), ref, gsubop::PROPERTY_ENTRY_PROPERTY_VALUE_PTR);
-      if (propTupType.size() == 1 && isInlined(propTupType.getTypes()[0])) {
-         auto propRef = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, propTupType), prop);
-         mapping.define(castOp.getTypedRef(), propRef);
+      mlir::Value propRef;
+      if (isInlined(propType)) {
+         propRef = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, propTupType), prop);
+      }
+      else if (mlir::isa<db::StringType>(propType)) {
+         auto strRef = rt::GraphPropertyData::retreiveString(rewriter, loc)({ref})[0];
+         propRef = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, mlir::TupleType::get(ctxt, {propType})), strRef);
       }
       else {
          assert(false && "not implemented");
       }
+      mapping.define(castOp.getTypedRef(), propRef);
       rewriter.replaceTupleStream(castOp, mapping);
    }
 private:

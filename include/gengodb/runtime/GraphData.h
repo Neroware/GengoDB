@@ -76,8 +76,9 @@ static_assert(offsetof(Neo4JGraph::PropRecord, inUse)            ==  0);
 static_assert(offsetof(Neo4JGraph::PropRecord, nextPropId)       ==  1);
 
 struct GraphPropertyData {
-    VarLen32 getDummyStr() { return VarLen32::fromString("hello world"); }
-}; // GraphPropertyAccess
+    // VarLen32 getDummyStr() { return VarLen32::fromString("hello world"); }
+    static std::string* retreiveString(PropertyGraph::PropRecord* prop) { return new std::string("hello world"); }
+}; // GraphPropertyData
 
 } // namespace lingodb::runtime
 
