@@ -5377,7 +5377,7 @@ class CastPropertyRefLowering : public SubOpTupleStreamConsumerConversionPattern
          rewriter.atStartOf(&prop->getParentOfType<func::FuncOp>().getBlocks().front(), [&](SubOpRewriter& rewriter){
             strRef = rewriter.create<util::AllocaOp>(loc, util::RefType::get(ctxt, db::StringType::get(ctxt)), mlir::Value());
          });
-         auto str = rt::GraphPropertyData::castStr(rewriter, loc)({ref})[0];
+         auto str = rt::XSDPropertyData::castStr(rewriter, loc)({ref})[0];
          rewriter.create<util::StoreOp>(loc, str, strRef, mlir::Value());
          propRef = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, mlir::TupleType::get(ctxt, {propType})), strRef);
       }

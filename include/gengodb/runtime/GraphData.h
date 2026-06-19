@@ -75,7 +75,7 @@ static_assert(sizeof(Neo4JGraph::PropRecord)                     == 21);
 static_assert(offsetof(Neo4JGraph::PropRecord, inUse)            ==  0);
 static_assert(offsetof(Neo4JGraph::PropRecord, nextPropId)       ==  1);
 
-struct GraphPropertyData {
+struct XSDPropertyData {
     // VarLen32 getDummyStr() { return VarLen32::fromString("hello world"); }
     static VarLen32 castStr(PropertyGraph::PropRecord* prop);
 }; // GraphPropertyData

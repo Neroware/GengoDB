@@ -121,7 +121,7 @@ uint8_t* GraphData::allocAndPopulateBuiltinGraph(int32_t builtin) {
             g->addNodeProperty(0, 0, static_cast<uint32_t>(xsd::Type::Int), 424);
             g->addNodeProperty(1, 11, static_cast<uint32_t>(xsd::Type::Int), 100);
             g->addNodeProperty(1, 11, static_cast<uint32_t>(xsd::Type::Short), 101);
-            g->addNodeProperty(1, 11, static_cast<uint32_t>(xsd::Type::Boolean), 102);
+            g->addNodeProperty(1, 11, static_cast<uint32_t>(xsd::Type::Boolean), 0xffffffff);
             g->addNodeProperty(2, 22, static_cast<uint32_t>(xsd::Type::Int), 200);
             g->addNodeProperty(3, 33, static_cast<uint32_t>(xsd::Type::Int), 300);
             g->addNodeProperty(5, 55, static_cast<uint32_t>(xsd::Type::Int), 501);
@@ -193,41 +193,49 @@ PropertyGraph* GraphData::getGraph(lingodb::runtime::VarLen32 name, lingodb::run
 }
 
 namespace {
-template<typename T>
-inline VarLen32 from_inlined(int32_t value, xsd::Type type) {
-    static_assert(sizeof(T) <= sizeof(int32_t));
-    static_assert(std::is_trivially_copyable_v<T>);
-    using Raw = std::conditional_t<sizeof(T) == 1, uint8_t,
-                std::conditional_t<sizeof(T) == 2, uint16_t,
-                std::conditional_t<sizeof(T) == 4, uint32_t, void>>>;
-    Raw raw = static_cast<Raw>(static_cast<uint32_t>(value));
-    T typed_value = std::bit_cast<T>(raw);
-    return VarLen32::fromString(std::to_string(typed_value) + "^^xsd:" + xsd::to_string(type));
-}
-inline VarLen32 from_bool(int32_t value, xsd::Type type) {
-    using Raw = std::conditional_t<sizeof(bool) == 1, uint8_t,
-                std::conditional_t<sizeof(bool) == 2, uint16_t,
-                std::conditional_t<sizeof(bool) == 4, uint32_t, void>>>;
-    Raw raw = static_cast<Raw>(static_cast<uint32_t>(value));
-    bool typed_value = std::bit_cast<bool>(raw);
-    return VarLen32::fromString(std::string(typed_value ? "true" : "false") + "^^xsd:" + xsd::to_string(type));
-}
+
+struct XSDPropertyStringifier {
+    xsd::Type type;
+    XSDPropertyStringifier(xsd::Type type) : type(type) {}
+    ~XSDPropertyStringifier() = default;
+    template<typename T>
+    inline VarLen32 from_inlined(int32_t value) {
+        static_assert(sizeof(T) <= sizeof(int32_t));
+        static_assert(std::is_trivially_copyable_v<T>);
+        using Raw = std::conditional_t<sizeof(T) == 1, uint8_t,
+                    std::conditional_t<sizeof(T) == 2, uint16_t,
+                    std::conditional_t<sizeof(T) == 4, uint32_t, void>>>;
+        Raw raw = static_cast<Raw>(static_cast<uint32_t>(value));
+        T typed_value = std::bit_cast<T>(raw);
+        return VarLen32::fromString("'" + std::to_string(typed_value) + "'^^xsd:" + xsd::to_string(type));
+    }
+    inline VarLen32 from_bool(int32_t value) {
+        using Raw = std::conditional_t<sizeof(bool) == 1, uint8_t,
+                    std::conditional_t<sizeof(bool) == 2, uint16_t,
+                    std::conditional_t<sizeof(bool) == 4, uint32_t, void>>>;
+        Raw raw = static_cast<Raw>(static_cast<uint32_t>(value));
+        bool typed_value = std::bit_cast<bool>(raw);
+        return VarLen32::fromString(std::string(typed_value ? "'true'" : "'false'") + "^^xsd:" + xsd::to_string(type));
+    } 
+};
+
 } // namespace
 
-VarLen32 GraphPropertyData::castStr(PropertyGraph::PropRecord* prop) {
+VarLen32 XSDPropertyData::castStr(PropertyGraph::PropRecord* prop) {
     if (!xsd::from_int32(static_cast<int32_t>(prop->type)).has_value()) {
         assert(false && "should not happen");
     }
     auto xsdtype = xsd::from_int32(static_cast<int32_t>(prop->type)).value();
+    XSDPropertyStringifier xsdStr(xsdtype);
     switch(xsdtype) {
-        case xsd::Type::Boolean:        return from_bool(prop->value, xsdtype);
-        case xsd::Type::Float:          return from_inlined<float>(prop->value, xsdtype);
-        case xsd::Type::Int:            return from_inlined<uint32_t>(prop->value, xsdtype);
-        case xsd::Type::Short:          return from_inlined<int16_t>(prop->value, xsdtype);
-        case xsd::Type::Byte:           return from_inlined<int8_t>(prop->value, xsdtype);
-        case xsd::Type::UnsignedInt:    return from_inlined<int32_t>(prop->value, xsdtype);
-        case xsd::Type::UnsignedShort:  return from_inlined<uint16_t>(prop->value, xsdtype);
-        case xsd::Type::UnsignedByte:   return from_inlined<uint8_t>(prop->value, xsdtype);
+        case xsd::Type::Boolean:        return xsdStr.from_bool(prop->value);
+        case xsd::Type::Float:          return xsdStr.from_inlined<float>(prop->value);
+        case xsd::Type::Int:            return xsdStr.from_inlined<uint32_t>(prop->value);
+        case xsd::Type::Short:          return xsdStr.from_inlined<int16_t>(prop->value);
+        case xsd::Type::Byte:           return xsdStr.from_inlined<int8_t>(prop->value);
+        case xsd::Type::UnsignedInt:    return xsdStr.from_inlined<int32_t>(prop->value);
+        case xsd::Type::UnsignedShort:  return xsdStr.from_inlined<uint16_t>(prop->value);
+        case xsd::Type::UnsignedByte:   return xsdStr.from_inlined<uint8_t>(prop->value);
         default:                        return VarLen32::fromString("<<UNKNOWN TYPE>>");
     }
 }

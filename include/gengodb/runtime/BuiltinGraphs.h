@@ -67,6 +67,51 @@ static_assert(offsetof(SimpleGraph::RelEntry, payload)  == 32);
 
 using prop_id_t = int32_t;
 
+struct BlobTable {
+    BlobTable(size_t cap) : blobData_(cap) {}
+    ~BlobTable() = default;
+    std::pair<std::byte*, int32_t> alloc(size_t len) {
+        std::byte* ptr = blobData_.ptr;
+        if (!blobs_.empty()) {
+            ptr = blobs_.back().first + blobs_.back().second;
+        }
+        blobs_.push_back(std::make_pair(ptr, len));
+        const size_t index = blobs_.size() - 1;
+        if (index > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+            assert(false && "exceeded int32_t index range");
+        }
+        return std::make_pair(ptr, static_cast<int32_t>(index));
+    }
+    std::pair<std::byte*, size_t> get(int32_t idx) const {
+        return blobs_[idx];
+    }
+    template<typename T>
+    void store(int32_t idx, const T& value) {
+        static_assert(std::is_trivially_copyable_v<T>,
+            "T must be trivially copyable to store as a raw blob");
+        auto [ptr, len] = get(idx);
+        if (sizeof(T) > len) {
+            assert(false && "value size exceeds allocated blob length");
+        }
+        memcpy(ptr, &value, sizeof(T));
+    }
+    template<typename T>
+    T getValue(int32_t idx) const {
+        static_assert(std::is_trivially_copyable_v<T>,
+            "T must be trivially copyable to read back from a raw blob");
+        auto [ptr, len] = get(idx);
+        if (sizeof(T) > len) {
+            assert(false && "value size exceeds allocated blob length");
+        }
+        T value{};
+        memcpy(&value, ptr, sizeof(T));
+    return value;
+}
+private:
+    std::vector<std::pair<std::byte*, size_t>> blobs_;
+    LegacyFixedSizedBuffer<std::byte> blobData_;
+};
+
 class PropertyGraph {
 public:
     using Base = Graph<prop_id_t, prop_id_t>;
