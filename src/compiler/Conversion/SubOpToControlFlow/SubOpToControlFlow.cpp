@@ -5346,8 +5346,16 @@ class CastPropertyRefLowering : public SubOpTupleStreamConsumerConversionPattern
    LogicalResult match(gsubop::CastPropertyRefOp castOp) const override {
       if (!mlir::isa<gsubop::TypedPropertyRefType>(castOp.getTypedRef().getColumn().type))
          return failure();
-      if (!isInlined(getPropertyType<EntryStorageHelper>(mlir::cast<gsubop::TypedPropertyRefType>(castOp.getTypedRef().getColumn().type), *typeConverter))) {
-         assert(false && "No support for buffered property values yet.");
+      auto propTupType = getPropertyType<EntryStorageHelper>(mlir::cast<gsubop::TypedPropertyRefType>(castOp.getTypedRef().getColumn().type), *typeConverter);
+      if (propTupType.getTypes().size() != 1) {
+         assert(false && "Typed property refs with multiple members are not supported.");
+         return failure();
+      }
+      auto propType = propTupType.getTypes()[0];
+      if (mlir::isa<db::StringType>(castOp.getTypedRef().getColumn().type))
+         return success();
+      if (!isInlined(propType)) {
+         assert(false && "Unsupported property member type.");
          return failure();
       }
       return mlir::isa<gsubop::PropertyRefType>(castOp.getRef().getColumn().type) ? success() : failure();
@@ -5357,25 +5365,26 @@ class CastPropertyRefLowering : public SubOpTupleStreamConsumerConversionPattern
       auto ctxt = castOp.getContext();
       auto ref = mapping.resolve(castOp, castOp.getRef());
       auto typedRefType = mlir::cast<gsubop::TypedPropertyRefType>(castOp.getTypedRef().getColumn().type);
-      auto propType = getPropertyType<EntryStorageHelper>(typedRefType, *typeConverter);
+      auto propTupType = getPropertyType<EntryStorageHelper>(typedRefType, *typeConverter);
       auto prop = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, rewriter.getI32Type()), ref, gsubop::PROPERTY_ENTRY_PROPERTY_VALUE_PTR);
-      auto propRef = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, propType), prop);
-      mapping.define(castOp.getTypedRef(), propRef);
+      if (propTupType.size() == 1 && isInlined(propTupType.getTypes()[0])) {
+         auto propRef = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, propTupType), prop);
+         mapping.define(castOp.getTypedRef(), propRef);
+      }
+      else {
+         assert(false && "not implemented");
+      }
       rewriter.replaceTupleStream(castOp, mapping);
    }
 private:
-   bool isInlined(const mlir::TupleType& type) const {
-      if (type.getTypes().size() != 1) {
-         return false;
-      }
-      auto t = type.getTypes()[0];
+   bool isInlined(const mlir::Type& t) const {
       auto integerType = mlir::dyn_cast_or_null<mlir::IntegerType>(t);
       if (integerType) {
-         return integerType.getWidth() <= 64;
+         return integerType.getWidth() <= 32;
       }
       auto floatType = mlir::dyn_cast_or_null<mlir::FloatType>(t);
       if (floatType) {
-         return floatType.getWidth() <= 64;
+         return floatType.getWidth() <= 32;
       }
       return false;
    }

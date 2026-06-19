@@ -4,14 +4,14 @@
 #include "gengodb/runtime/BuiltinGraphs.h"
 
 namespace lingodb::runtime {
-
+using VarLen32 = lingodb::runtime::VarLen32;
 struct Neo4JGraph;
 struct GraphData {
     static uint8_t* allocAndPopulateBuiltinGraph(int32_t builtin);
     static SimpleGraph* allocSimpleGraphState(size_t nodeBufLen, size_t relBufLen);
     static PropertyGraph* allocPropertyGraphState(size_t nodeBufLen, size_t relBufLen, size_t propBufLen);
-    static void createGraph(lingodb::runtime::VarLen32 meta);
-    static PropertyGraph* getGraph(lingodb::runtime::VarLen32 name, lingodb::runtime::VarLen32 iri);
+    static void createGraph(VarLen32 meta);
+    static PropertyGraph* getGraph(VarLen32 name, VarLen32 iri);
     static std::unique_ptr<Neo4JGraph> serialize(const PropertyGraph& pg);
     static void deserialize(PropertyGraph& dst, const Neo4JGraph& g);
 }; // GraphHelper
@@ -74,6 +74,10 @@ static_assert(offsetof(Neo4JGraph::RelEntry, firstInChainMarker) == 33);
 static_assert(sizeof(Neo4JGraph::PropRecord)                     == 21);
 static_assert(offsetof(Neo4JGraph::PropRecord, inUse)            ==  0);
 static_assert(offsetof(Neo4JGraph::PropRecord, nextPropId)       ==  1);
+
+struct GraphPropertyData {
+    VarLen32 getDummyStr() { return VarLen32::fromString("hello world"); }
+}; // GraphPropertyAccess
 
 } // namespace lingodb::runtime
 

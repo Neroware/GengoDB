@@ -6,6 +6,8 @@
 #include "lingodb/compiler/Dialect/DB/IR/DBOps.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOps.h"
+#include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgDialect.h"
+#include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgOps.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorDialect.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorOps.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
@@ -13,7 +15,6 @@
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpsTypes.h"
 #include "lingodb/compiler/Dialect/SubOperator/Utils.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
-#include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgDialect.h"
 #include "lingodb/compiler/Dialect/util/FunctionHelper.h"
 #include "lingodb/compiler/Dialect/util/UtilDialect.h"
 #include "lingodb/compiler/Dialect/util/UtilOps.h"
@@ -381,6 +382,33 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
             auto nodeRefType = mlir::cast<gsubop::NodeRefType>(memberManager.getType(nodeMember));
             stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeMember, propRefColumnDef}}));
             stream = rewriter.create<subop::GatherOp>(loc, stream, propRefColumnRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeRefType.getPropertyMembers().getMembers()[0], def}}));
+            stream.getDefiningOp()->getParentOfType<func::FuncOp>().walk([&](relalg::MaterializeOp op){
+               auto ctxt = rewriter.getContext();
+               if (!mlir::isa<subop::LocalTableType>(op.getResult().getType()))
+                  return;
+               mlir::OpBuilder::InsertionGuard guard(rewriter);
+               rewriter.setInsertionPointAfter(op);
+               auto tableType = mlir::cast<subop::LocalTableType>(op.getResult().getType());
+               auto stream = op.getRel();
+               llvm::SmallVector<mlir::Attribute, 8> newColRefs;
+               for (size_t i = 0; i < op.getCols().size(); i++) {
+                  auto colRef = mlir::cast<tuples::ColumnRefAttr>(op.getCols()[i]);
+                  if (!mlir::isa<gsubop::PropertyRefType>(colRef.getColumn().type)) {
+                     newColRefs.push_back(colRef);
+                     continue;
+                  }
+                  auto tableMember = tableType.getMembers().getMembers()[i];
+                  auto refMember = createMember(ctxt, memberName("propRef"), memberManager.getType(tableMember));
+                  auto typedPropRefType = gsubop::TypedPropertyRefType::get(ctxt, subop::StateMembersAttr::get(ctxt, {refMember}));
+                  auto [newColDef, newColRef] = createColumn(typedPropRefType, "vars", "ref");
+                  auto [newValDef, newValRef] = createColumn(memberManager.getType(tableMember), "vars", "value");
+                  stream = rewriter.create<gsubop::CastPropertyRefOp>(loc, stream, colRef, newColDef);
+                  stream = rewriter.create<subop::GatherOp>(loc, stream, newColRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{refMember, newValDef}}));
+                  newColRefs.push_back(newValRef);
+               }
+               auto newOp = rewriter.create<relalg::MaterializeOp>(loc, tableType, stream, ArrayAttr::get(ctxt, newColRefs), op.getColumns());
+               rewriter.replaceOp(op, newOp);
+            });
          }
       }
       else if (auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(term)) {
