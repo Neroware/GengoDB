@@ -1,8 +1,10 @@
 #include "gengodb/runtime/GraphData.h"
 
 #include "gengodb/catalog/GraphCatalogEntry.h"
+#include "gengodb/semantics/XSDType.h"
 
 namespace lingodb::runtime {
+using namespace gengodb::semantics;
 
 std::unique_ptr<Neo4JGraph> GraphData::serialize(const PropertyGraph& pg) {
    auto neo = std::make_unique<Neo4JGraph>(
@@ -116,14 +118,14 @@ uint8_t* GraphData::allocAndPopulateBuiltinGraph(int32_t builtin) {
             g->addRelationship(1, 4, 0);
             g->addRelationship(2, 4, 0);
             g->addRelationship(2, 3, 0);
-            g->addNodeProperty(0, 0, 0, 424);
-            g->addNodeProperty(1, 11, 11, 100);
-            g->addNodeProperty(1, 11, 11, 101);
-            g->addNodeProperty(1, 11, 11, 102);
-            g->addNodeProperty(2, 22, 22, 200);
-            g->addNodeProperty(3, 33, 33, 300);
-            g->addNodeProperty(5, 55, 55, 501);
-            g->addNodeProperty(5, 55, 55, 502);
+            g->addNodeProperty(0, 0, static_cast<uint32_t>(xsd::Type::Int), 424);
+            g->addNodeProperty(1, 11, static_cast<uint32_t>(xsd::Type::Int), 100);
+            g->addNodeProperty(1, 11, static_cast<uint32_t>(xsd::Type::Int), 101);
+            g->addNodeProperty(1, 11, static_cast<uint32_t>(xsd::Type::Int), 102);
+            g->addNodeProperty(2, 22, static_cast<uint32_t>(xsd::Type::Int), 200);
+            g->addNodeProperty(3, 33, static_cast<uint32_t>(xsd::Type::Int), 300);
+            g->addNodeProperty(5, 55, static_cast<uint32_t>(xsd::Type::Int), 501);
+            g->addNodeProperty(5, 55, static_cast<uint32_t>(xsd::Type::Int), 502);
             g->addRelProperty(0, 0, 0, 4242);
             g->addRelProperty(1, 11, 11, 1000);
             g->addRelProperty(2, 22, 22, 2000);
@@ -187,6 +189,30 @@ PropertyGraph* GraphData::getGraph(lingodb::runtime::VarLen32 name, lingodb::run
     } else {
         // TODO Load local file (file://) or download graph from the semantic web (http://)
         throw std::runtime_error("could not find graph");
+    }
+}
+
+template<typename T>
+inline VarLen32 inlinedStr(int32_t value, xsd::Type type) {
+    static_assert(sizeof(T) <= sizeof(int32_t));
+    static_assert(std::is_trivially_copyable_v<T>);
+    using Raw = std::conditional_t<sizeof(T) == 1, uint8_t,
+                std::conditional_t<sizeof(T) == 2, uint16_t,
+                std::conditional_t<sizeof(T) == 4, uint32_t, void>>>;
+    Raw raw = static_cast<Raw>(static_cast<uint32_t>(value));
+    T typed_value = std::bit_cast<T>(raw);
+    return VarLen32::fromString(std::to_string(typed_value) + "^^xsd:" + xsd::to_string(type));
+}
+
+VarLen32 GraphPropertyData::castStr(PropertyGraph::PropRecord* prop) {
+    if (!xsd::from_int32(static_cast<int32_t>(prop->type)).has_value()) {
+        assert(false && "should not happen");
+    }
+    auto xsdtype = xsd::from_int32(static_cast<int32_t>(prop->type)).value();
+    switch(xsdtype) {
+        case xsd::Type::Int:            return inlinedStr<uint32_t>(prop->value, xsdtype);
+        case xsd::Type::UnsignedInt:    return inlinedStr<int32_t>(prop->value, xsdtype);
+        default:                        return VarLen32::fromString("<<UNKNOWN TYPE>>");
     }
 }
 
