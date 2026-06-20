@@ -149,6 +149,9 @@ public:
         inline int32_t     add_ui64(uint64_t v) { lst_ui64.push_back(v); return static_cast<int32_t>(lst_ui64.size() - 1); }
         inline double      get_double(int32_t idx) const { return lst_ui64[idx]; }
         inline int32_t     add_double(double v) { lst_double.push_back(v); return static_cast<int32_t>(lst_double.size() - 1); }
+        
+        inline identifier_t id(int32_t idx) const;
+        inline void set_id_storage(IdentifierStorageT identifiers_) { identifiers = identifiers_; }
 
         template<xsd::Type t> 
         inline std::pair<std::byte*, size_t> get_blob(int32_t idx) const { return blobs.at(t)->get(idx); }
@@ -159,8 +162,6 @@ public:
             }
             return blobs.at(t)->get(idx); 
         }
-
-        inline identifier_t id(int32_t idx) const;
 
         private:
         std::vector<int64_t> lst_i64;
