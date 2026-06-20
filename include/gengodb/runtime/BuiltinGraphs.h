@@ -139,37 +139,45 @@ public:
     };
 
     struct PropertyData {
-        using IdentifierStorageT = IriDictionary*;
-        using identifier_t = rdf4cpp::IRI;
         using BlobTableT = std::unordered_map<xsd::Type, std::unique_ptr<BlobTable>>;
 
-        inline int64_t     get_i64(int32_t idx) const { return lst_i64[idx]; }
-        inline int32_t     add_i64(int64_t v) { lst_i64.push_back(v); return static_cast<int32_t>(lst_i64.size() - 1); }
-        inline uint64_t    get_ui64(int32_t idx) const { return lst_ui64[idx]; }
-        inline int32_t     add_ui64(uint64_t v) { lst_ui64.push_back(v); return static_cast<int32_t>(lst_ui64.size() - 1); }
-        inline double      get_double(int32_t idx) const { return lst_ui64[idx]; }
-        inline int32_t     add_double(double v) { lst_double.push_back(v); return static_cast<int32_t>(lst_double.size() - 1); }
-        
-        inline identifier_t id(int32_t idx) const;
-        inline void set_id_storage(IdentifierStorageT identifiers_) { identifiers = identifiers_; }
+        inline int64_t     get_i64(int32_t idx) const { return lst_i64_[idx]; }
+        inline int32_t     add_i64(int64_t v) { lst_i64_.push_back(v); return static_cast<int32_t>(lst_i64_.size() - 1); }
+        inline uint64_t    get_ui64(int32_t idx) const { return lst_ui64_[idx]; }
+        inline int32_t     add_ui64(uint64_t v) { lst_ui64_.push_back(v); return static_cast<int32_t>(lst_ui64_.size() - 1); }
+        inline double      get_double(int32_t idx) const { return lst_ui64_[idx]; }
+        inline int32_t     add_double(double v) { lst_double_.push_back(v); return static_cast<int32_t>(lst_double_.size() - 1); }
 
         template<xsd::Type t> 
-        inline std::pair<std::byte*, size_t> get_blob(int32_t idx) const { return blobs.at(t)->get(idx); }
+        inline std::pair<std::byte*, size_t> get_blob(int32_t idx) const { return blobs_.at(t)->get(idx); }
         template<xsd::Type t, size_t blob_size = 1024> 
         inline std::pair<std::byte*, int32_t> add_blob(int32_t idx) {
-            if (!blobs.contains(t)) {
-                blobs.insert(std::make_pair(t, std::make_unique<BlobTable>(blob_size)));
+            if (!blobs_.contains(t)) {
+                blobs_.insert(std::make_pair(t, std::make_unique<BlobTable>(blob_size)));
             }
-            return blobs.at(t)->get(idx); 
+            return blobs_.at(t)->get(idx); 
         }
 
         private:
-        std::vector<int64_t> lst_i64;
-        std::vector<uint64_t> lst_ui64;
-        std::vector<double> lst_double;
-        BlobTableT blobs;
-        IdentifierStorageT identifiers;
-    }; 
+        std::vector<int64_t> lst_i64_;
+        std::vector<uint64_t> lst_ui64_;
+        std::vector<double> lst_double_;
+        BlobTableT blobs_;
+    };
+
+    struct Metadata {
+        using IdentifierStorageT = IriDictionary*;
+        using identifier_t = rdf4cpp::IRI;
+
+        identifier_t id(int32_t idx) const;
+        inline void set_id_storage(IdentifierStorageT is) { identifiers_ = is; }
+        inline identifier_t& name() const { return *name_; }
+        inline void set_name(identifier_t& n) { name_ = &n; }
+
+        private:
+        identifier_t* name_;
+        IdentifierStorageT identifiers_;
+    };
 
     PropertyGraph(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);
     ~PropertyGraph() = default;
@@ -210,6 +218,7 @@ public:
     void clear() { graph_.clear(); propMark_ = 0; freeProps_.clear(); }
 
     PropertyData& getPropData() { return propData_; }
+    Metadata& getMetadata() { return metadata_; }
 
 private:
     prop_id_t addPropertyToChain(prop_id_t& chainHead, uint32_t key, uint32_t type, uint32_t value);
@@ -222,6 +231,7 @@ private:
     std::vector<prop_id_t> freeProps_;
     int32_t nodeCap_, relCap_;
     PropertyData propData_;
+    Metadata metadata_;
 
 }; // PropertyGraph
 

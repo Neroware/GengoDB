@@ -234,7 +234,7 @@ struct XSDPropertyStringifier {
         return VarLen32::fromString(std::string(reinterpret_cast<const char*>(ptr), len));
     }
     inline VarLen32 from_iri(int32_t value) {
-        IRI iri = IRI{};// pgraph->getPropData()->iris->get_iri(value);
+        IRI iri = pgraph->getMetadata().id(value);
         return VarLen32::fromString("<" + static_cast<std::string>(iri) + ">");
     }
 };

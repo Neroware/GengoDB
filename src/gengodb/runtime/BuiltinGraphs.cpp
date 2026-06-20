@@ -145,8 +145,8 @@ PropertyGraph* PropertyGraph::create(int32_t nodeCapacity, int32_t relCapacity, 
 void PropertyGraph::destroy(PropertyGraph* g) {
    delete g;
 }
-PropertyGraph::PropertyData::identifier_t PropertyGraph::PropertyData::id(int32_t idx) const {
-    return identifiers->get_iri(idx);
+PropertyGraph::Metadata::identifier_t PropertyGraph::Metadata::id(int32_t idx) const {
+    return identifiers_->get_iri(idx);
 }
 
 AlignmentGraph_8x3_8x1* AlignmentGraph_8x3_8x1::create(int32_t nodeCapacity, int32_t relCapacity) {
