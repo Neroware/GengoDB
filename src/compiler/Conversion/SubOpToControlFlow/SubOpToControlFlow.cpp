@@ -5377,7 +5377,7 @@ class CastPropertyRefLowering : public SubOpTupleStreamConsumerConversionPattern
          rewriter.atStartOf(&prop->getParentOfType<func::FuncOp>().getBlocks().front(), [&](SubOpRewriter& rewriter){
             strRef = rewriter.create<util::AllocaOp>(loc, util::RefType::get(ctxt, db::StringType::get(ctxt)), mlir::Value());
          });
-         auto str = rt::XSDPropertyData::castStr(rewriter, loc)({ref})[0];
+         auto str = rt::PropertyData::lookupStr(rewriter, loc)({ref})[0];
          rewriter.create<util::StoreOp>(loc, str, strRef, mlir::Value());
          propRef = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, mlir::TupleType::get(ctxt, {propType})), strRef);
       }
@@ -5398,6 +5398,44 @@ private:
          return floatType.getWidth() <= 32;
       }
       return false;
+   }
+};
+
+class GraphRefToStringOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::GraphRefToStringOp> {
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::GraphRefToStringOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::GraphRefToStringOp castOp) const override {
+      auto refType = castOp.getRef().getColumn().type;
+      if (!mlir::isa<gsubop::NodeRefType>(refType) && !mlir::isa<gsubop::EdgeRefType>(refType) 
+         && !mlir::isa<gsubop::PropertyRefType>(refType)) {
+            return failure();
+      }
+      if (!mlir::isa<db::StringType>(castOp.getStrRef().getColumn().type)) {
+         return failure();
+      }
+      return success();
+   }
+   void rewrite(gsubop::GraphRefToStringOp castOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto loc = castOp.getLoc();
+      auto ctxt = rewriter.getContext();
+      auto ref = mapping.resolve(castOp, castOp.getRef());
+      auto refType = castOp.getRef().getColumn().type;
+      mlir::Value strRef, str;
+      rewriter.atStartOf(&ref.getDefiningOp()->getParentOfType<func::FuncOp>().getBlocks().front(), [&](SubOpRewriter& rewriter){
+         strRef = rewriter.create<util::AllocaOp>(loc, util::RefType::get(ctxt, db::StringType::get(ctxt)), mlir::Value());
+      });
+      if (mlir::isa<gsubop::NodeRefType>(refType)) {
+         str = rt::XSDString::fromNode(rewriter, loc)({ref})[0];
+      }
+      else if (mlir::isa<gsubop::EdgeRefType>(refType)) {
+         str = rt::XSDString::fromRel(rewriter, loc)({ref})[0];
+      }
+      else {
+         str = rt::XSDString::fromProp(rewriter, loc)({ref})[0];
+      }
+      rewriter.create<util::StoreOp>(loc, str, strRef, mlir::Value());
+      auto res = rewriter.create<util::LoadOp>(loc, strRef);
+      mapping.define(castOp.getStrRef(), res);
+      rewriter.replaceTupleStream(castOp, mapping);
    }
 };
 
@@ -5484,6 +5522,7 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    patterns.insertPattern<CreateIdentifierStateLowering>(typeConverter, ctxt);
    patterns.insertPattern<FilterByIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<CastPropertyRefLowering>(typeConverter, ctxt);
+   patterns.insertPattern<GraphRefToStringOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<TypedPropertyRefGatherOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<TypedPropertyRefScatterOpLowering>(typeConverter, ctxt);
 

@@ -225,5 +225,13 @@ mlir::Operation* gsubop::CastPropertyRefOp::cloneSubOp(mlir::OpBuilder& builder,
    return newOp;
 }
 
+mlir::Operation* gsubop::GraphRefToStringOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
+   auto newOp = builder.create<GraphRefToStringOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getRef(), getStrRef());
+   mapResults(mapping, this->getOperation(), newOp.getOperation());
+
+   return newOp;
+}
+
+
 #define GET_OP_CLASSES
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.cpp.inc"

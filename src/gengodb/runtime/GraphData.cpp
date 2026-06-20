@@ -193,6 +193,16 @@ PropertyGraph* GraphData::getGraph(lingodb::runtime::VarLen32 name, lingodb::run
     }
 }
 
+VarLen32 PropertyData::lookupStr(PropertyGraph::PropRecord* prop) {
+    if (prop->type != static_cast<uint32_t>(xsd::Type::String)) {
+        return VarLen32::fromString("");
+    }
+    PropertyGraph* pgraph = reinterpret_cast<PropertyGraph*>(
+        GraphStorage::graphPtr(reinterpret_cast<uint8_t*>(prop)));
+    auto [data, len] = pgraph->getPropData()->blobs[xsd::Type::String]->get(prop->value);
+    return VarLen32::fromString(std::string(reinterpret_cast<const char*>(data), len));
+}
+
 namespace {
 
 struct XSDPropertyStringifier {
@@ -224,14 +234,14 @@ struct XSDPropertyStringifier {
         return VarLen32::fromString(std::string(reinterpret_cast<const char*>(ptr), len));
     }
     inline VarLen32 from_iri(int32_t value) {
-        IRI iri = pgraph->getPropData()->iris->get_iri(value);
+        IRI iri = IRI{};// pgraph->getPropData()->iris->get_iri(value);
         return VarLen32::fromString("<" + static_cast<std::string>(iri) + ">");
     }
 };
 
 } // namespace
 
-VarLen32 XSDPropertyData::castStr(PropertyGraph::PropRecord* prop) {
+VarLen32 XSDString::fromProp(PropertyGraph::PropRecord* prop) {
     if (!xsd::from_int32(static_cast<int32_t>(prop->type)).has_value()) {
         assert(false && "should not happen");
     }
@@ -249,6 +259,17 @@ VarLen32 XSDPropertyData::castStr(PropertyGraph::PropRecord* prop) {
         case xsd::Type::UnsignedByte:   return xsdStr.from_inlined<uint8_t>(prop->value);
         default:                        return VarLen32::fromString("<<UNKNOWN TYPE>>");
     }
+}
+VarLen32 XSDString::fromNode(PropertyGraph::NodeEntry* node) {
+    if (node->payload < 0) {
+        return VarLen32::fromString("<<UNKNOWN NODE>>");
+    }
+    PropertyGraph* pgraph = reinterpret_cast<PropertyGraph*>(
+        GraphStorage::graphPtr(reinterpret_cast<uint8_t*>(node)));
+    return fromProp(&pgraph->prop(node->payload));
+}
+VarLen32 XSDString::fromRel(PropertyGraph::RelEntry* rel) {
+    return VarLen32::fromString("<<UNKNOWN RELATION>>");
 }
 
 } // namespace lingodb::runtime

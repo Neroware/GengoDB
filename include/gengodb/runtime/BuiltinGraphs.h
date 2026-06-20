@@ -5,10 +5,6 @@
 
 #include "gengodb/semantics/XSDType.h"
 
-namespace gengodb::semantics {
-    class IriDictionary;
-}
-
 namespace lingodb::runtime {
 using namespace gengodb::semantics;
 struct BuiltinGraph {
@@ -123,7 +119,6 @@ struct PropertyDataStorage {
     std::vector<int64_t> lst_i64;
     std::vector<uint64_t> lst_ui64;
     std::vector<double> lst_double;
-    gengodb::semantics::IriDictionary* iris;
     std::unordered_map<xsd::Type, std::unique_ptr<BlobTable>> blobs;
 }; // PropertyDataStorage
 

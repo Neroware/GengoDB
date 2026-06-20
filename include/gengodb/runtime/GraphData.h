@@ -75,9 +75,15 @@ static_assert(sizeof(Neo4JGraph::PropRecord)                     == 21);
 static_assert(offsetof(Neo4JGraph::PropRecord, inUse)            ==  0);
 static_assert(offsetof(Neo4JGraph::PropRecord, nextPropId)       ==  1);
 
-struct XSDPropertyData {
+struct PropertyData {
+    static VarLen32 lookupStr(PropertyGraph::PropRecord* prop);
+};
+
+struct XSDString {
     // VarLen32 getDummyStr() { return VarLen32::fromString("hello world"); }
-    static VarLen32 castStr(PropertyGraph::PropRecord* prop);
+    static VarLen32 fromProp(PropertyGraph::PropRecord* prop);
+    static VarLen32 fromRel(PropertyGraph::RelEntry* rel);
+    static VarLen32 fromNode(PropertyGraph::NodeEntry* node);
 }; // GraphPropertyData
 
 } // namespace lingodb::runtime

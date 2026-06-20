@@ -171,4 +171,14 @@ def CastPropertyRefOp : GraphSubOp_Op<"cast_property_ref", [Pure,SubOperator]> {
     }];
 }
 
+def GraphRefToStringOp : GraphSubOp_Op<"ref_to_str", [Pure,SubOperator]> {
+    let summary = "create string column from graph ref";
+    let arguments = (ins TupleStream : $stream, ColumnRefAttr : $ref, ColumnDefAttr : $strRef);
+    let results = (outs TupleStream : $res);
+    let assemblyFormat = [{  $stream custom<CustRef>($ref) `->` custom<CustDef>($strRef) attr-dict }];
+    let extraClassDeclaration = [{
+        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
+    }];
+}
+
 #endif // GENGODB_DIALECT_GRAPHSUBOP_OPS
