@@ -199,7 +199,7 @@ VarLen32 PropertyData::lookupStr(PropertyGraph::PropRecord* prop) {
     }
     PropertyGraph* pgraph = reinterpret_cast<PropertyGraph*>(
         GraphStorage::graphPtr(reinterpret_cast<uint8_t*>(prop)));
-    auto [data, len] = pgraph->getPropData()->blobs[xsd::Type::String]->get(prop->value);
+    auto [data, len] = pgraph->getPropData().get_blob<xsd::Type::String>(prop->value);
     return VarLen32::fromString(std::string(reinterpret_cast<const char*>(data), len));
 }
 
@@ -230,7 +230,7 @@ struct XSDPropertyStringifier {
         return VarLen32::fromString(std::string(typed_value ? "'true'" : "'false'") + "^^xsd:" + xsd::to_string(type));
     }
     inline VarLen32 from_str(int32_t value) const {
-        auto [ptr, len] = pgraph->getPropData()->blobs[xsd::Type::String]->get(value);
+        auto [ptr, len] = pgraph->getPropData().get_blob<xsd::Type::String>(value);
         return VarLen32::fromString(std::string(reinterpret_cast<const char*>(ptr), len));
     }
     inline VarLen32 from_iri(int32_t value) {

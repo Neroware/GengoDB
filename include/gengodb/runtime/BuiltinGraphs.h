@@ -5,6 +5,13 @@
 
 #include "gengodb/semantics/XSDType.h"
 
+namespace gengodb::semantics {
+    class IriDictionary;
+}
+namespace rdf4cpp {
+    class IRI;
+}
+
 namespace lingodb::runtime {
 using namespace gengodb::semantics;
 struct BuiltinGraph {
@@ -115,13 +122,6 @@ private:
     LegacyFixedSizedBuffer<std::byte> blobData_;
 }; // BlobTable
 
-struct PropertyDataStorage {
-    std::vector<int64_t> lst_i64;
-    std::vector<uint64_t> lst_ui64;
-    std::vector<double> lst_double;
-    std::unordered_map<xsd::Type, std::unique_ptr<BlobTable>> blobs;
-}; // PropertyDataStorage
-
 class PropertyGraph {
 public:
     using Base = Graph<prop_id_t, prop_id_t>;
@@ -137,6 +137,38 @@ public:
         uint32_t  value;
         bool      inUse;
     };
+
+    struct PropertyData {
+        using IdentifierStorageT = IriDictionary*;
+        using identifier_t = rdf4cpp::IRI;
+        using BlobTableT = std::unordered_map<xsd::Type, std::unique_ptr<BlobTable>>;
+
+        inline int64_t     get_i64(int32_t idx) const { return lst_i64[idx]; }
+        inline int32_t     add_i64(int64_t v) { lst_i64.push_back(v); return static_cast<int32_t>(lst_i64.size() - 1); }
+        inline uint64_t    get_ui64(int32_t idx) const { return lst_ui64[idx]; }
+        inline int32_t     add_ui64(uint64_t v) { lst_ui64.push_back(v); return static_cast<int32_t>(lst_ui64.size() - 1); }
+        inline double      get_double(int32_t idx) const { return lst_ui64[idx]; }
+        inline int32_t     add_double(double v) { lst_double.push_back(v); return static_cast<int32_t>(lst_double.size() - 1); }
+
+        template<xsd::Type t> 
+        inline std::pair<std::byte*, size_t> get_blob(int32_t idx) const { return blobs.at(t)->get(idx); }
+        template<xsd::Type t, size_t blob_size = 1024> 
+        inline std::pair<std::byte*, int32_t> add_blob(int32_t idx) {
+            if (!blobs.contains(t)) {
+                blobs.insert(std::make_pair(t, std::make_unique<BlobTable>(blob_size)));
+            }
+            return blobs.at(t)->get(idx); 
+        }
+
+        inline identifier_t id(int32_t idx) const;
+
+        private:
+        std::vector<int64_t> lst_i64;
+        std::vector<uint64_t> lst_ui64;
+        std::vector<double> lst_double;
+        BlobTableT blobs;
+        IdentifierStorageT identifiers;
+    }; 
 
     PropertyGraph(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);
     ~PropertyGraph() = default;
@@ -176,7 +208,7 @@ public:
     static void destroy(PropertyGraph* g);
     void clear() { graph_.clear(); propMark_ = 0; freeProps_.clear(); }
 
-    PropertyDataStorage* getPropData() { return &propData_; }
+    PropertyData& getPropData() { return propData_; }
 
 private:
     prop_id_t addPropertyToChain(prop_id_t& chainHead, uint32_t key, uint32_t type, uint32_t value);
@@ -188,7 +220,7 @@ private:
     int32_t propMark_, propCap_;
     std::vector<prop_id_t> freeProps_;
     int32_t nodeCap_, relCap_;
-    PropertyDataStorage propData_;
+    PropertyData propData_;
 
 }; // PropertyGraph
 
