@@ -4,6 +4,7 @@
 #include "lingodb/catalog/TableCatalogEntry.h"
 #include "lingodb/compiler/Conversion/ArrowToStd/ArrowToStd.h"
 #include "lingodb/compiler/Conversion/DBToStd/DBToStd.h"
+#include "gengodb/compiler/Conversion/GPMToSubOp/GPMToSubOpPass.h"
 #include "lingodb/compiler/Conversion/RelAlgToSubOp/RelAlgToSubOpPass.h"
 #include "lingodb/compiler/Conversion/SubOpToControlFlow/SubOpToControlFlowPass.h"
 #include "lingodb/compiler/Dialect/RelAlg/Passes.h"
@@ -40,6 +41,7 @@ utility::Tracer::Event loadIndicesEvent("Compilation", "Lower DB");
 } // end anonymous namespace
 namespace lingodb::execution {
 using namespace lingodb::compiler::dialect;
+using namespace gengodb::compiler::dialect;
 class DefaultQueryOptimizer : public QueryOptimizer {
    void optimize(mlir::ModuleOp& moduleOp) override {
       auto start = std::chrono::high_resolution_clock::now();
@@ -68,6 +70,7 @@ class RelAlgLoweringStep : public LoweringStep {
       mlir::PassManager lowerRelAlgPm(moduleOp->getContext());
       lowerRelAlgPm.enableVerifier(verify);
       addLingoDBInstrumentation(lowerRelAlgPm, getSerializationState());
+      gpm::createLowerGPMToSubOpPipeline(lowerRelAlgPm);
       relalg::createLowerRelAlgToSubOpPipeline(lowerRelAlgPm);
       if (mlir::failed(lowerRelAlgPm.run(moduleOp))) {
          error.emit() << "Lowering of RelAlg to Sub-Operators failed";

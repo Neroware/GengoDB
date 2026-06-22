@@ -90,6 +90,18 @@ void RdfGraph::ensureLoaded() {
             loadTriples();
         }
         storage->ensureLoaded();
+        storage->storage().getMetadata().set_name(iri.identifier().data());
+        storage->storage().getMetadata().set_identifier_mapping([&](int32_t id) {
+            // TODO Retreive string from property data and adjust NodeDictionary!
+            //
+            // The storage of literals in RdfGraphs is currently redundant.
+            // The NodeDictionary stores LiteralNode handles pointing to the data.
+            // However, it is originally stored in pgraph property data, where it
+            // should be retreived from.
+            //
+            // This solution is currently a shortcut to generate an output!
+            return static_cast<std::string>(getNodes().get_node(id)); 
+        });
     }
 }
 void RdfGraph::serialize(lingodb::utility::Serializer& serializer) const {

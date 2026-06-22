@@ -352,36 +352,34 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       }
       else if (auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term)) {
          if (varTerm.hasBinding()) {
-            auto [nodeRefColumnDef, nodeRefColumnRef] = createColumn(memberManager.getType(nodeMember), "nodes", "ref");
-            auto [bindingDef, bindingRef] = createColumn(rewriter.getI32Type(), "nodes", "id");
-            auto [idDef, idRef] = createColumn(rewriter.getI32Type(), "nodes", "id");
-            auto bindingType = mlir::cast<gsubop::NodeRefType>(varTerm.getBindingReference().getColumn().type);
-            stream = rewriter.create<subop::GatherOp>(loc, stream, varTerm.getBindingReference(), createColumnDefMemberMappingAttr(rewriter.getContext(), {{bindingType.getNodeMembers().getMembers()[0], bindingDef}}));
-            stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeMember, nodeRefColumnDef}}));
-            auto nodeRefType = mlir::cast<gsubop::NodeRefType>(memberManager.getType(nodeMember));
-            stream = rewriter.create<subop::GatherOp>(loc, stream, nodeRefColumnRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeRefType.getNodeMembers().getMembers()[0], idDef}}));
-            auto [filterDef, filterRef] = createColumn(rewriter.getI1Type(), "edges", "filter");
-            auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(rewriter.getContext()), stream, rewriter.getArrayAttr({filterDef}), rewriter.getArrayAttr({bindingRef, idRef}));
-            Block* mapBlock = new Block;
-            auto left = mapBlock->addArgument(rewriter.getI32Type(), loc);
-            auto right = mapBlock->addArgument(rewriter.getI32Type(), loc);
-            mapOp.getRegion().push_back(mapBlock);
-            {
-               mlir::OpBuilder::InsertionGuard guard(rewriter);
-               rewriter.setInsertionPointToStart(mapBlock);
-               mlir::Value val = rewriter.create<arith::CmpIOp>(loc, rewriter.getI1Type(), mlir::arith::CmpIPredicate::eq, left, right);
-               rewriter.create<tuples::ReturnOp>(loc, val);
-            }
-            stream = mapOp.getResult();
-            stream = rewriter.create<subop::FilterOp>(loc, stream, subop::FilterSemantic::none_true, rewriter.getArrayAttr({filterRef}));
+            assert(false && "not yet supported");
+            // auto [nodeRefColumnDef, nodeRefColumnRef] = createColumn(memberManager.getType(nodeMember), "nodes", "ref");
+            // auto [bindingDef, bindingRef] = createColumn(rewriter.getI32Type(), "nodes", "id");
+            // auto [idDef, idRef] = createColumn(rewriter.getI32Type(), "nodes", "id");
+            // auto bindingType = mlir::cast<gsubop::NodeRefType>(varTerm.getBindingReference().getColumn().type);
+            // stream = rewriter.create<subop::GatherOp>(loc, stream, varTerm.getBindingReference(), createColumnDefMemberMappingAttr(rewriter.getContext(), {{bindingType.getNodeMembers().getMembers()[0], bindingDef}}));
+            // stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeMember, nodeRefColumnDef}}));
+            // auto nodeRefType = mlir::cast<gsubop::NodeRefType>(memberManager.getType(nodeMember));
+            // stream = rewriter.create<subop::GatherOp>(loc, stream, nodeRefColumnRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeRefType.getNodeMembers().getMembers()[0], idDef}}));
+            // auto [filterDef, filterRef] = createColumn(rewriter.getI1Type(), "edges", "filter");
+            // auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(rewriter.getContext()), stream, rewriter.getArrayAttr({filterDef}), rewriter.getArrayAttr({bindingRef, idRef}));
+            // Block* mapBlock = new Block;
+            // auto left = mapBlock->addArgument(rewriter.getI32Type(), loc);
+            // auto right = mapBlock->addArgument(rewriter.getI32Type(), loc);
+            // mapOp.getRegion().push_back(mapBlock);
+            // {
+            //    mlir::OpBuilder::InsertionGuard guard(rewriter);
+            //    rewriter.setInsertionPointToStart(mapBlock);
+            //    mlir::Value val = rewriter.create<arith::CmpIOp>(loc, rewriter.getI1Type(), mlir::arith::CmpIPredicate::eq, left, right);
+            //    rewriter.create<tuples::ReturnOp>(loc, val);
+            // }
+            // stream = mapOp.getResult();
+            // stream = rewriter.create<subop::FilterOp>(loc, stream, subop::FilterSemantic::none_true, rewriter.getArrayAttr({filterRef}));
          }
          else {
             auto ref = varTerm.getProducedBinding().getName();
-            auto def = createDef(columnManager, ref.getRootReference().str(), ref.getLeafReference().str(), gsubop::PropertyRefType::get(rewriter.getContext()), false);
-            auto [propRefColumnDef, propRefColumnRef] = createColumn(memberManager.getType(nodeMember), "nodes", "ref");
-            auto nodeRefType = mlir::cast<gsubop::NodeRefType>(memberManager.getType(nodeMember));
-            stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeMember, propRefColumnDef}}));
-            stream = rewriter.create<subop::GatherOp>(loc, stream, propRefColumnRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeRefType.getPropertyMembers().getMembers()[0], def}}));
+            auto def = createDef(columnManager, ref.getRootReference().str(), ref.getLeafReference().str(), memberManager.getType(nodeMember), false);
+            stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeMember, def}}));
             stream.getDefiningOp()->getParentOfType<func::FuncOp>().walk([&](relalg::MaterializeOp op){
                auto ctxt = rewriter.getContext();
                if (!mlir::isa<subop::LocalTableType>(op.getResult().getType()))
@@ -393,18 +391,16 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
                llvm::SmallVector<mlir::Attribute, 8> newColRefs;
                for (size_t i = 0; i < op.getCols().size(); i++) {
                   auto colRef = mlir::cast<tuples::ColumnRefAttr>(op.getCols()[i]);
-                  if (!mlir::isa<gsubop::PropertyRefType>(colRef.getColumn().type)) {
-                     newColRefs.push_back(colRef);
-                     continue;
+                  if (!mlir::isa<gsubop::NodeRefType>(colRef.getColumn().type) 
+                     || mlir::isa<gsubop::EdgeRefType>(colRef.getColumn().type)
+                     || mlir::isa<gsubop::PropertyRefType>(colRef.getColumn().type)) {
+                        newColRefs.push_back(colRef);
+                        continue;
                   }
                   auto tableMember = tableType.getMembers().getMembers()[i];
-                  auto refMember = createMember(ctxt, memberName("propRef"), memberManager.getType(tableMember));
-                  auto typedPropRefType = gsubop::TypedPropertyRefType::get(ctxt, subop::StateMembersAttr::get(ctxt, {refMember}));
-                  auto [newColDef, newColRef] = createColumn(typedPropRefType, "vars", "ref");
-                  auto [newValDef, newValRef] = createColumn(memberManager.getType(tableMember), "vars", "value");
-                  stream = rewriter.create<gsubop::CastPropertyRefOp>(loc, stream, colRef, newColDef);
-                  stream = rewriter.create<subop::GatherOp>(loc, stream, newColRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{refMember, newValDef}}));
-                  newColRefs.push_back(newValRef);
+                  auto [newColDef, newColRef] = createColumn(memberManager.getType(tableMember), "vars", "str");
+                  stream = rewriter.create<gsubop::GraphRefToStringOp>(loc, stream, colRef, newColDef);
+                  newColRefs.push_back(newColRef);
                }
                auto newOp = rewriter.create<relalg::MaterializeOp>(loc, tableType, stream, ArrayAttr::get(ctxt, newColRefs), op.getColumns());
                rewriter.replaceOp(op, newOp);
