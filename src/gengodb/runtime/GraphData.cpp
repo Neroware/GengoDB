@@ -1,7 +1,7 @@
 #include "gengodb/runtime/GraphData.h"
 
 #include "gengodb/catalog/GraphCatalogEntry.h"
-#include "gengodb/semantics/XSDType.h"
+#include "gengodb/semantics/Datatypes.h"
 #include "gengodb/semantics/RdfGraph.h"
 
 namespace lingodb::runtime {
@@ -205,11 +205,11 @@ VarLen32 PropertyData::lookupStr(PropertyGraph::PropRecord* prop) {
 
 namespace {
 
-struct XSDPropertyStringifier {
+struct PropertyStringifier {
     xsd::Type type;
     PropertyGraph* pgraph;
-    XSDPropertyStringifier(xsd::Type type, PropertyGraph* pgraph) : type(type), pgraph(pgraph) {}
-    ~XSDPropertyStringifier() = default;
+    PropertyStringifier(xsd::Type type, PropertyGraph* pgraph) : type(type), pgraph(pgraph) {}
+    ~PropertyStringifier() = default;
     template<typename T>
     inline VarLen32 from_inlined(int32_t value) const {
         static_assert(sizeof(T) <= sizeof(int32_t));
@@ -219,7 +219,8 @@ struct XSDPropertyStringifier {
                     std::conditional_t<sizeof(T) == 4, uint32_t, void>>>;
         Raw raw = static_cast<Raw>(static_cast<uint32_t>(value));
         T typed_value = std::bit_cast<T>(raw);
-        return VarLen32::fromString("'" + std::to_string(typed_value) + "'^^xsd:" + xsd::to_string(type));
+        // return VarLen32::fromString("'" + std::to_string(typed_value) + "'^^xsd:" + xsd::to_string(type));
+        return VarLen32::fromString(xsd::to_string(type) + '(' + std::to_string(typed_value) + ')');
     }
     inline VarLen32 from_bool(int32_t value) const {
         using Raw = std::conditional_t<sizeof(bool) == 1, uint8_t,
@@ -227,49 +228,48 @@ struct XSDPropertyStringifier {
                     std::conditional_t<sizeof(bool) == 4, uint32_t, void>>>;
         Raw raw = static_cast<Raw>(static_cast<uint32_t>(value));
         bool typed_value = std::bit_cast<bool>(raw);
-        return VarLen32::fromString(std::string(typed_value ? "'true'" : "'false'") + "^^xsd:" + xsd::to_string(type));
+        return VarLen32::fromString("boolean(" + std::string(typed_value ? "true" : "false") + ')');
     }
     inline VarLen32 from_str(int32_t value) const {
         auto [ptr, len] = pgraph->getPropData().get_blob<xsd::Type::String>(value);
         return VarLen32::fromString(std::string(reinterpret_cast<const char*>(ptr), len));
     }
-    inline VarLen32 from_iri(int32_t value) {
-        IRI iri = pgraph->getMetadata().id(value);
-        return VarLen32::fromString("<" + static_cast<std::string>(iri) + ">");
+    inline VarLen32 from_node(int32_t node) {
+        return VarLen32::fromString(pgraph->getMetadata().identifier(node));
     }
 };
 
 } // namespace
 
-VarLen32 XSDString::fromProp(PropertyGraph::PropRecord* prop) {
+VarLen32 GraphRefString::fromProp(PropertyGraph::PropRecord* prop) {
     if (!xsd::from_int32(static_cast<int32_t>(prop->type)).has_value()) {
         assert(false && "should not happen");
     }
     auto xsdtype = xsd::from_int32(static_cast<int32_t>(prop->type)).value();
-    XSDPropertyStringifier xsdStr(xsdtype, reinterpret_cast<PropertyGraph*>(
+    PropertyStringifier str(xsdtype, reinterpret_cast<PropertyGraph*>(
         GraphStorage::graphPtr(reinterpret_cast<uint8_t*>(prop))));
     switch(xsdtype) {
-        case xsd::Type::Boolean:        return xsdStr.from_bool(prop->value);
-        case xsd::Type::Float:          return xsdStr.from_inlined<float>(prop->value);
-        case xsd::Type::Int:            return xsdStr.from_inlined<uint32_t>(prop->value);
-        case xsd::Type::Short:          return xsdStr.from_inlined<int16_t>(prop->value);
-        case xsd::Type::Byte:           return xsdStr.from_inlined<int8_t>(prop->value);
-        case xsd::Type::UnsignedInt:    return xsdStr.from_inlined<int32_t>(prop->value);
-        case xsd::Type::UnsignedShort:  return xsdStr.from_inlined<uint16_t>(prop->value);
-        case xsd::Type::UnsignedByte:   return xsdStr.from_inlined<uint8_t>(prop->value);
+        case xsd::Type::Boolean:        return str.from_bool(prop->value);
+        case xsd::Type::Float:          return str.from_inlined<float>(prop->value);
+        case xsd::Type::Int:            return str.from_inlined<uint32_t>(prop->value);
+        case xsd::Type::Short:          return str.from_inlined<int16_t>(prop->value);
+        case xsd::Type::Byte:           return str.from_inlined<int8_t>(prop->value);
+        case xsd::Type::UnsignedInt:    return str.from_inlined<int32_t>(prop->value);
+        case xsd::Type::UnsignedShort:  return str.from_inlined<uint16_t>(prop->value);
+        case xsd::Type::UnsignedByte:   return str.from_inlined<uint8_t>(prop->value);
         default:                        return VarLen32::fromString("<<UNKNOWN TYPE>>");
     }
 }
-VarLen32 XSDString::fromNode(PropertyGraph::NodeEntry* node) {
-    if (node->payload < 0) {
-        return VarLen32::fromString("<<UNKNOWN NODE>>");
-    }
+VarLen32 GraphRefString::fromNode(PropertyGraph::NodeEntry* node) {
     PropertyGraph* pgraph = reinterpret_cast<PropertyGraph*>(
         GraphStorage::graphPtr(reinterpret_cast<uint8_t*>(node)));
-    return fromProp(&pgraph->prop(node->payload));
+    return VarLen32::fromString(pgraph->getMetadata().identifier(
+        GraphStorage::nodeId(reinterpret_cast<uint8_t*>(node))));
 }
-VarLen32 XSDString::fromRel(PropertyGraph::RelEntry* rel) {
-    return VarLen32::fromString("<<UNKNOWN RELATION>>");
+VarLen32 GraphRefString::fromRel(PropertyGraph::RelEntry* rel) {
+    PropertyGraph* pgraph = reinterpret_cast<PropertyGraph*>(
+        GraphStorage::graphPtr(reinterpret_cast<uint8_t*>(rel)));
+    return VarLen32::fromString(pgraph->getMetadata().identifier(rel->typeId));
 }
 
 } // namespace lingodb::runtime

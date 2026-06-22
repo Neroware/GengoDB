@@ -5424,13 +5424,13 @@ class GraphRefToStringOpLowering : public SubOpTupleStreamConsumerConversionPatt
          strRef = rewriter.create<util::AllocaOp>(loc, util::RefType::get(ctxt, db::StringType::get(ctxt)), mlir::Value());
       });
       if (mlir::isa<gsubop::NodeRefType>(refType)) {
-         str = rt::XSDString::fromNode(rewriter, loc)({ref})[0];
+         str = rt::GraphRefString::fromNode(rewriter, loc)({ref})[0];
       }
       else if (mlir::isa<gsubop::EdgeRefType>(refType)) {
-         str = rt::XSDString::fromRel(rewriter, loc)({ref})[0];
+         str = rt::GraphRefString::fromRel(rewriter, loc)({ref})[0];
       }
       else {
-         str = rt::XSDString::fromProp(rewriter, loc)({ref})[0];
+         str = rt::GraphRefString::fromProp(rewriter, loc)({ref})[0];
       }
       rewriter.create<util::StoreOp>(loc, str, strRef, mlir::Value());
       auto res = rewriter.create<util::LoadOp>(loc, strRef);

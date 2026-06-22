@@ -3,14 +3,7 @@
 
 #include "gengodb/runtime/Graph.h"
 
-#include "gengodb/semantics/XSDType.h"
-
-namespace gengodb::semantics {
-    class NodeDictionary;
-}
-namespace rdf4cpp {
-    class IRI;
-}
+#include "gengodb/semantics/Datatypes.h"
 
 namespace lingodb::runtime {
 using namespace gengodb::semantics;
@@ -164,19 +157,16 @@ public:
         std::vector<double> lst_double_;
         BlobTableT blobs_;
     };
-
+    
     struct Metadata {
-        using IdentifierStorageT = NodeDictionary*;
-        using identifier_t = rdf4cpp::IRI;
-
-        identifier_t id(int32_t idx) const;
-        inline void set_id_storage(IdentifierStorageT is) { identifiers_ = is; }
-        inline identifier_t& name() const { return *name_; }
-        inline void set_name(identifier_t& n) { name_ = &n; }
+        inline void set_identifier_mapping(std::function<std::string(int32_t)> identifier) { identifier_ = identifier; }
+        inline std::string identifier(int32_t id) const { return identifier_(id); }
+        inline const std::string& name() const { return name_; }
+        inline void set_name(const std::string& n) { name_ = n; }
 
         private:
-        identifier_t* name_;
-        IdentifierStorageT identifiers_;
+        std::string name_ = "";
+        std::function<std::string(int32_t)> identifier_ = [](int32_t i){ return std::to_string(i); };
     };
 
     PropertyGraph(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);

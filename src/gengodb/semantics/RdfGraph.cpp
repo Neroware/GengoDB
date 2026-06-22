@@ -1,5 +1,5 @@
 #include "gengodb/semantics/RdfGraph.h"
-
+ 
 #include "gengodb/semantics/RdfFileFormat.h"
 
 #include <rdf4cpp/Graph.hpp>
@@ -37,7 +37,7 @@ inline int32_t NodeHelper::resolve(const Literal& l) {
     uint32_t v = 0;
     assert(inlineHelper.isInlined(l.datatype()) && "only inlined literals supported");
     inlineHelper.inlineValue(&v, l.value(), l.datatype());
-    g->storage->storage().addNodeProperty(id, static_cast<uint32_t>(xsd::Type::ENTITY), datatype, v);
+    g->storage->storage().addNodeProperty(id, datatype, static_cast<uint32_t>(xsd::from_iri(l.datatype())), v);
     return id;
 }
 void RdfGraph::addTriple(const IRI& s, const IRI& p, const IRI& o) {
