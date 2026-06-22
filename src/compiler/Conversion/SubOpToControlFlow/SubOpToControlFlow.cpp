@@ -5346,8 +5346,16 @@ class CastPropertyRefLowering : public SubOpTupleStreamConsumerConversionPattern
    LogicalResult match(gsubop::CastPropertyRefOp castOp) const override {
       if (!mlir::isa<gsubop::TypedPropertyRefType>(castOp.getTypedRef().getColumn().type))
          return failure();
-      if (!isInlined(getPropertyType<EntryStorageHelper>(mlir::cast<gsubop::TypedPropertyRefType>(castOp.getTypedRef().getColumn().type), *typeConverter))) {
-         assert(false && "No support for buffered property values yet.");
+      auto propTupType = getPropertyType<EntryStorageHelper>(mlir::cast<gsubop::TypedPropertyRefType>(castOp.getTypedRef().getColumn().type), *typeConverter);
+      if (propTupType.getTypes().size() != 1) {
+         assert(false && "Typed property refs with multiple members are not supported.");
+         return failure();
+      }
+      auto propType = propTupType.getTypes()[0];
+      if (mlir::isa<db::StringType>(propType))
+         return success();
+      if (!isInlined(propType)) {
+         assert(false && "Unsupported property member type.");
          return failure();
       }
       return mlir::isa<gsubop::PropertyRefType>(castOp.getRef().getColumn().type) ? success() : failure();
@@ -5357,27 +5365,77 @@ class CastPropertyRefLowering : public SubOpTupleStreamConsumerConversionPattern
       auto ctxt = castOp.getContext();
       auto ref = mapping.resolve(castOp, castOp.getRef());
       auto typedRefType = mlir::cast<gsubop::TypedPropertyRefType>(castOp.getTypedRef().getColumn().type);
-      auto propType = getPropertyType<EntryStorageHelper>(typedRefType, *typeConverter);
+      auto propTupType = getPropertyType<EntryStorageHelper>(typedRefType, *typeConverter);
+      auto propType = propTupType.getTypes()[0];
       auto prop = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, rewriter.getI32Type()), ref, gsubop::PROPERTY_ENTRY_PROPERTY_VALUE_PTR);
-      auto propRef = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, propType), prop);
+      mlir::Value propRef;
+      if (isInlined(propType)) {
+         propRef = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, propTupType), prop);
+      }
+      else if (mlir::isa<db::StringType>(propType)) {
+         mlir::Value strRef;
+         rewriter.atStartOf(&prop->getParentOfType<func::FuncOp>().getBlocks().front(), [&](SubOpRewriter& rewriter){
+            strRef = rewriter.create<util::AllocaOp>(loc, util::RefType::get(ctxt, db::StringType::get(ctxt)), mlir::Value());
+         });
+         auto str = rt::PropertyData::lookupStr(rewriter, loc)({ref})[0];
+         rewriter.create<util::StoreOp>(loc, str, strRef, mlir::Value());
+         propRef = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, mlir::TupleType::get(ctxt, {propType})), strRef);
+      }
+      else {
+         assert(false && "not implemented");
+      }
       mapping.define(castOp.getTypedRef(), propRef);
       rewriter.replaceTupleStream(castOp, mapping);
    }
 private:
-   bool isInlined(const mlir::TupleType& type) const {
-      if (type.getTypes().size() != 1) {
-         return false;
-      }
-      auto t = type.getTypes()[0];
+   bool isInlined(const mlir::Type& t) const {
       auto integerType = mlir::dyn_cast_or_null<mlir::IntegerType>(t);
       if (integerType) {
-         return integerType.getWidth() <= 64;
+         return integerType.getWidth() <= 32;
       }
       auto floatType = mlir::dyn_cast_or_null<mlir::FloatType>(t);
       if (floatType) {
-         return floatType.getWidth() <= 64;
+         return floatType.getWidth() <= 32;
       }
       return false;
+   }
+};
+
+class GraphRefToStringOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::GraphRefToStringOp> {
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::GraphRefToStringOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::GraphRefToStringOp castOp) const override {
+      auto refType = castOp.getRef().getColumn().type;
+      if (!mlir::isa<gsubop::NodeRefType>(refType) && !mlir::isa<gsubop::EdgeRefType>(refType) 
+         && !mlir::isa<gsubop::PropertyRefType>(refType)) {
+            return failure();
+      }
+      if (!mlir::isa<db::StringType>(castOp.getStrRef().getColumn().type)) {
+         return failure();
+      }
+      return success();
+   }
+   void rewrite(gsubop::GraphRefToStringOp castOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto loc = castOp.getLoc();
+      auto ctxt = rewriter.getContext();
+      auto ref = mapping.resolve(castOp, castOp.getRef());
+      auto refType = castOp.getRef().getColumn().type;
+      mlir::Value strRef, str;
+      rewriter.atStartOf(&ref.getDefiningOp()->getParentOfType<func::FuncOp>().getBlocks().front(), [&](SubOpRewriter& rewriter){
+         strRef = rewriter.create<util::AllocaOp>(loc, util::RefType::get(ctxt, db::StringType::get(ctxt)), mlir::Value());
+      });
+      if (mlir::isa<gsubop::NodeRefType>(refType)) {
+         str = rt::XSDString::fromNode(rewriter, loc)({ref})[0];
+      }
+      else if (mlir::isa<gsubop::EdgeRefType>(refType)) {
+         str = rt::XSDString::fromRel(rewriter, loc)({ref})[0];
+      }
+      else {
+         str = rt::XSDString::fromProp(rewriter, loc)({ref})[0];
+      }
+      rewriter.create<util::StoreOp>(loc, str, strRef, mlir::Value());
+      auto res = rewriter.create<util::LoadOp>(loc, strRef);
+      mapping.define(castOp.getStrRef(), res);
+      rewriter.replaceTupleStream(castOp, mapping);
    }
 };
 
@@ -5464,6 +5522,7 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    patterns.insertPattern<CreateIdentifierStateLowering>(typeConverter, ctxt);
    patterns.insertPattern<FilterByIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<CastPropertyRefLowering>(typeConverter, ctxt);
+   patterns.insertPattern<GraphRefToStringOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<TypedPropertyRefGatherOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<TypedPropertyRefScatterOpLowering>(typeConverter, ctxt);
 

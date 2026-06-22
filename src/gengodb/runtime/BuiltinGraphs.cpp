@@ -1,6 +1,9 @@
 #include "gengodb/runtime/BuiltinGraphs.h"
 
+#include "gengodb/semantics/RdfGraph.h"
+
 namespace lingodb::runtime {
+using namespace rdf4cpp;
 
 SimpleGraph* SimpleGraph::create(int32_t nodeCapacity, int32_t relCapacity) {
     return new SimpleGraph(nodeCapacity, relCapacity);
@@ -141,6 +144,9 @@ PropertyGraph* PropertyGraph::create(int32_t nodeCapacity, int32_t relCapacity, 
 }
 void PropertyGraph::destroy(PropertyGraph* g) {
    delete g;
+}
+PropertyGraph::Metadata::identifier_t PropertyGraph::Metadata::id(int32_t idx) const {
+    return identifiers_->get_iri(idx);
 }
 
 AlignmentGraph_8x3_8x1* AlignmentGraph_8x3_8x1::create(int32_t nodeCapacity, int32_t relCapacity) {

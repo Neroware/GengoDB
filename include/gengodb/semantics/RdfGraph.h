@@ -1,5 +1,5 @@
-#ifndef GENGODB_RDFGRAPH_H
-#define GENGODB_RDFGRAPH_H
+#ifndef GENGODB_SEMANTICS_RDFGRAPH_H
+#define GENGODB_SEMANTICS_RDFGRAPH_H
 
 #include "gengodb/runtime/GengoDBGraph.h"
 #include "gengodb/catalog/CreateRdfGraphDef.h"
@@ -203,4 +203,4 @@ private:
 
 }
 
-#endif // GENGODB_RDFGRAPH_H
+#endif // GENGODB_SEMANTICS_RDFGRAPH_H

@@ -1,5 +1,5 @@
-#ifndef GENGODB_RDFFILEFORMAT_H
-#define GENGODB_RDFFILEFORMAT_H
+#ifndef GENGODB_SEMANTICS_RDFFILEFORMAT_H
+#define GENGODB_SEMANTICS_RDFFILEFORMAT_H
 
 #include <rdf4cpp.hpp>
 #include <rdf4cpp/parser/RDFFileParser.hpp>
@@ -33,4 +33,4 @@ inline std::string getRDFFileExtension(ParsingFlag flag) {
 }
 
 
-#endif // GENGODB_RDFFILEFORMAT_H
+#endif // GENGODB_SEMANTICS_RDFFILEFORMAT_H

@@ -228,12 +228,10 @@ struct GraphStorage {
     static uint8_t* getRelationshipLListHeadOf(uint8_t* node);
     static uint8_t* getNodePropertyLListHeadOf(uint8_t* node);
     static uint8_t* getRelPropertyLListHeadOf(uint8_t* rel);
+    static uint8_t* graphPtr(const uint8_t* ref);
 private:
     static const uint8_t* lookupGraph(const uint8_t* ref) {
         for (const auto& mem : mem_) {
-            // auto a_ = std::get<0>(mem);
-            // auto b_ = std::get<1>(mem);
-            // auto c_ = std::get<2>(mem);
             if (std::get<2>(mem) == ref 
                 || (std::get<0>(mem) <= ref && ref < std::get<0>(mem) + std::get<1>(mem))) {
                     return std::get<2>(mem);   

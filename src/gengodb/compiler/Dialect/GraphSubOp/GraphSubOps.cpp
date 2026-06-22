@@ -141,7 +141,7 @@ void gsubop::ScanEdgeSetOp::replaceColumns(subop::SubOpStateUsageTransformer& tr
    assert(false && "should not happen");
 }
 mlir::Operation* gsubop::ScanEdgeSetOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
-   auto newOp = builder.create<ScanNodeSetOp>(this->getLoc(), mapping.lookupOrDefault(getEdgeSet()), columnMapping.clone(getRef()));
+   auto newOp = builder.create<ScanEdgeSetOp>(this->getLoc(), mapping.lookupOrDefault(getEdgeSet()), columnMapping.clone(getRef()));
    mapResults(mapping, this->getOperation(), newOp.getOperation());
 
    return newOp;
@@ -224,6 +224,14 @@ mlir::Operation* gsubop::CastPropertyRefOp::cloneSubOp(mlir::OpBuilder& builder,
 
    return newOp;
 }
+
+mlir::Operation* gsubop::GraphRefToStringOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
+   auto newOp = builder.create<GraphRefToStringOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getRef(), getStrRef());
+   mapResults(mapping, this->getOperation(), newOp.getOperation());
+
+   return newOp;
+}
+
 
 #define GET_OP_CLASSES
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.cpp.inc"

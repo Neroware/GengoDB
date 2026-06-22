@@ -6,6 +6,8 @@
 #include "lingodb/compiler/Dialect/DB/IR/DBOps.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOps.h"
+#include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgDialect.h"
+#include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgOps.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorDialect.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorOps.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
@@ -13,7 +15,6 @@
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpsTypes.h"
 #include "lingodb/compiler/Dialect/SubOperator/Utils.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
-#include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgDialect.h"
 #include "lingodb/compiler/Dialect/util/FunctionHelper.h"
 #include "lingodb/compiler/Dialect/util/UtilDialect.h"
 #include "lingodb/compiler/Dialect/util/UtilOps.h"
@@ -83,27 +84,28 @@ static relalg::ColumnSet getRequired(Operator op, llvm::DenseMap<Operator, relal
    requiredCols.insert({op, res});
    return res;
 }
-inline static std::string getMemberName(std::string group, std::string graph, std::string suffix = "") {
-   return group + "_" + graph + (suffix.empty() ? "" : "_" + suffix);
+inline static std::string memberName(std::string name, std::string prefix = "", std::string suffix = "") {
+   return (suffix.empty() ? "" : prefix + "_") + name + (suffix.empty() ? "" : "_" + suffix);
 }
 template<typename GSetType>
-inline static GSetType createGraphSetType(MLIRContext* ctxt, std::string group, std::string name, std::string suffix = "", std::string itStrategy = "all") {
+inline static GSetType createGraphSetType(MLIRContext* ctxt, std::string group, std::string graph, std::string name, std::string itStrategy = "all") {
    auto itType = gsubop::GraphSetIteratorType::get(ctxt, mlir::ArrayAttr::get(ctxt, {StringAttr::get(ctxt, itStrategy)}));
-   auto itMember = createMember(ctxt, getMemberName(group, name, suffix + "_it"), itType);
+   auto itMember = createMember(ctxt, memberName(graph, group, name + "_it"), itType);
    return GSetType::get(ctxt, createStateMembersAttr(ctxt, {itMember}));
 }
 template<typename GSetType>
-inline static GSetType getGraphSetType(std::string group, std::string name, tuples::ColumnManager& columnManager, std::string suffix = "") {
-   auto col = columnManager.get(group, name + (suffix.empty() ? "" : "_" + suffix)).get();
+inline static GSetType getGraphSetColumnType(tuples::ColumnManager& columnManager, std::string scope, std::string name) {
+   auto col = columnManager.get(scope, name).get();
    return mlir::cast<GSetType>(col->type);
 }
-inline static tuples::ColumnDefAttr createDef(std::string group, std::string name, mlir::Type type, tuples::ColumnManager& columnManager, std::string suffix = "") {
-   auto def = columnManager.createDef(group, name + (suffix.empty() ? "" : "_" + suffix));
+inline static tuples::ColumnDefAttr createDef(tuples::ColumnManager& columnManager, std::string scope, std::string name, mlir::Type type, bool uniqueScope = true) {
+   scope = uniqueScope ? columnManager.getUniqueScope(scope) : scope;
+   auto def = columnManager.createDef(scope, name);
    def.getColumn().type = type;
    return def;
 }
-inline static tuples::ColumnRefAttr createRef(std::string group, std::string name, tuples::ColumnManager& columnManager, std::string suffix = "") {
-   auto col = columnManager.get(group, name + (suffix.empty() ? "" : "_" + suffix));
+inline static tuples::ColumnRefAttr createRef(tuples::ColumnManager& columnManager, std::string scope, std::string name) {
+   auto col = columnManager.get(scope, name);
    return columnManager.createRef(col.get());
 }
 static subop::ColumnDefMemberMappingAttr createColumnDefMemberMappingAttr(MLIRContext* context, DefMappingCollector pairs) {
@@ -112,14 +114,13 @@ static subop::ColumnDefMemberMappingAttr createColumnDefMemberMappingAttr(MLIRCo
 // static subop::ColumnRefMemberMappingAttr createColumnRefMemberMappingAttr(MLIRContext* context, RefMappingCollector pairs) {
 //    return subop::ColumnRefMemberMappingAttr::get(context, pairs);
 // }
-inline static gsubop::NodeRefType createNodeRefType(MLIRContext* ctxt, std::string group, std::string name) {
-   auto edgeSetType0 = createGraphSetType<gsubop::EdgeSetType>(ctxt, group, name, "incoming", "incoming");
-   auto edgeSetType1 = createGraphSetType<gsubop::EdgeSetType>(ctxt, group, name, "outgoing", "outgoing");
-   auto propSetType = createGraphSetType<gsubop::PropertySetType>(ctxt, group, name, "node", "node");
-   auto nodeId = createMember(ctxt, getMemberName(group, name, "node"), mlir::IntegerType::get(ctxt, 32));
-   auto incoming = createMember(ctxt, getMemberName(group, name, "incoming"), edgeSetType0);
-   auto outgoing = createMember(ctxt, getMemberName(group, name, "outgoing"), edgeSetType1);
-   auto property = createMember(ctxt, getMemberName(group, name, "property"), propSetType);
+inline static gsubop::NodeRefType createNodeRefType(MLIRContext* ctxt, std::string group, std::string graph) {
+   auto edgeSetType0 = createGraphSetType<gsubop::EdgeSetType>(ctxt, group, graph, "incoming", "incoming");
+   auto edgeSetType1 = createGraphSetType<gsubop::EdgeSetType>(ctxt, group, graph, "outgoing", "outgoing");
+   auto nodeId = createMember(ctxt, memberName(graph, group, "node"), mlir::IntegerType::get(ctxt, 32));
+   auto incoming = createMember(ctxt, memberName(graph, group, "incoming"), edgeSetType0);
+   auto outgoing = createMember(ctxt, memberName(graph, group, "outgoing"), edgeSetType1);
+   auto property = createMember(ctxt, memberName(graph, group, "property"), gsubop::PropertyRefType::get(ctxt));
    return gsubop::NodeRefType::get(ctxt, 
       createStateMembersAttr(ctxt, {nodeId}), 
       createStateMembersAttr(ctxt, {incoming}), 
@@ -127,12 +128,11 @@ inline static gsubop::NodeRefType createNodeRefType(MLIRContext* ctxt, std::stri
       createStateMembersAttr(ctxt, {property})
    );
 }
-inline static gsubop::EdgeRefType createEdgeRefType(MLIRContext* ctxt, std::string group, std::string name) {
-   auto propSetType = createGraphSetType<gsubop::PropertySetType>(ctxt, group, name, "edge", "edge");
-   auto edgeId = createMember(ctxt, getMemberName(group, name, "edge"), mlir::IntegerType::get(ctxt, 32));
-   auto from = createMember(ctxt, getMemberName(group, name, "from"), createNodeRefType(ctxt, group, name));
-   auto to = createMember(ctxt, getMemberName(group, name, "to"), createNodeRefType(ctxt, group, name));
-   auto property = createMember(ctxt, getMemberName(group, name, "property"), propSetType);
+inline static gsubop::EdgeRefType createEdgeRefType(MLIRContext* ctxt, std::string group, std::string graph) {
+   auto edgeId = createMember(ctxt, memberName(graph, group, "edge"), mlir::IntegerType::get(ctxt, 32));
+   auto from = createMember(ctxt, memberName(graph, group, "from"), createNodeRefType(ctxt, group, graph));
+   auto to = createMember(ctxt, memberName(graph, group, "to"), createNodeRefType(ctxt, group, graph));
+   auto property = createMember(ctxt, memberName(graph, group, "property"), gsubop::PropertyRefType::get(ctxt));
    return gsubop::EdgeRefType::get(ctxt, 
       createStateMembersAttr(ctxt, {edgeId}), 
       createStateMembersAttr(ctxt, {from}), 
@@ -140,10 +140,10 @@ inline static gsubop::EdgeRefType createEdgeRefType(MLIRContext* ctxt, std::stri
       createStateMembersAttr(ctxt, {property})
    );
 }
-static std::pair<tuples::ColumnDefAttr, tuples::ColumnRefAttr> createColumn(mlir::Type type, std::string group, std::string name, std::string suffix = "") {
+static std::pair<tuples::ColumnDefAttr, tuples::ColumnRefAttr> createColumn(mlir::Type type, std::string scope, std::string name) {
    auto& columnManager = type.getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-   auto def = createDef(group, name, type, columnManager, suffix);
-   auto ref = createRef(group, name, columnManager, suffix);
+   auto def = createDef(columnManager, scope, name, type);
+   auto ref = createRef(columnManager, def.getName().getRootReference().str(), def.getName().getLeafReference().str());
    return {def, ref};
 }
 
@@ -168,11 +168,11 @@ class NamedGraphLowering : public OpConversionPattern<gpm::NamedGraphOp> {
       auto graphNameAttr = StringAttr::get(ctxt, graphName);
       auto nodeSetType = createGraphSetType<gsubop::NodeSetType>(ctxt, graphGroup, graphName, "vx");
       auto edgeSetType = createGraphSetType<gsubop::EdgeSetType>(ctxt, graphGroup, graphName, "ex");
-      auto nodeSetMember = createMember(ctxt, getMemberName(graphGroup, graphName, "vx"), nodeSetType);
-      auto edgeSetMember = createMember(ctxt, getMemberName(graphGroup, graphName, "ex"), edgeSetType);
+      auto nodeSetMember = createMember(ctxt, memberName(graphName, graphGroup, "vx"), nodeSetType);
+      auto edgeSetMember = createMember(ctxt, memberName(graphName, graphGroup, "ex"), edgeSetType);
       auto graphType = gsubop::GraphType::get(ctxt, createStateMembersAttr(ctxt, {nodeSetMember}), createStateMembersAttr(ctxt, {edgeSetMember}));
-      auto nodeSetDef = createDef(graphGroup, graphName, nodeSetType, columnManager, "nodes");
-      auto edgeSetDef = createDef(graphGroup, graphName, edgeSetType, columnManager, "edges");
+      auto nodeSetDef = createDef(columnManager, graphGroup, graphName + "_vx", nodeSetType, false);
+      auto edgeSetDef = createDef(columnManager, graphGroup, graphName + "_ex", edgeSetType, false);
       mlir::Value graphRef = rewriter.create<gsubop::GetExternalGraphOp>(namedGraphOp->getLoc(), graphType, graphNameAttr, namedGraphOp.getGraph());
       rewriter.replaceOpWithNewOp<gsubop::ScanGraphOp>(namedGraphOp, graphRef, nodeSetDef, edgeSetDef);
       // graphRef.getDefiningOp()->getParentOfType<mlir::ModuleOp>().dump();
@@ -255,34 +255,33 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
    }
    private:
    mlir::Value lowerSubjectFirst(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, gpm::TriplePatternOp op, LocalIdentifierMapping& localIdents, tuples::ColumnManager& columnManager) const {
-      assert(isBound(op.getS(), localIdents) && "subject not bound");
-      auto ctxt = op.getContext();
+      auto ctxt = rewriter.getContext();
+      auto& memberManager = ctxt->getLoadedDialect<SubOperatorDialect>()->getMemberManager();
       std::string group = op.getGraphRef().getName().getRootReference().str();
       std::string graph = op.getGraphRef().getName().getLeafReference().str();
       gsubop::NodeRefType nodeRefType;
       tuples::ColumnRefAttr nodeRef;
       if (auto identTermAttr = mlir::dyn_cast_or_null<gpm::IdentifierTermAttr>(op.getS())) {
-         auto nodesRef = createRef(group, graph, columnManager, "nodes");
+         auto nodesRef = createRef(columnManager, group, graph + "_vx");
          auto identMember = createMember(ctxt, "lookupIdent", gsubop::IdentifierType::get(ctxt));
          auto identStateType = SimpleStateType::get(ctxt, createStateMembersAttr(ctxt, {identMember}));
          auto identState = rewriter.create<gsubop::CreateIdentifierStateOp>(loc, identStateType, identTermAttr.getIdent());
          auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({nodesRef}));
          auto* b = new Block();
          b->addArgument(tuples::TupleType::get(ctxt), loc);
-         auto nodeSetType = getGraphSetType<gsubop::NodeSetType>(group, graph, columnManager, "nodes");
+         auto nodeSetType = getGraphSetColumnType<gsubop::NodeSetType>(columnManager, group, graph + "_vx");
          auto nodeSetArg = b->addArgument(nodeSetType, loc);
          nestedMapOp.getRegion().push_back(b);
          {
             mlir::OpBuilder::InsertionGuard guard(rewriter);
             rewriter.setInsertionPointToStart(b);
-            auto identDef = createDef("idents", "lookup", gsubop::IdentifierType::get(ctxt), columnManager);
-            auto scan = rewriter.create<subop::ScanRefsOp>(loc, identState, identDef);
-            auto ref = columnManager.createRef(identDef.getColumnPtr().get());
+            auto [identDef, identRef] = createColumn(gsubop::IdentifierType::get(ctxt), "idents", "lookup");
+            auto scan = rewriter.create<subop::ScanOp>(loc, identState, createColumnDefMemberMappingAttr(rewriter.getContext(), {{identStateType.getMembers().getMembers()[0], identDef}}));
             nodeRefType = createNodeRefType(ctxt, group, graph);
-            auto def = createDef(group, graph, nodeRefType, columnManager, "noderef");
-            nodeRef = columnManager.createRef(def.getColumnPtr().get());
-            mlir::Value lookup = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), scan, nodeSetArg, rewriter.getArrayAttr({ref}), def);
+            auto [nodeDef, nodeRef_] = createColumn(nodeRefType, "nodes", "ref");
+            mlir::Value lookup = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), scan, nodeSetArg, rewriter.getArrayAttr({identRef}), nodeDef);
             rewriter.create<tuples::ReturnOp>(loc, lookup);
+            nodeRef = nodeRef_;
             // nestedMapOp->getParentOfType<ModuleOp>().dump();
          }
          stream = nestedMapOp.getRes();
@@ -290,8 +289,8 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       else if (auto bnodeTermAttr = mlir::dyn_cast_or_null<gpm::BNodeTermAttr>(op.getS())) {
          assert(false && "BNodes not yet supported");
       }
-      auto edgeSetType = nodeRefType.getOutgoingMembers().getMembers()[0].internal->type;
-      auto [edgesDef, edgesRef] = createColumn(edgeSetType, group, graph, "outgoing");
+      auto edgeSetType = memberManager.getType(nodeRefType.getOutgoingMembers().getMembers()[0]);
+      auto [edgesDef, edgesRef] = createColumn(edgeSetType, "edges", "outgoing");
       stream = rewriter.create<subop::GatherOp>(loc, stream, nodeRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeRefType.getOutgoingMembers().getMembers()[0], edgesDef}}));
       auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({edgesRef}));
       auto* b = new Block();
@@ -302,9 +301,9 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
          mlir::OpBuilder::InsertionGuard guard(rewriter);
          rewriter.setInsertionPointToStart(b);
          auto edgeRefType = createEdgeRefType(ctxt, group, graph);
-         auto [edgeRefColumnDef, edgeRefColumnRef] = createColumn(edgeRefType, group, graph, "edgeref");
+         auto [edgeRefColumnDef, edgeRefColumnRef] = createColumn(edgeRefType, "edges", "ref");
          mlir::Value inner = rewriter.create<gsubop::ScanEdgeSetOp>(loc, edgeSetArg, edgeRefColumnDef);
-         inner = lowerPredicate(rewriter, loc, inner, op.getP(), edgeRefColumnRef, edgeRefType, columnManager);
+         inner = lowerPredicate(rewriter, loc, inner, op.getP(), edgeRefColumnRef, columnManager);
          inner = lowerTerm(rewriter, loc, inner, op.getO(), edgeRefType.getToMembers().getMembers()[0], edgeRefColumnRef, localIdents, columnManager);
          rewriter.create<tuples::ReturnOp>(loc, inner);
          // nestedMapOp->getParentOfType<ModuleOp>().dump();
@@ -312,18 +311,19 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       stream = nestedMapOp;
       return stream;
    }
-   mlir::Value lowerPredicate(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, mlir::Attribute p, tuples::ColumnRefAttr edgeRefColumnRef, gsubop::EdgeRefType edgeRefType, tuples::ColumnManager& columnManager) const {
+   mlir::Value lowerPredicate(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, mlir::Attribute p, tuples::ColumnRefAttr edgeRef, tuples::ColumnManager& columnManager) const {
       if (auto constPred = mlir::dyn_cast<gpm::IdentifierTermAttr>(p)) {
          auto ident = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(rewriter.getContext()), constPred.getIdent());
-         stream = rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, edgeRefColumnRef, ident);
+         stream = rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, edgeRef, ident);
       }
       else if (auto varPred = mlir::dyn_cast<gpm::VariableTermAttr>(p)) {
          if (varPred.hasBinding()) {
-            auto [bindingDef, bindingRef] = createColumn(rewriter.getI32Type(), "edges", "id1"); // TODO add global counter!
-            auto [idDef, idRef] = createColumn(rewriter.getI32Type(), "edges", "id2");
+            auto [bindingDef, bindingRef] = createColumn(rewriter.getI32Type(), "edges", "id");
+            auto [idDef, idRef] = createColumn(rewriter.getI32Type(), "edges", "id");
             auto bindingType = mlir::cast<gsubop::EdgeRefType>(varPred.getBindingReference().getColumn().type);
             stream = rewriter.create<subop::GatherOp>(loc, stream, varPred.getBindingReference(), createColumnDefMemberMappingAttr(rewriter.getContext(), {{bindingType.getEdgeMembers().getMembers()[0], bindingDef}}));
-            stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRefColumnRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{edgeRefType.getEdgeMembers().getMembers()[0], idDef}}));
+            auto edgeRefType = mlir::cast<gsubop::EdgeRefType>(edgeRef.getColumn().type);
+            stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{edgeRefType.getEdgeMembers().getMembers()[0], idDef}}));
             auto [filterDef, filterRef] = createColumn(rewriter.getI1Type(), "edges", "filter");
             auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(rewriter.getContext()), stream, rewriter.getArrayAttr({filterDef}), rewriter.getArrayAttr({bindingRef, idRef}));
             Block* mapBlock = new Block;
@@ -343,18 +343,72 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       return stream;
    }
    mlir::Value lowerTerm(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, mlir::Attribute term, Member nodeMember, tuples::ColumnRefAttr edgeRef, LocalIdentifierMapping& localIdents, tuples::ColumnManager& columnManager) const {
+      auto& memberManager = rewriter.getContext()->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
       if (auto constTerm = mlir::dyn_cast<gpm::IdentifierTermAttr>(term)) {
-         auto [def, ref] = createColumn(nodeMember.internal->type, "nodes", "id");
+         auto [def, ref] = createColumn(memberManager.getType(nodeMember), "nodes", "id");
          auto ident = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(rewriter.getContext()), constTerm.getIdent());
          stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeMember, def}}));
          stream = rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, ref, ident);
       }
       else if (auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term)) {
          if (varTerm.hasBinding()) {
-
+            auto [nodeRefColumnDef, nodeRefColumnRef] = createColumn(memberManager.getType(nodeMember), "nodes", "ref");
+            auto [bindingDef, bindingRef] = createColumn(rewriter.getI32Type(), "nodes", "id");
+            auto [idDef, idRef] = createColumn(rewriter.getI32Type(), "nodes", "id");
+            auto bindingType = mlir::cast<gsubop::NodeRefType>(varTerm.getBindingReference().getColumn().type);
+            stream = rewriter.create<subop::GatherOp>(loc, stream, varTerm.getBindingReference(), createColumnDefMemberMappingAttr(rewriter.getContext(), {{bindingType.getNodeMembers().getMembers()[0], bindingDef}}));
+            stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeMember, nodeRefColumnDef}}));
+            auto nodeRefType = mlir::cast<gsubop::NodeRefType>(memberManager.getType(nodeMember));
+            stream = rewriter.create<subop::GatherOp>(loc, stream, nodeRefColumnRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeRefType.getNodeMembers().getMembers()[0], idDef}}));
+            auto [filterDef, filterRef] = createColumn(rewriter.getI1Type(), "edges", "filter");
+            auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(rewriter.getContext()), stream, rewriter.getArrayAttr({filterDef}), rewriter.getArrayAttr({bindingRef, idRef}));
+            Block* mapBlock = new Block;
+            auto left = mapBlock->addArgument(rewriter.getI32Type(), loc);
+            auto right = mapBlock->addArgument(rewriter.getI32Type(), loc);
+            mapOp.getRegion().push_back(mapBlock);
+            {
+               mlir::OpBuilder::InsertionGuard guard(rewriter);
+               rewriter.setInsertionPointToStart(mapBlock);
+               mlir::Value val = rewriter.create<arith::CmpIOp>(loc, rewriter.getI1Type(), mlir::arith::CmpIPredicate::eq, left, right);
+               rewriter.create<tuples::ReturnOp>(loc, val);
+            }
+            stream = mapOp.getResult();
+            stream = rewriter.create<subop::FilterOp>(loc, stream, subop::FilterSemantic::none_true, rewriter.getArrayAttr({filterRef}));
          }
          else {
-
+            auto ref = varTerm.getProducedBinding().getName();
+            auto def = createDef(columnManager, ref.getRootReference().str(), ref.getLeafReference().str(), gsubop::PropertyRefType::get(rewriter.getContext()), false);
+            auto [propRefColumnDef, propRefColumnRef] = createColumn(memberManager.getType(nodeMember), "nodes", "ref");
+            auto nodeRefType = mlir::cast<gsubop::NodeRefType>(memberManager.getType(nodeMember));
+            stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeMember, propRefColumnDef}}));
+            stream = rewriter.create<subop::GatherOp>(loc, stream, propRefColumnRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeRefType.getPropertyMembers().getMembers()[0], def}}));
+            stream.getDefiningOp()->getParentOfType<func::FuncOp>().walk([&](relalg::MaterializeOp op){
+               auto ctxt = rewriter.getContext();
+               if (!mlir::isa<subop::LocalTableType>(op.getResult().getType()))
+                  return;
+               mlir::OpBuilder::InsertionGuard guard(rewriter);
+               rewriter.setInsertionPointAfter(op);
+               auto tableType = mlir::cast<subop::LocalTableType>(op.getResult().getType());
+               auto stream = op.getRel();
+               llvm::SmallVector<mlir::Attribute, 8> newColRefs;
+               for (size_t i = 0; i < op.getCols().size(); i++) {
+                  auto colRef = mlir::cast<tuples::ColumnRefAttr>(op.getCols()[i]);
+                  if (!mlir::isa<gsubop::PropertyRefType>(colRef.getColumn().type)) {
+                     newColRefs.push_back(colRef);
+                     continue;
+                  }
+                  auto tableMember = tableType.getMembers().getMembers()[i];
+                  auto refMember = createMember(ctxt, memberName("propRef"), memberManager.getType(tableMember));
+                  auto typedPropRefType = gsubop::TypedPropertyRefType::get(ctxt, subop::StateMembersAttr::get(ctxt, {refMember}));
+                  auto [newColDef, newColRef] = createColumn(typedPropRefType, "vars", "ref");
+                  auto [newValDef, newValRef] = createColumn(memberManager.getType(tableMember), "vars", "value");
+                  stream = rewriter.create<gsubop::CastPropertyRefOp>(loc, stream, colRef, newColDef);
+                  stream = rewriter.create<subop::GatherOp>(loc, stream, newColRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{refMember, newValDef}}));
+                  newColRefs.push_back(newValRef);
+               }
+               auto newOp = rewriter.create<relalg::MaterializeOp>(loc, tableType, stream, ArrayAttr::get(ctxt, newColRefs), op.getColumns());
+               rewriter.replaceOp(op, newOp);
+            });
          }
       }
       else if (auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(term)) {
