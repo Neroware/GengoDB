@@ -6,7 +6,7 @@
 #include "gengodb/semantics/XSDType.h"
 
 namespace gengodb::semantics {
-    class IriDictionary;
+    class NodeDictionary;
 }
 namespace rdf4cpp {
     class IRI;
@@ -166,7 +166,7 @@ public:
     };
 
     struct Metadata {
-        using IdentifierStorageT = IriDictionary*;
+        using IdentifierStorageT = NodeDictionary*;
         using identifier_t = rdf4cpp::IRI;
 
         identifier_t id(int32_t idx) const;

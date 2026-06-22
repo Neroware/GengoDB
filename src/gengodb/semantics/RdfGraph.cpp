@@ -21,24 +21,23 @@ inline int32_t NodeHelper::resolve(const IRI& iri) {
     return id;
 }
 inline int32_t NodeHelper::resolve(const BlankNode& b) {
-    const auto ident = b.identifier();
-    auto it = g->bnodes.find(ident);
-    if (it != g->bnodes.end())
-        return it->second;
-    auto id = g->nodes.insert(IRI{});
+    auto id = g->nodes.get_or_insert(b);
     ensureNode();
-    g->bnodes.emplace(ident, id);
+    g->bnodes.emplace(b, id);
     return id;
 }
 inline int32_t NodeHelper::resolve(const Literal& l) {
+    auto it = g->literals.find(l);
+    if (it != g->literals.end())
+        return it->second;
     RdfDatatypeInlineHelper inlineHelper;
-    int32_t datatype = resolve(l.datatype());
-    auto id = g->nodes.insert(IRI{});
+    auto id = g->nodes.get_or_insert(l);
     ensureNode();
+    int32_t datatype = resolve(l.datatype());
     uint32_t v = 0;
     assert(inlineHelper.isInlined(l.datatype()) && "only inlined literals supported");
     inlineHelper.inlineValue(&v, l.value(), l.datatype());
-    g->storage->storage().addNodeProperty(id, 0, datatype, v);
+    g->storage->storage().addNodeProperty(id, static_cast<uint32_t>(xsd::Type::ENTITY), datatype, v);
     return id;
 }
 void RdfGraph::addTriple(const IRI& s, const IRI& p, const IRI& o) {
