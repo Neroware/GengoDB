@@ -40,9 +40,8 @@ class RDFGraphCatalogEntry : public GraphCatalogEntry {
     void serializeEntry(lingodb::utility::Serializer& serializer) const override;
     static std::shared_ptr<RDFGraphCatalogEntry> deserialize(lingodb::utility::Deserializer& deserializer);
     ~RDFGraphCatalogEntry() override = default;
-    IRI getIri() const;
-    IRI getNodeIri(int32_t node) const;
-    IRI getRelationIri(int32_t rel) const;
+    IRI getGraphIri() const;
+    IRI getIri(int32_t node) const;
     std::string_view getLocalId(int32_t node) const;
     lingodb::runtime::PropertyGraph& getStorage() override;
     semantics::RDFFileFormat getFormat() const { return format; }

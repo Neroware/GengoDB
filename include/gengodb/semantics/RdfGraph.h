@@ -89,7 +89,7 @@ struct RdfDatatypeInlineHelper {
     /**
      * Writes the inlined value into 'out', undefined behavior if type cannot be inlined
      */
-    void inlineValue(uint64_t* out, const std::any& in, const IRI& datatype) const {
+    void inlineValue(uint32_t* out, const std::any& in, const IRI& datatype) const {
         const Namespace xsd = extra_namespaces().XSD;
         if (datatype == xsd + "boolean")                inlineValueImpl<bool>(out, in);
         else if (datatype == xsd + "byte")              inlineValueImpl<int8_t>(out, in);
@@ -102,13 +102,13 @@ struct RdfDatatypeInlineHelper {
         else throw std::invalid_argument(("Unsupported datatype for inlining."));
     }
     template<typename T>
-    void inlineValueImpl(uint64_t* out, const std::any& in) const {
+    void inlineValueImpl(uint32_t* out, const std::any& in) const {
         const T* v = std::any_cast<T>(&in);
         if (!v) {
             throw std::bad_any_cast();
         }
-        static_assert(sizeof(T) <= sizeof(uint64_t), "Type too large to inline");
-        uint64_t tmp = 0;
+        static_assert(sizeof(T) <= sizeof(uint32_t), "Type too large to inline");
+        uint32_t tmp = 0;
         std::memcpy(&tmp, v, sizeof(T));
         *out = tmp;
     }
@@ -119,18 +119,15 @@ private:
 public:
     NodeHelper(RdfGraph* g) : g(g) {}
     inline void ensureNode();
-    inline int32_t resolveNode(const BlankNode& b);
-    inline int32_t resolveNode(const IRI& iri);
-    inline int32_t resolvePredicate(const IRI& p);
-    inline void addLiteral(int32_t sid, int32_t pid, const Literal& o);
+    inline int32_t resolve(const BlankNode& b);
+    inline int32_t resolve(const IRI& iri);
+    inline int32_t resolve(const Literal& l);
 };
 class RdfGraph {
 private:
     IRI iri;
     std::unique_ptr<runtime::GengoDBGraph> storage;
     IriDictionary nodes;
-    IriDictionary relations;
-    IriDictionary literalTypes;
     std::unordered_map<std::string_view, int32_t> bnodes;
 public:
     RdfGraph(const IRI& iri, std::unique_ptr<runtime::GengoDBGraph> storage, std::string fileName) 
@@ -186,10 +183,8 @@ public:
     void addTriple(const BlankNode& s, const IRI& p, const IRI& o);
     void addTriple(const BlankNode& s, const IRI& p, const BlankNode& o);
     void addTriple(const BlankNode& s, const IRI& p, const Literal& o);
-    IRI getIri() const { return iri; }
-    const IriDictionary& getNodes() const { return nodes; }
-    const IriDictionary& getRelations() const { return relations; }
-    const IriDictionary& getLiteralTypes() const { return literalTypes; }
+    IRI getUniqueId() const { return iri; }
+    const IriDictionary& getRdfNodes() const { return nodes; }
     const std::unordered_map<std::string_view, int32_t>& getBlankNodes() const { return bnodes; }
     void serialize(lingodb::utility::Serializer& serializer) const;
     static std::unique_ptr<RdfGraph> deserialize(lingodb::utility::Deserializer& deserializer);

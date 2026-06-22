@@ -17,14 +17,11 @@ std::shared_ptr<RDFGraphCatalogEntry> RDFGraphCatalogEntry::deserialize(lingodb:
 
     return std::make_shared<RDFGraphCatalogEntry>(name, std::move(rdfGraph), (RDFFileFormat) format);
 }
-IRI RDFGraphCatalogEntry::getIri() const {
-    return impl->getIri();
+IRI RDFGraphCatalogEntry::getGraphIri() const {
+    return impl->getUniqueId();
 }
-IRI RDFGraphCatalogEntry::getNodeIri(int32_t node) const {
-    return impl->getNodes().get_iri(node);
-}
-IRI RDFGraphCatalogEntry::getRelationIri(int32_t rel) const {
-    return impl->getRelations().get_iri(rel);
+IRI RDFGraphCatalogEntry::getIri(int32_t node) const {
+    return impl->getRdfNodes().get_iri(node);
 }
 std::string_view RDFGraphCatalogEntry::getLocalId(int32_t node) const {
     for (const auto& pair : impl->getBlankNodes()) {

@@ -15,7 +15,12 @@ inline void NodeHelper::ensureNode() {
         g->storage->storage().addNode();
     }
 }
-inline int32_t NodeHelper::resolveNode(const BlankNode& b) {
+inline int32_t NodeHelper::resolve(const IRI& iri) {
+    auto id = g->nodes.get_or_insert(iri);
+    ensureNode();
+    return id;
+}
+inline int32_t NodeHelper::resolve(const BlankNode& b) {
     const auto ident = b.identifier();
     auto it = g->bnodes.find(ident);
     if (it != g->bnodes.end())
@@ -25,40 +30,34 @@ inline int32_t NodeHelper::resolveNode(const BlankNode& b) {
     g->bnodes.emplace(ident, id);
     return id;
 }
-inline int32_t NodeHelper::resolveNode(const IRI& iri) {
-    auto id = g->nodes.get_or_insert(iri);
-    ensureNode();
-    return id;
-}
-inline int32_t NodeHelper::resolvePredicate(const IRI& p) {
-    return g->relations.get_or_insert(p);
-}
-inline void NodeHelper::addLiteral(int32_t sid, int32_t pid, const Literal& o) {
+inline int32_t NodeHelper::resolve(const Literal& l) {
     RdfDatatypeInlineHelper inlineHelper;
-    auto l = o.as_literal();
-    auto datatype = g->literalTypes.get_or_insert(l.datatype());
-    uint64_t v = 0;
+    int32_t datatype = resolve(l.datatype());
+    auto id = g->nodes.insert(IRI{});
+    ensureNode();
+    uint32_t v = 0;
     assert(inlineHelper.isInlined(l.datatype()) && "only inlined literals supported");
     inlineHelper.inlineValue(&v, l.value(), l.datatype());
-    g->storage->storage().addNodeProperty(sid, pid, datatype, v);
+    g->storage->storage().addNodeProperty(id, 0, datatype, v);
+    return id;
 }
 void RdfGraph::addTriple(const IRI& s, const IRI& p, const IRI& o) {
-    storage->storage().addRelationship(nodeHelper.resolveNode(s), nodeHelper.resolveNode(o), nodeHelper.resolvePredicate(p));
+    storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
 void RdfGraph::addTriple(const IRI& s, const IRI& p, const BlankNode& o) {
-    storage->storage().addRelationship(nodeHelper.resolveNode(s), nodeHelper.resolveNode(o), nodeHelper.resolvePredicate(p));
+    storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
 void RdfGraph::addTriple(const IRI& s, const IRI& p, const Literal& o) {
-    nodeHelper.addLiteral(nodeHelper.resolveNode(s), nodeHelper.resolvePredicate(p), o);
+    storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
 void RdfGraph::addTriple(const BlankNode& s, const IRI& p, const IRI& o) {
-    storage->storage().addRelationship(nodeHelper.resolveNode(s), nodeHelper.resolveNode(o), nodeHelper.resolvePredicate(p));
+    storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
 void RdfGraph::addTriple(const BlankNode& s, const IRI& p, const BlankNode& o) {
-    storage->storage().addRelationship(nodeHelper.resolveNode(s), nodeHelper.resolveNode(o), nodeHelper.resolvePredicate(p));
+    storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
 void RdfGraph::addTriple(const BlankNode& s, const IRI& p, const Literal& o) {
-    nodeHelper.addLiteral(nodeHelper.resolveNode(s), nodeHelper.resolvePredicate(p), o);
+    storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
 void RdfGraph::loadTriples() {
     if (!loadedFromRdfFile) {
