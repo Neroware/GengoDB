@@ -5276,8 +5276,9 @@ class CreateIdentifierLowering : public SubOpConversionPattern<gsubop::CreateIde
    using SubOpConversionPattern<gsubop::CreateIdentifierOp>::SubOpConversionPattern;
    LogicalResult matchAndRewrite(gsubop::CreateIdentifierOp createOp, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
       auto loc = createOp->getLoc();
+      auto& namedGraphManager = rewriter.getContext()->getLoadedDialect<gsubop::GraphSubOpDialect>()->getNamedGraphManager();
       // TODO Do lookup at compile time here!
-      int id = 42;
+      int32_t id = namedGraphManager.resolve(createOp.getGraph().str(), createOp.getIdent().str());
       mlir::Value typeI32 = rewriter.create<arith::ConstantOp>(loc, rewriter.getIntegerAttr(rewriter.getI32Type(), id));
       rewriter.replaceOp(createOp, typeI32);
       return success();
@@ -5288,8 +5289,9 @@ class CreateIdentifierStateLowering : public SubOpConversionPattern<gsubop::Crea
    using SubOpConversionPattern<gsubop::CreateIdentifierStateOp>::SubOpConversionPattern;
    LogicalResult matchAndRewrite(gsubop::CreateIdentifierStateOp createOp, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
       auto loc = createOp->getLoc();
+      auto& namedGraphManager = rewriter.getContext()->getLoadedDialect<gsubop::GraphSubOpDialect>()->getNamedGraphManager();
       // TODO Do lookup at compile time here!
-      int id = 1;
+      int32_t id = namedGraphManager.resolve(createOp.getGraph().str(), createOp.getIdent().str());
       mlir::Value typeI32 = rewriter.create<arith::ConstantOp>(loc, rewriter.getIntegerAttr(rewriter.getI32Type(), id));
       mlir::Value ref = rewriter.create<util::AllocaOp>(createOp->getLoc(), typeConverter->convertType(createOp.getType()), mlir::Value());
       rewriter.create<util::StoreOp>(loc, typeI32, ref, mlir::Value());

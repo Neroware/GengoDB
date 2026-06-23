@@ -24,6 +24,11 @@ def GraphSubOp_Dialect : Dialect {
             private:
             void registerTypes();
             void registerAttrs();
+            NamedGraphManager namedGraphManager;
+            public:
+            NamedGraphManager& getNamedGraphManager() {
+                return namedGraphManager;
+            }
         }];
 }
 

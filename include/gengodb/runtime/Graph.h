@@ -241,7 +241,7 @@ private:
     }
     template<class GraphT>
     static const GraphT* lookupGraph(const uint8_t* ref) {
-        throw std::runtime_error("unsupported graph type");
+        assert(false && "unsupported graph type");
     }
     // Stores allocated memory ranges
     static std::vector<std::tuple<const uint8_t*, size_t, const uint8_t*>> mem_;

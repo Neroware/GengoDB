@@ -265,7 +265,7 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
          auto nodesRef = createRef(columnManager, group, graph + "_vx");
          auto identMember = createMember(ctxt, "lookupIdent", gsubop::IdentifierType::get(ctxt));
          auto identStateType = SimpleStateType::get(ctxt, createStateMembersAttr(ctxt, {identMember}));
-         auto identState = rewriter.create<gsubop::CreateIdentifierStateOp>(loc, identStateType, identTermAttr.getIdent());
+         auto identState = rewriter.create<gsubop::CreateIdentifierStateOp>(loc, identStateType, graph, identTermAttr.getIdent());
          auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({nodesRef}));
          auto* b = new Block();
          b->addArgument(tuples::TupleType::get(ctxt), loc);
@@ -303,17 +303,17 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
          auto edgeRefType = createEdgeRefType(ctxt, group, graph);
          auto [edgeRefColumnDef, edgeRefColumnRef] = createColumn(edgeRefType, "edges", "ref");
          mlir::Value inner = rewriter.create<gsubop::ScanEdgeSetOp>(loc, edgeSetArg, edgeRefColumnDef);
-         inner = lowerPredicate(rewriter, loc, inner, op.getP(), edgeRefColumnRef, columnManager);
-         inner = lowerTerm(rewriter, loc, inner, op.getO(), edgeRefType.getToMembers().getMembers()[0], edgeRefColumnRef, localIdents, columnManager);
+         inner = lowerPredicate(rewriter, loc, inner, op.getP(), edgeRefColumnRef, graph, columnManager);
+         inner = lowerTerm(rewriter, loc, inner, op.getO(), edgeRefType.getToMembers().getMembers()[0], edgeRefColumnRef, graph, localIdents, columnManager);
          rewriter.create<tuples::ReturnOp>(loc, inner);
          // nestedMapOp->getParentOfType<ModuleOp>().dump();
       }
       stream = nestedMapOp;
       return stream;
    }
-   mlir::Value lowerPredicate(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, mlir::Attribute p, tuples::ColumnRefAttr edgeRef, tuples::ColumnManager& columnManager) const {
+   mlir::Value lowerPredicate(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, mlir::Attribute p, tuples::ColumnRefAttr edgeRef, std::string graph, tuples::ColumnManager& columnManager) const {
       if (auto constPred = mlir::dyn_cast<gpm::IdentifierTermAttr>(p)) {
-         auto ident = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(rewriter.getContext()), constPred.getIdent());
+         auto ident = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(rewriter.getContext()), graph, constPred.getIdent());
          stream = rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, edgeRef, ident);
       }
       else if (auto varPred = mlir::dyn_cast<gpm::VariableTermAttr>(p)) {
@@ -342,11 +342,11 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       }
       return stream;
    }
-   mlir::Value lowerTerm(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, mlir::Attribute term, Member nodeMember, tuples::ColumnRefAttr edgeRef, LocalIdentifierMapping& localIdents, tuples::ColumnManager& columnManager) const {
+   mlir::Value lowerTerm(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, mlir::Attribute term, Member nodeMember, tuples::ColumnRefAttr edgeRef, std::string graph, LocalIdentifierMapping& localIdents, tuples::ColumnManager& columnManager) const {
       auto& memberManager = rewriter.getContext()->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
       if (auto constTerm = mlir::dyn_cast<gpm::IdentifierTermAttr>(term)) {
          auto [def, ref] = createColumn(memberManager.getType(nodeMember), "nodes", "id");
-         auto ident = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(rewriter.getContext()), constTerm.getIdent());
+         auto ident = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(rewriter.getContext()), graph, constTerm.getIdent());
          stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeMember, def}}));
          stream = rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, ref, ident);
       }

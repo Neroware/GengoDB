@@ -139,16 +139,16 @@ def ScanPropertySetOp : GraphSubOp_Op<"scan_property_set", [Pure,SubOperator,Ref
 
 def CreateIdentifierOp : GraphSubOp_Op<"create_identifier", [Pure]> {
     let summary = "create type identifier";
-    let arguments = (ins StrAttr:$ident);
+    let arguments = (ins StrAttr:$graph, StrAttr:$ident);
     let results = (outs Identifier : $res);
-    let assemblyFormat = [{  $ident `:` type($res) attr-dict }];
+    let assemblyFormat = [{ `{` `name` `=` $graph `,` `id` `=` $ident `}` `:` type($res) attr-dict }];
 }
 
 def CreateIdentifierStateOp : GraphSubOp_Op<"create_identifier_state", [Pure,StateCreator]> {
     let summary = "create type identifier state";
-    let arguments = (ins StrAttr:$ident);
+    let arguments = (ins StrAttr:$graph, StrAttr:$ident);
     let results = (outs SimpleState : $res);
-    let assemblyFormat = [{  $ident `:` type($res) attr-dict }];
+    let assemblyFormat = [{ `{` `name` `=` $graph `,` `id` `=` $ident `}` `:` type($res) attr-dict }];
 }
 
 def FilterByIdentifierOp : GraphSubOp_Op<"filter_by_identifier", [Pure,SubOperator]> {

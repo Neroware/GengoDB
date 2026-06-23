@@ -99,13 +99,13 @@ struct RdfDatatypeInlineHelper {
         else if (datatype == xsd + "unsignedByte")      inlineValueImpl<uint8_t>(out, in);
         else if (datatype == xsd + "unsignedInt")       inlineValueImpl<uint32_t>(out, in);
         else if (datatype == xsd + "unsignedShort")     inlineValueImpl<uint16_t>(out, in);
-        else throw std::invalid_argument(("Unsupported datatype for inlining."));
+        else assert(false && "unsupported datatype for inlining.");
     }
     template<typename T>
     void inlineValueImpl(uint32_t* out, const std::any& in) const {
         const T* v = std::any_cast<T>(&in);
         if (!v) {
-            throw std::bad_any_cast();
+            assert(false && "bad cast");
         }
         static_assert(sizeof(T) <= sizeof(uint32_t), "Type too large to inline");
         uint32_t tmp = 0;

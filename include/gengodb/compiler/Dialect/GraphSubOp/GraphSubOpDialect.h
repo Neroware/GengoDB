@@ -7,8 +7,8 @@ template <typename T>
 llvm::hash_code hash_value(std::shared_ptr<T> arg); // NOLINT (readability-identifier-naming)
 } // end namespace llvm
 #include "mlir/IR/Dialect.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/NamedGraphManager.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpsDialect.h.inc"
-
 #ifndef MLIR_HASHCODE_SHARED_PTR
 #define MLIR_HASHCODE_SHARED_PTR
 namespace llvm {
