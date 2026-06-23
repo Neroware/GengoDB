@@ -18,3 +18,9 @@ _:cup1 ex:clean "true"^^xsd:boolean .
 _:sip1 ex:who ex:bob .
 _:sip1 ex:what ex:coffee .
 _:sip1 ex:count "3"^^xsd:int .
+
+# =================================
+ex:bob ex:drinks ex:tea .
+ex:bob ex:drinks ex:soda .
+ex:bob ex:drinks ex:beer .
+# =================================

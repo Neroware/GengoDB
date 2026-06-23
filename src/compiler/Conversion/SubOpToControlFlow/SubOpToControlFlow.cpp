@@ -5772,13 +5772,13 @@ void SubOpToControlFlowLoweringPass::runOnOperation() {
       return util::RefType::get(t.getContext(), getEdgeEntryType<EntryStorageHelper>(t, typeConverter));
    });
    typeConverter.addConversion([&](gsubop::PropertySetType t) -> Type {
-      return IntegerType::get(ctxt, 32); //util::RefType::get(t.getContext(), mlir::IntegerType::get(ctxt, 8));
+      return IntegerType::get(ctxt, 32);
    });
    typeConverter.addConversion([&](gsubop::TypedPropertyRefType t) -> Type {
       return util::RefType::get(t.getContext(), getPropertyType<EntryStorageHelper>(t, typeConverter));
    });
    typeConverter.addConversion([&](gsubop::PropertyRefType t) -> Type {
-      return util::RefType::get(t.getContext(), getPropertyEntryType(t, typeConverter));
+      return IntegerType::get(ctxt, 32);
    });
    typeConverter.addConversion([&](gsubop::IdentifierType t) -> Type {
       return mlir::IntegerType::get(ctxt, 32);

@@ -181,6 +181,7 @@ PropertyGraph* GraphData::getGraph(lingodb::runtime::VarLen32 name, lingodb::run
     auto& session = executionContext->getSession();
     if (auto maybeGraph = session.getCatalog()->getTypedEntry<gengodb::catalog::RDFGraphCatalogEntry>(name)) {
         auto graph = maybeGraph.value();
+        graph->ensureFullyLoaded();
         if (graph->getIri().identifier() != iri.str()) {
             throw std::runtime_error("Found graph record but IRIs do not match!");
         }

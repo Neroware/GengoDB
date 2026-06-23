@@ -9,6 +9,7 @@
 #include <rdf4cpp.hpp>
 
 namespace gengodb::semantics {
+class NodeDictionary;
 class RdfGraph;
 } // namespace gengodb::semantics
 
@@ -42,6 +43,7 @@ class RDFGraphCatalogEntry : public GraphCatalogEntry {
     ~RDFGraphCatalogEntry() override = default;
     IRI getIri() const;
     Node getNode(int32_t node) const;
+    std::shared_ptr<gengodb::semantics::NodeDictionary> getNodes() const;
     std::string_view getLocalId(int32_t node) const;
     lingodb::runtime::PropertyGraph& getStorage() override;
     semantics::RDFFileFormat getFormat() const { return format; }

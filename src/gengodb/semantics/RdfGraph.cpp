@@ -11,17 +11,17 @@ namespace gengodb::semantics {
 using namespace rdf4cpp::parser;
 
 inline void NodeHelper::ensureNode() {
-    if (static_cast<size_t>(g->storage->storage().nodeHighWater()) < g->nodes.size()) {
+    if (static_cast<size_t>(g->storage->storage().nodeHighWater()) < g->nodes->size()) {
         g->storage->storage().addNode();
     }
 }
 inline int32_t NodeHelper::resolve(const IRI& iri) {
-    auto id = g->nodes.get_or_insert(iri);
+    auto id = g->nodes->get_or_insert(iri);
     ensureNode();
     return id;
 }
 inline int32_t NodeHelper::resolve(const BlankNode& b) {
-    auto id = g->nodes.get_or_insert(b);
+    auto id = g->nodes->get_or_insert(b);
     ensureNode();
     g->bnodes.emplace(b, id);
     return id;
@@ -31,7 +31,7 @@ inline int32_t NodeHelper::resolve(const Literal& l) {
     if (it != g->literals.end())
         return it->second;
     RdfDatatypeInlineHelper inlineHelper;
-    auto id = g->nodes.get_or_insert(l);
+    auto id = g->nodes->get_or_insert(l);
     ensureNode();
     int32_t datatype = resolve(l.datatype());
     uint32_t v = 0;
@@ -100,7 +100,7 @@ void RdfGraph::ensureLoaded() {
             // should be retreived from.
             //
             // This solution is currently a shortcut to generate an output!
-            return static_cast<std::string>(getNodes().get_node(id)); 
+            return static_cast<std::string>(getNodes()->get_node(id)); 
         });
     }
 }

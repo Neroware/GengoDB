@@ -8,7 +8,7 @@ module @querymodule  {
         
         // Load the graph from the local RDF file.
         %0 = gpm.named_graph name : "file://resources/ttl/coffee.ttl", column : @graphs::@coffee({type = !gpm.graph_ref})
-        %1 = gpm.triple_pattern %0 @graphs::@coffee(?{@vars::@who({type = !gpm.variable_binding})}, id{"ex:drinks"}, id{"ex:Coffee"})
+        %1 = gpm.triple_pattern %0 @graphs::@coffee(?{@vars::@who({type = !gpm.variable_binding})}, id{"ex:drinks"}, id{"ex:coffee"})
         %res_table = relalg.materialize %1 [] => [] : !subop.local_table<[],[]>
         subop.set_result 0 %res_table : !subop.local_table<[],[]>
         return

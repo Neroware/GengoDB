@@ -9,6 +9,7 @@
 #include "lingodb/compiler/Conversion/RelAlgToSubOp/RelAlgToSubOpPass.h"
 #include "lingodb/compiler/Conversion/SubOpToControlFlow/SubOpToControlFlowPass.h"
 #include "lingodb/compiler/Dialect/RelAlg/Passes.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorOps.h"
 #include "lingodb/compiler/Dialect/SubOperator/Transforms/Passes.h"
@@ -86,7 +87,10 @@ class GpmLoweringStep : public LoweringStep {
          if (auto getExternalOp = mlir::dyn_cast_or_null<gsubop::GetExternalGraphOp>(*op)) {
             auto* catalog = getCatalog();
             if (auto graph = catalog->getTypedEntry<gengodb::catalog::RDFGraphCatalogEntry>(getExternalOp.getName().str())) {
-               graph.value()->ensureFullyLoaded();
+               auto rdfGraph = graph.value();
+               rdfGraph->ensureFullyLoaded();
+               moduleOp->getContext()->getLoadedDialect<gsubop::GraphSubOpDialect>()->getNamedGraphManager().addNamedGraph(
+                  rdfGraph->getName(), rdfGraph->getIri().identifier().data(), rdfGraph->getNodes());
             }
          }
       });

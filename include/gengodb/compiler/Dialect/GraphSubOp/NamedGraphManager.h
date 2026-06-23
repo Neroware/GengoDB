@@ -12,12 +12,12 @@ class NamedGraphManager {
     NamedGraphManager(const NamedGraphManager&) = delete;
     NamedGraphManager& operator=(const NamedGraphManager&) = delete;
 
-    void addNamedGraph(std::string name, std::shared_ptr<RdfGraph> graph);
+    void addNamedGraph(std::string name, std::string uid, std::shared_ptr<NodeDictionary> graph);
     int32_t resolve(std::string name, std::string identifier) const;
     std::string getUniqueId(std::string name) const;
 
     private:
-    llvm::StringMap<std::shared_ptr<RdfGraph>> namedGraphs_;
+    llvm::StringMap<std::pair<std::string, std::shared_ptr<NodeDictionary>>> namedGraphs_;
 };
 } // namespace gengodb::compiler::dialect::gsubop
 

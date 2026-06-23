@@ -21,7 +21,10 @@ IRI RDFGraphCatalogEntry::getIri() const {
     return impl->getIri();
 }
 Node RDFGraphCatalogEntry::getNode(int32_t node) const {
-    return impl->getNodes().get_node(node);
+    return impl->getNodes()->get_node(node);
+}
+std::shared_ptr<gengodb::semantics::NodeDictionary> RDFGraphCatalogEntry::getNodes() const {
+    return impl->getNodes();
 }
 std::string_view RDFGraphCatalogEntry::getLocalId(int32_t node) const {
     for (const auto& pair : impl->getBlankNodes()) {

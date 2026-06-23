@@ -127,13 +127,13 @@ class RdfGraph {
 private:
     IRI iri;
     std::unique_ptr<runtime::GengoDBGraph> storage;
-    NodeDictionary nodes;
+    std::shared_ptr<NodeDictionary> nodes;
     std::unordered_map<BlankNode, int32_t> bnodes;
     std::unordered_map<Literal, int32_t> literals;
     std::unordered_map<IRI, int32_t> literalTypes;
 public:
     RdfGraph(const IRI& iri, std::unique_ptr<runtime::GengoDBGraph> storage, std::string fileName) 
-        : iri(iri), storage(std::move(storage)), persist(false), fileName(std::move(fileName)), loadedFromRdfFile(false), rdfParseFlags(parser::ParsingFlag::Turtle), nodeHelper(this) {}
+        : iri(iri), storage(std::move(storage)), nodes(std::make_shared<NodeDictionary>()), persist(false), fileName(std::move(fileName)), loadedFromRdfFile(false), rdfParseFlags(parser::ParsingFlag::Turtle), nodeHelper(this) {}
     void setPersist(bool persist) {
         this->persist = persist;
         if (persist) {
@@ -186,7 +186,7 @@ public:
     void addTriple(const BlankNode& s, const IRI& p, const BlankNode& o);
     void addTriple(const BlankNode& s, const IRI& p, const Literal& o);
     IRI getIri() const { return iri; }
-    const NodeDictionary& getNodes() const { return nodes; }
+    std::shared_ptr<NodeDictionary> getNodes() const { return nodes; }
     const std::unordered_map<BlankNode, int32_t>& getBlankNodes() const { return bnodes; }
     const std::unordered_map<Literal, int32_t>& getLiterals() const { return literals; }
     const std::unordered_map<IRI, int32_t>& getLiteralTypes() const { return literalTypes; }
