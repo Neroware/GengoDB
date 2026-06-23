@@ -24,3 +24,6 @@ ex:bob ex:drinks ex:tea .
 ex:bob ex:drinks ex:soda .
 ex:bob ex:drinks ex:beer .
 # =================================
+ex:bob ex:eats ex:steak .
+ex:bob ex:eats ex:egg .
+ex:bob ex:eats ex:sushi .

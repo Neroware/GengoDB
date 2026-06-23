@@ -1,5 +1,6 @@
 #include "gengodb/compiler/Conversion/GPMToSubOp/GPMToSubOpPass.h"
 
+#include "gengodb/compiler/Dialect/GPM/Transforms/Passes.h"
 #include "lingodb/compiler/Conversion/RelAlgToSubOp/OrderedAttributes.h"
 #include "lingodb/compiler/Dialect/Arrow/IR/ArrowDialect.h"
 #include "lingodb/compiler/Dialect/DB/IR/DBDialect.h"
@@ -65,24 +66,6 @@ static Member createMember(MLIRContext* context, std::string name, mlir::Type ty
 }
 static subop::StateMembersAttr createStateMembersAttr(MLIRContext* context, const llvm::SmallVector<Member>& members) {
    return subop::StateMembersAttr::get(context, members);
-}
-
-static relalg::ColumnSet getRequired(Operator op, llvm::DenseMap<Operator, relalg::ColumnSet>& requiredCols, relalg::AvailabilityCache& cache) {
-   if (requiredCols.count(op)) {
-      return requiredCols[op];
-   }
-   auto available = op.getAvailableColumns(cache);
-
-   relalg::ColumnSet required;
-   for (auto* user : op->getUsers()) {
-      if (auto consumingOp = mlir::dyn_cast_or_null<Operator>(user)) {
-         required.insert(getRequired(consumingOp, requiredCols, cache));
-         required.insert(consumingOp.getUsedColumns());
-      }
-   }
-   auto res = available.intersect(required);
-   requiredCols.insert({op, res});
-   return res;
 }
 inline static std::string memberName(std::string name, std::string prefix = "", std::string suffix = "") {
    return (suffix.empty() ? "" : prefix + "_") + name + (suffix.empty() ? "" : "_" + suffix);
@@ -175,7 +158,6 @@ class NamedGraphLowering : public OpConversionPattern<gpm::NamedGraphOp> {
       auto edgeSetDef = createDef(columnManager, graphGroup, graphName + "_ex", edgeSetType, false);
       mlir::Value graphRef = rewriter.create<gsubop::GetExternalGraphOp>(namedGraphOp->getLoc(), graphType, graphNameAttr, namedGraphOp.getGraph());
       rewriter.replaceOpWithNewOp<gsubop::ScanGraphOp>(namedGraphOp, graphRef, nodeSetDef, edgeSetDef);
-      // graphRef.getDefiningOp()->getParentOfType<mlir::ModuleOp>().dump();
       return success();
    }
 };
@@ -209,7 +191,6 @@ class BasicGraphPatternLowering : public OpConversionPattern<gpm::BasicGraphPatt
          }
       }
       rewriter.replaceOp(basicGraphPatternOp, lastResult);
-      // basicGraphPatternOp->getParentOfType<ModuleOp>().dump();
       return success();
    }
 };
@@ -227,23 +208,6 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       auto& columnManager = rewriter.getContext()
          ->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
       mlir::Value stream = adaptor.getRel();
-      // std::string graphGroup = triplePatternOp.getGraphRef().getName().getRootReference().str();
-      // std::string graphName = triplePatternOp.getGraphRef().getName().getLeafReference().str();
-      // auto nodesRef = createRef(graphGroup, graphName, columnManager, "nodes");
-      // auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(rewriter.getContext()), stream, rewriter.getArrayAttr({nodesRef}));
-      // auto* b = new Block();
-      // b->addArgument(tuples::TupleType::get(rewriter.getContext()), loc);
-      // auto nodeSetType = getGraphSetType<gsubop::NodeSetType>(graphGroup, graphName, columnManager, "nodes");
-      // auto nodeSetArg = b->addArgument(nodeSetType, loc);
-      // nestedMapOp.getRegion().push_back(b);
-      // {
-      //    mlir::OpBuilder::InsertionGuard guard(rewriter);
-      //    rewriter.setInsertionPointToStart(b);
-      //    auto nodeRefType = createNodeRefType(triplePatternOp.getContext(), graphGroup, graphName);
-      //    mlir::Value scan = rewriter.create<gsubop::ScanNodeSetOp>(loc, nodeSetArg, createDef(graphGroup, graphName, nodeRefType, columnManager, "noderef"));
-      //    rewriter.create<tuples::ReturnOp>(loc, scan);
-      // }
-      // nestedMapOp->getParentOfType<ModuleOp>().dump();
       if (isBound(triplePatternOp.getS(), localIdents))
          stream = lowerSubjectFirst(rewriter, loc, stream, triplePatternOp, localIdents, columnManager);
       else if (isBound(triplePatternOp.getO(), localIdents))
@@ -282,7 +246,6 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
             mlir::Value lookup = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), scan, nodeSetArg, rewriter.getArrayAttr({identRef}), nodeDef);
             rewriter.create<tuples::ReturnOp>(loc, lookup);
             nodeRef = nodeRef_;
-            // nestedMapOp->getParentOfType<ModuleOp>().dump();
          }
          stream = nestedMapOp.getRes();
       }
@@ -306,7 +269,6 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
          inner = lowerPredicate(rewriter, loc, inner, op.getP(), edgeRefColumnRef, graph, columnManager);
          inner = lowerTerm(rewriter, loc, inner, op.getO(), edgeRefType.getToMembers().getMembers()[0], edgeRefColumnRef, graph, localIdents, columnManager);
          rewriter.create<tuples::ReturnOp>(loc, inner);
-         // nestedMapOp->getParentOfType<ModuleOp>().dump();
       }
       stream = nestedMapOp;
       return stream;
@@ -379,31 +341,6 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
             auto ref = varTerm.getProducedBinding().getName();
             auto def = createDef(columnManager, ref.getRootReference().str(), ref.getLeafReference().str(), memberManager.getType(nodeMember), false);
             stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeMember, def}}));
-            stream.getDefiningOp()->getParentOfType<func::FuncOp>().walk([&](relalg::MaterializeOp op){
-               auto ctxt = rewriter.getContext();
-               if (!mlir::isa<subop::LocalTableType>(op.getResult().getType()))
-                  return;
-               mlir::OpBuilder::InsertionGuard guard(rewriter);
-               rewriter.setInsertionPointAfter(op);
-               auto tableType = mlir::cast<subop::LocalTableType>(op.getResult().getType());
-               auto stream = op.getRel();
-               llvm::SmallVector<mlir::Attribute, 8> newColRefs;
-               for (size_t i = 0; i < op.getCols().size(); i++) {
-                  auto colRef = mlir::cast<tuples::ColumnRefAttr>(op.getCols()[i]);
-                  if (!mlir::isa<gsubop::NodeRefType>(colRef.getColumn().type) 
-                     || mlir::isa<gsubop::EdgeRefType>(colRef.getColumn().type)
-                     || mlir::isa<gsubop::PropertyRefType>(colRef.getColumn().type)) {
-                        newColRefs.push_back(colRef);
-                        continue;
-                  }
-                  auto tableMember = tableType.getMembers().getMembers()[i];
-                  auto [newColDef, newColRef] = createColumn(memberManager.getType(tableMember), "vars", "str");
-                  stream = rewriter.create<gsubop::GraphRefToStringOp>(loc, stream, colRef, newColDef);
-                  newColRefs.push_back(newColRef);
-               }
-               auto newOp = rewriter.create<relalg::MaterializeOp>(loc, tableType, stream, ArrayAttr::get(ctxt, newColRefs), op.getColumns());
-               rewriter.replaceOp(op, newOp);
-            });
          }
       }
       else if (auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(term)) {
@@ -416,13 +353,6 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
 void GPMToSubOpLoweringPass::runOnOperation() {
    auto module = getOperation();
    getContext().getLoadedDialect<util::UtilDialect>()->getFunctionHelper().setParentModule(module);
-
-   llvm::DenseMap<Operator, relalg::ColumnSet> requiredColumns;
-
-   relalg::AvailabilityCache availabilityCache;
-   getOperation().walk([&](Operator op) {
-      requiredColumns[op] = getRequired(op, requiredColumns, availabilityCache);
-   });
 
    // Define Conversion Target
    ConversionTarget target(getContext());
@@ -467,6 +397,7 @@ gpm::createLowerToSubOpPass() {
 }
 void gpm::createLowerGPMToSubOpPipeline(mlir::OpPassManager& pm) {
    pm.addPass(gpm::createLowerToSubOpPass());
+   pm.addPass(gpm::createStringifyMaterializedGraphRefsPass());
 }
 void gpm::registerGPMToSubOpConversionPasses() {
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {

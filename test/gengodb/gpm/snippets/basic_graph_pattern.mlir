@@ -8,12 +8,13 @@ module  {
                 // %3 = gpm.triple_pattern %2 @graphs::@coffee(?{@vars::@who}, id{"ex:drinks"}, _{"somedrink"})
                 // tuples.return %3 : !tuples.tuplestream
                 %1 = gpm.triple_pattern %arg @graphs::@coffee(id{"http://example.org/bob"}, id{"http://example.org/drinks"}, ?{@vars::@what({type = !gpm.variable_binding})})
-                tuples.return %1 : !tuples.tuplestream
+                %2 = gpm.triple_pattern %1 @graphs::@coffee(id{"http://example.org/bob"}, id{"http://example.org/eats"}, ?{@vars::@what2({type = !gpm.variable_binding})})
+                tuples.return %2 : !tuples.tuplestream
             }
-            %res_table = relalg.materialize %bgp [@vars::@what] => ["col1"] : !subop.local_table<[col1: !db.string],["col1"]>
-            subop.execution_group_return %res_table : !subop.local_table<[col1: !db.string],["col1"]>
-        } -> !subop.local_table<[col1: !db.string],["col1"]>
-        subop.set_result 0 %res : !subop.local_table<[col1: !db.string],["col1"]>
+            %res_table = relalg.materialize %bgp [@vars::@what, @vars::@what2] => ["drinks", "foods"] : !subop.local_table<[col1: !db.string, col2: !db.string],["drinks", "foods"]>
+            subop.execution_group_return %res_table : !subop.local_table<[col1: !db.string, col2: !db.string],["drinks", "foods"]>
+        } -> !subop.local_table<[col1: !db.string, col2: !db.string],["drinks", "foods"]>
+        subop.set_result 0 %res : !subop.local_table<[col1: !db.string, col2: !db.string],["drinks", "foods"]>
         return
     }
 }
