@@ -133,6 +133,8 @@ def Identifier : GraphSubOp_Type<"Identifier", "identifier", []> {
     let summary = "identifier";
 }
 
+def AnyGraphRef: AnyTypeOf<[NodeRef,EdgeRef,PropertyRef]>;
+
 //===----------------------------------------------------------------------===//
 // Attributes
 //===----------------------------------------------------------------------===//

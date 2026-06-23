@@ -4354,6 +4354,37 @@ class CreateBuiltinGraphLowering : public SubOpConversionPattern<gsubop::CreateB
    }
 };
 
+class GetIdentifierLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::GetIdentifierOp>{
+   public:
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::GetIdentifierOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::GetIdentifierOp op) const override {
+      auto type = op.getRef().getColumn().type;
+      if (mlir::isa<gsubop::NodeRefType>(type) || mlir::isa<gsubop::EdgeRefType>(type) 
+         || mlir::isa<gsubop::PropertyRefType>(type))
+            return success();
+      return failure();
+   }
+   void rewrite(gsubop::GetIdentifierOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto loc = op->getLoc();
+      auto type = op.getRef().getColumn().type;
+      auto ref = mapping.resolve(op, op.getRef());
+      mlir::Value key;
+      if (mlir::isa<gsubop::NodeRefType>(type)) {
+         key = rt::GraphStorage::nodeId(rewriter, loc)(ref)[0];
+      }
+      if (mlir::isa<gsubop::EdgeRefType>(type)) {
+         auto resType = typeConverter->convertType(op.getRes().getType());
+         key = rewriter.create<util::LoadElementOp>(loc, resType, ref, gsubop::RELATIONSHIP_ENTRY_RELATIONSHIP_TYPE_PTR);
+      }
+      if (mlir::isa<gsubop::PropertyRefType>(type)) {
+         auto resType = typeConverter->convertType(op.getRes().getType());
+         key = rewriter.create<util::LoadElementOp>(loc, resType, ref, gsubop::PROPERTY_ENTRY_PROPERTY_KEY_PTR);
+      }
+      mapping.define(op.getIdentDef(), key);
+      rewriter.replaceTupleStream(op, mapping);
+   }
+};
+
 class GetExternalGraphLowering : public SubOpConversionPattern<gsubop::GetExternalGraphOp> {
    public:
    using SubOpConversionPattern<gsubop::GetExternalGraphOp>::SubOpConversionPattern;
@@ -5076,48 +5107,6 @@ class LookupGraphSetLowering : public SubOpTupleStreamConsumerConversionPattern<
    }
 };
 
-class NodeCountOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::NodeCountOp> {
-   public:
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::NodeCountOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::NodeCountOp nodeCountOp) const override {
-      return success();
-   }
-   void rewrite(gsubop::NodeCountOp nodeCountOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
-      auto loc = nodeCountOp.getLoc();
-      auto ctxt = nodeCountOp.getContext();
-      auto graphPtr = adaptor.getGraph();
-      auto nodeBufLenI64 = rt::GraphStorage::nodeCount(rewriter, loc)({graphPtr})[0];
-      auto nodeBufLen = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), nodeBufLenI64);
-      llvm::SmallVector<mlir::Attribute, 2> columns;
-      llvm::SmallVector<mlir::Value, 2> columnValues;
-      columns.append({nodeCountOp.getRef()});
-      columnValues.append({nodeBufLen});
-      mapping.define(mlir::ArrayAttr::get(ctxt, columns), columnValues);
-      rewriter.replaceTupleStream(nodeCountOp, mapping);
-   }
-};
-
-class EdgeCountOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::EdgeCountOp> {
-   public:
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::EdgeCountOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::EdgeCountOp nodeCountOp) const override {
-      return success();
-   }
-   void rewrite(gsubop::EdgeCountOp relCountOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
-      auto loc = relCountOp.getLoc();
-      auto ctxt = relCountOp.getContext();
-      auto graphPtr = adaptor.getGraph();
-      auto edgeBufLenI64 = rt::GraphStorage::relCount(rewriter, loc)({graphPtr})[0];
-      auto edgeBufLen = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), edgeBufLenI64);
-      llvm::SmallVector<mlir::Attribute, 2> columns;
-      llvm::SmallVector<mlir::Value, 2> columnValues;
-      columns.append({relCountOp.getRef()});
-      columnValues.append({edgeBufLen});
-      mapping.define(mlir::ArrayAttr::get(ctxt, columns), columnValues);
-      rewriter.replaceTupleStream(relCountOp, mapping);
-   }
-};
-
 class ScanPropertySetLowering : public SubOpConversionPattern<gsubop::ScanPropertySetOp> {
    using SubOpConversionPattern<gsubop::ScanPropertySetOp>::SubOpConversionPattern;
    LogicalResult matchAndRewrite(gsubop::ScanPropertySetOp scanRefsOp, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
@@ -5514,14 +5503,13 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    patterns.insertPattern<EdgeRefGatherOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<NodeRefScatterOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<EdgeRefScatterOpLowering>(typeConverter, ctxt);
-   patterns.insertPattern<NodeCountOpLowering>(typeConverter, ctxt);
-   patterns.insertPattern<EdgeCountOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<ReduceGraphRefLowering>(typeConverter, ctxt);
    patterns.insertPattern<LookupGraphSetLowering>(typeConverter, ctxt);
    //PropertyGraph
    patterns.insertPattern<ScanPropertySetLowering>(typeConverter, ctxt);
    patterns.insertPattern<CreateIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<CreateIdentifierStateLowering>(typeConverter, ctxt);
+   patterns.insertPattern<GetIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<FilterByIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<CastPropertyRefLowering>(typeConverter, ctxt);
    patterns.insertPattern<GraphRefToStringOpLowering>(typeConverter, ctxt);

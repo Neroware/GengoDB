@@ -77,42 +77,6 @@ def ScanEdgeSetOp : GraphSubOp_Op<"scan_edge_set", [Pure,SubOperator,ReferencePr
     }];
 }
 
-def NodeCountOp : GraphSubOp_Op<"node_count", [Pure,SubOperator,ReferenceProducer,DeclareOpInterfaceMethods<StateUsingSubOperator>]> {
-    let summary = "graph node count";
-
-    let arguments = (ins TupleStream : $stream, Graph : $graph, ColumnDefAttr:$ref);
-    let results = (outs TupleStream : $res);
-    let assemblyFormat = [{  $stream `,` $graph `->` custom<CustDef>($ref) `:` type($graph) attr-dict }];
-    let extraClassDeclaration = [{
-        lingodb::compiler::dialect::tuples::ColumnDefAttr getProducedReference(){ return getRef(); }
-        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
-    }];
-}
-
-def EdgeCountOp : GraphSubOp_Op<"edge_count", [Pure,SubOperator,ReferenceProducer,DeclareOpInterfaceMethods<StateUsingSubOperator>]> {
-    let summary = "graph edge count";
-
-    let arguments = (ins TupleStream : $stream, Graph : $graph, ColumnDefAttr:$ref);
-    let results = (outs TupleStream : $res);
-    let assemblyFormat = [{  $stream `,` $graph `->` custom<CustDef>($ref) `:` type($graph) attr-dict }];
-    let extraClassDeclaration = [{
-        lingodb::compiler::dialect::tuples::ColumnDefAttr getProducedReference(){ return getRef(); }
-        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
-    }];
-}
-
-def NodeDegreeOp : GraphSubOp_Op<"node_degree", [Pure,SubOperator,ReferenceProducer,DeclareOpInterfaceMethods<StateUsingSubOperator>]> {
-    let summary = "node degree op";
-
-    let arguments = (ins TupleStream : $stream, Graph : $graph, ColumnDefAttr:$ref, StrAttr:$dir);
-    let results = (outs TupleStream : $res);
-    let assemblyFormat = [{  $stream `,` $graph `[` $dir `]` `->` custom<CustDef>($ref) `:` type($graph) attr-dict }];
-    let extraClassDeclaration = [{
-        lingodb::compiler::dialect::tuples::ColumnDefAttr getProducedReference(){ return getRef(); }
-        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
-    }];
-}
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Property Graph
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -134,7 +98,7 @@ def ScanPropertySetOp : GraphSubOp_Op<"scan_property_set", [Pure,SubOperator,Ref
 }
 
 //===----------------------------------------------------------------------===//
-// Relationship filtering by identifier
+// Graph ref filtering by identifier
 //===----------------------------------------------------------------------===//
 
 def CreateIdentifierOp : GraphSubOp_Op<"create_identifier", [Pure]> {
@@ -160,6 +124,21 @@ def FilterByIdentifierOp : GraphSubOp_Op<"filter_by_identifier", [Pure,SubOperat
         mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
     }];
 }
+
+def GetIdentifierOp : GraphSubOp_Op<"get_identifier", [Pure,SubOperator,ReferenceProducer]> {
+    let summary = "get identifier from graph ref";
+    let arguments = (ins TupleStream : $stream, ColumnRefAttr:$ref, ColumnDefAttr:$identDef);
+    let results = (outs TupleStream : $res);
+    let assemblyFormat = [{ $stream custom<CustRef>($ref) `->` custom<CustDef>($identDef) attr-dict }];
+    let extraClassDeclaration = [{
+        lingodb::compiler::dialect::tuples::ColumnDefAttr getProducedReference(){ return getIdentDef(); }
+        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
+    }];
+}
+
+//===----------------------------------------------------------------------===//
+// Property ref and output string creation
+//===----------------------------------------------------------------------===//
 
 def CastPropertyRefOp : GraphSubOp_Op<"cast_property_ref", [Pure,SubOperator]> {
     let summary = "cast to typed property ref";
