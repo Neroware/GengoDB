@@ -259,18 +259,18 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       auto* b = new Block();
       b->addArgument(tuples::TupleType::get(ctxt), loc);
       auto edgeSetArg = b->addArgument(edgeSetType, loc);
+      auto edgeRefType = createEdgeRefType(ctxt, group, graph);
+      auto [edgeRefColumnDef, edgeRefColumnRef] = createColumn(edgeRefType, "edges", "ref");
       nestedMapOp.getRegion().push_back(b);
       {
          mlir::OpBuilder::InsertionGuard guard(rewriter);
          rewriter.setInsertionPointToStart(b);
-         auto edgeRefType = createEdgeRefType(ctxt, group, graph);
-         auto [edgeRefColumnDef, edgeRefColumnRef] = createColumn(edgeRefType, "edges", "ref");
          mlir::Value inner = rewriter.create<gsubop::ScanEdgeSetOp>(loc, edgeSetArg, edgeRefColumnDef);
-         inner = lowerPredicate(rewriter, loc, inner, op.getP(), edgeRefColumnRef, graph, columnManager);
-         inner = lowerTerm(rewriter, loc, inner, op.getO(), edgeRefType.getToMembers().getMembers()[0], edgeRefColumnRef, graph, localIdents, columnManager);
          rewriter.create<tuples::ReturnOp>(loc, inner);
       }
       stream = nestedMapOp;
+      stream = lowerPredicate(rewriter, loc, stream, op.getP(), edgeRefColumnRef, graph, columnManager);
+      stream = lowerTerm(rewriter, loc, stream, op.getO(), edgeRefType.getToMembers().getMembers()[0], edgeRefColumnRef, graph, localIdents, columnManager);
       return stream;
    }
    mlir::Value lowerPredicate(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, mlir::Attribute p, tuples::ColumnRefAttr edgeRef, std::string graph, tuples::ColumnManager& columnManager) const {
@@ -335,7 +335,7 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
                rewriter.create<tuples::ReturnOp>(loc, val);
             }
             stream = mapOp.getResult();
-            stream = rewriter.create<subop::FilterOp>(loc, stream, subop::FilterSemantic::none_true, rewriter.getArrayAttr({filterRef}));
+            stream = rewriter.create<subop::FilterOp>(loc, stream, subop::FilterSemantic::all_true, rewriter.getArrayAttr({filterRef}));
          }
          else {
             auto ref = varTerm.getProducedBinding().getName();
