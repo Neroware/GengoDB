@@ -47,6 +47,7 @@ using namespace gengodb::compiler::dialect;
 using Member = subop::Member;
 using LocalIdentifierMapping = llvm::DenseMap<mlir::StringRef, mlir::Value>;
 using BlankNodeMapping = llvm::DenseMap<Operation*, std::shared_ptr<LocalIdentifierMapping>>;
+using VariableBinding = llvm::DenseMap<mlir::SymbolRefAttr, tuples::ColumnDefAttr>;
 using DefMappingCollector = llvm::SmallVector<subop::DefMappingPairT>;
 using RefMappingCollector = llvm::SmallVector<subop::RefMappingPairT>;
 struct GPMToSubOpLoweringPass
@@ -196,10 +197,11 @@ class BasicGraphPatternLowering : public OpConversionPattern<gpm::BasicGraphPatt
 };
 
 class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
+   VariableBinding& bindings;
    const BlankNodeMapping& blankNodes;
    public:
-   TriplePatternLowering(TypeConverter& typeConverter, MLIRContext* context, const BlankNodeMapping& blankNodes)
-      : OpConversionPattern<gpm::TriplePatternOp>(typeConverter, context), blankNodes(blankNodes) {}
+   TriplePatternLowering(TypeConverter& typeConverter, MLIRContext* context, VariableBinding& bindings, const BlankNodeMapping& blankNodes)
+      : OpConversionPattern<gpm::TriplePatternOp>(typeConverter, context), bindings(bindings), blankNodes(blankNodes) {}
    LogicalResult matchAndRewrite(gpm::TriplePatternOp triplePatternOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
       auto it = blankNodes.find(triplePatternOp.getOperation());
       if (it == blankNodes.end()) return failure();
@@ -218,7 +220,7 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       return success();
    }
    private:
-   mlir::Value lowerSubjectFirst(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, gpm::TriplePatternOp op, LocalIdentifierMapping& localIdents, tuples::ColumnManager& columnManager) const {
+   mlir::Value lowerSubjectFirst(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, gpm::TriplePatternOp op, LocalIdentifierMapping& localIdents, tuples::ColumnManager& columnManager) const {      
       auto ctxt = rewriter.getContext();
       auto& memberManager = ctxt->getLoadedDialect<SubOperatorDialect>()->getMemberManager();
       std::string group = op.getGraphRef().getName().getRootReference().str();
@@ -248,6 +250,9 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
             nodeRef = nodeRef_;
          }
          stream = nestedMapOp.getRes();
+      }
+      else if (auto varTermAttr = mlir::dyn_cast_or_null<gpm::VariableTermAttr>(op.getS())) {
+         assert(false && "bound subject not yet supported.");
       }
       else if (auto bnodeTermAttr = mlir::dyn_cast_or_null<gpm::BNodeTermAttr>(op.getS())) {
          assert(false && "BNodes not yet supported");
@@ -338,8 +343,9 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
             stream = rewriter.create<subop::FilterOp>(loc, stream, subop::FilterSemantic::all_true, rewriter.getArrayAttr({filterRef}));
          }
          else {
-            auto ref = varTerm.getProducedBinding().getName();
-            auto def = createDef(columnManager, ref.getRootReference().str(), ref.getLeafReference().str(), memberManager.getType(nodeMember), false);
+            auto ref = varTerm.getProducedBinding();
+            auto def = createDef(columnManager, ref.getName().getRootReference().str(), ref.getName().getLeafReference().str(), memberManager.getType(nodeMember), false);
+            bindings[ref.getName()] = def;
             stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeMember, def}}));
          }
       }
@@ -381,11 +387,12 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    ctxt->loadDialect<gsubop::GraphSubOpDialect>();
    RewritePatternSet patterns(ctxt);
 
+   VariableBinding bindings;
    BlankNodeMapping blankNodes;
 
    patterns.insert<NamedGraphLowering>(typeConverter, ctxt);
    patterns.insert<BasicGraphPatternLowering>(typeConverter, ctxt, blankNodes);
-   patterns.insert<TriplePatternLowering>(typeConverter, ctxt, blankNodes);
+   patterns.insert<TriplePatternLowering>(typeConverter, ctxt, bindings, blankNodes);
 
    if (failed(applyFullConversion(module, target, std::move(patterns))))
       signalPassFailure();
