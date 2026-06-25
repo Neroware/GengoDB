@@ -108,13 +108,6 @@ def CreateIdentifierOp : GraphSubOp_Op<"create_identifier", [Pure]> {
     let assemblyFormat = [{ `{` `name` `=` $graph `,` `id` `=` $ident `}` `:` type($res) attr-dict }];
 }
 
-def CreateIdentifierStateOp : GraphSubOp_Op<"create_identifier_state", [Pure,StateCreator]> {
-    let summary = "create type identifier state";
-    let arguments = (ins StrAttr:$graph, StrAttr:$ident);
-    let results = (outs SimpleState : $res);
-    let assemblyFormat = [{ `{` `name` `=` $graph `,` `id` `=` $ident `}` `:` type($res) attr-dict }];
-}
-
 def FilterByIdentifierOp : GraphSubOp_Op<"filter_by_identifier", [Pure,SubOperator]> {
     let summary = "filter graph ref by identifier";
     let arguments = (ins TupleStream : $stream, ColumnRefAttr : $ref, Identifier : $ident);
@@ -133,6 +126,18 @@ def GetIdentifierOp : GraphSubOp_Op<"get_identifier", [Pure,SubOperator,Referenc
     let extraClassDeclaration = [{
         lingodb::compiler::dialect::tuples::ColumnDefAttr getProducedReference(){ return getIdentDef(); }
         mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
+    }];
+}
+
+def ScanIdentifierOp : GraphSubOp_Op<"scan_identifier", [Pure,SubOperator,ReferenceProducer]> {
+    let summary = "scan identifier";
+    let arguments = (ins AnyType : $ident, ColumnDefAttr: $ref);
+    let results = (outs TupleStream : $res);
+    let assemblyFormat = [{ $ident `:` type($ident) custom<CustDef>($ref) attr-dict }];
+    let extraClassDeclaration = [{
+        lingodb::compiler::dialect::tuples::ColumnDefAttr getProducedReference(){ return getRef(); }
+        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
+        StateMembersAttr getMembers();
     }];
 }
 

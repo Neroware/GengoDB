@@ -5274,17 +5274,14 @@ class CreateIdentifierLowering : public SubOpConversionPattern<gsubop::CreateIde
    }
 };
 
-class CreateIdentifierStateLowering : public SubOpConversionPattern<gsubop::CreateIdentifierStateOp> {
-   using SubOpConversionPattern<gsubop::CreateIdentifierStateOp>::SubOpConversionPattern;
-   LogicalResult matchAndRewrite(gsubop::CreateIdentifierStateOp createOp, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
-      auto loc = createOp->getLoc();
-      auto& namedGraphManager = rewriter.getContext()->getLoadedDialect<gsubop::GraphSubOpDialect>()->getNamedGraphManager();
-      // TODO Do lookup at compile time here!
-      int32_t id = namedGraphManager.resolve(createOp.getGraph().str(), createOp.getIdent().str());
-      mlir::Value typeI32 = rewriter.create<arith::ConstantOp>(loc, rewriter.getIntegerAttr(rewriter.getI32Type(), id));
-      mlir::Value ref = rewriter.create<util::AllocaOp>(createOp->getLoc(), typeConverter->convertType(createOp.getType()), mlir::Value());
-      rewriter.create<util::StoreOp>(loc, typeI32, ref, mlir::Value());
-      rewriter.replaceOp(createOp, ref);
+class ScanIdentifierLowering : public SubOpConversionPattern<gsubop::ScanIdentifierOp> {
+   using SubOpConversionPattern<gsubop::ScanIdentifierOp>::SubOpConversionPattern;
+   LogicalResult matchAndRewrite(gsubop::ScanIdentifierOp scanOp, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
+      if (!mlir::isa<gsubop::IdentifierType>(scanOp.getIdent().getType())) return failure();
+      auto loc = scanOp->getLoc();
+      ColumnMapping mapping;
+      mapping.define(scanOp.getRef(), adaptor.getIdent());
+      rewriter.replaceTupleStream(scanOp, mapping);
       return success();
    }
 };
@@ -5508,7 +5505,7 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    //PropertyGraph
    patterns.insertPattern<ScanPropertySetLowering>(typeConverter, ctxt);
    patterns.insertPattern<CreateIdentifierLowering>(typeConverter, ctxt);
-   patterns.insertPattern<CreateIdentifierStateLowering>(typeConverter, ctxt);
+   patterns.insertPattern<ScanIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<GetIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<FilterByIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<CastPropertyRefLowering>(typeConverter, ctxt);

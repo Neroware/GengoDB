@@ -191,6 +191,13 @@ mlir::Operation* gsubop::GetIdentifierOp::cloneSubOp(mlir::OpBuilder& builder, m
    return newOp;
 }
 
+mlir::Operation* gsubop::ScanIdentifierOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
+   auto newOp = builder.create<ScanIdentifierOp>(this->getLoc(), mapping.lookupOrDefault(getIdent()), columnMapping.clone(getRef()));
+   mapResults(mapping, this->getOperation(), newOp.getOperation());
+
+   return newOp;
+}
+
 
 #define GET_OP_CLASSES
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.cpp.inc"

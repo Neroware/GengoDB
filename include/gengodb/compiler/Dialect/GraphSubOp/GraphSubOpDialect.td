@@ -129,8 +129,13 @@ def TypedPropertyRef : GraphSubOp_Type<"TypedPropertyRef", "typed_property_ref",
     let parameters = (ins "StateMembersAttr":$members);
     let assemblyFormat = "`<` custom<StateMembers>($members) `>`";
 }
-def Identifier : GraphSubOp_Type<"Identifier", "identifier", []> {
+def Identifier : GraphSubOp_Type<"Identifier", "identifier", [State]> {
     let summary = "identifier";
+    let extraClassDeclaration = [{
+        StateMembersAttr getMembers(){
+            return lingodb::compiler::dialect::subop::StateMembersAttr::get(getContext(), {});
+        }
+    }];
 }
 
 def AnyGraphRef: AnyTypeOf<[NodeRef,EdgeRef,PropertyRef]>;

@@ -229,9 +229,7 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       tuples::ColumnRefAttr nodeRef;
       if (auto identTermAttr = mlir::dyn_cast_or_null<gpm::IdentifierTermAttr>(op.getS())) {
          auto nodesRef = createRef(columnManager, group, graph + "_vx");
-         auto identMember = createMember(ctxt, "lookupIdent", gsubop::IdentifierType::get(ctxt));
-         auto identStateType = SimpleStateType::get(ctxt, createStateMembersAttr(ctxt, {identMember}));
-         auto identState = rewriter.create<gsubop::CreateIdentifierStateOp>(loc, identStateType, graph, identTermAttr.getIdent());
+         auto identState = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, identTermAttr.getIdent());
          auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({nodesRef}));
          auto* b = new Block();
          b->addArgument(tuples::TupleType::get(ctxt), loc);
@@ -242,7 +240,7 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
             mlir::OpBuilder::InsertionGuard guard(rewriter);
             rewriter.setInsertionPointToStart(b);
             auto [identDef, identRef] = createColumn(gsubop::IdentifierType::get(ctxt), "idents", "lookup");
-            auto scan = rewriter.create<subop::ScanOp>(loc, identState, createColumnDefMemberMappingAttr(rewriter.getContext(), {{identStateType.getMembers().getMembers()[0], identDef}}));
+            auto scan = rewriter.create<gsubop::ScanIdentifierOp>(loc, identState, identDef);
             nodeRefType = createNodeRefType(ctxt, group, graph);
             auto [nodeDef, nodeRef_] = createColumn(nodeRefType, "nodes", "ref");
             mlir::Value lookup = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), scan, nodeSetArg, rewriter.getArrayAttr({identRef}), nodeDef);
