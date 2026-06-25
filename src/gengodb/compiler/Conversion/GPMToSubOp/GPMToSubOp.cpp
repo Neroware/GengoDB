@@ -250,7 +250,10 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
          stream = nestedMapOp.getRes();
       }
       else if (auto varTermAttr = mlir::dyn_cast_or_null<gpm::VariableTermAttr>(op.getS())) {
-         assert(false && "bound subject not yet supported.");
+         auto bindingRef = varTermAttr.getBindingReference();
+         auto bindingDef = bindings[bindingRef.getName()];
+         nodeRef = columnManager.createRef(bindingDef.getColumnPtr().get());
+         nodeRefType = mlir::cast<gsubop::NodeRefType>(bindingDef.getColumn().type);
       }
       else if (auto bnodeTermAttr = mlir::dyn_cast_or_null<gpm::BNodeTermAttr>(op.getS())) {
          assert(false && "BNodes not yet supported");
