@@ -4373,11 +4373,11 @@ class GetIdentifierLowering : public SubOpTupleStreamConsumerConversionPattern<g
          key = rt::GraphStorage::nodeId(rewriter, loc)(ref)[0];
       }
       if (mlir::isa<gsubop::EdgeRefType>(type)) {
-         auto resType = typeConverter->convertType(op.getRes().getType());
+         auto resType = typeConverter->convertType(op.getIdentDef().getColumn().type);
          key = rewriter.create<util::LoadElementOp>(loc, resType, ref, gsubop::RELATIONSHIP_ENTRY_RELATIONSHIP_TYPE_PTR);
       }
       if (mlir::isa<gsubop::PropertyRefType>(type)) {
-         auto resType = typeConverter->convertType(op.getRes().getType());
+         auto resType = typeConverter->convertType(op.getIdentDef().getColumn().type);
          key = rewriter.create<util::LoadElementOp>(loc, resType, ref, gsubop::PROPERTY_ENTRY_PROPERTY_KEY_PTR);
       }
       mapping.define(op.getIdentDef(), key);
@@ -5278,7 +5278,6 @@ class ScanIdentifierLowering : public SubOpConversionPattern<gsubop::ScanIdentif
    using SubOpConversionPattern<gsubop::ScanIdentifierOp>::SubOpConversionPattern;
    LogicalResult matchAndRewrite(gsubop::ScanIdentifierOp scanOp, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
       if (!mlir::isa<gsubop::IdentifierType>(scanOp.getIdent().getType())) return failure();
-      auto loc = scanOp->getLoc();
       ColumnMapping mapping;
       mapping.define(scanOp.getRef(), adaptor.getIdent());
       rewriter.replaceTupleStream(scanOp, mapping);
