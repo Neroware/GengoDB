@@ -45,7 +45,7 @@ namespace {
 using namespace lingodb::compiler::dialect;
 using namespace gengodb::compiler::dialect;
 using Member = subop::Member;
-using LocalIdentifierMapping = llvm::DenseMap<mlir::StringRef, mlir::Value>;
+using LocalIdentifierMapping = llvm::DenseMap<mlir::StringRef, tuples::ColumnDefAttr>;
 using BlankNodeMapping = llvm::DenseMap<Operation*, std::shared_ptr<LocalIdentifierMapping>>;
 using VariableBinding = llvm::DenseMap<mlir::SymbolRefAttr, tuples::ColumnDefAttr>;
 using DefMappingCollector = llvm::SmallVector<subop::DefMappingPairT>;
@@ -256,7 +256,9 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
          nodeRefType = mlir::cast<gsubop::NodeRefType>(bindingDef.getColumn().type);
       }
       else if (auto bnodeTermAttr = mlir::dyn_cast_or_null<gpm::BNodeTermAttr>(op.getS())) {
-         assert(false && "BNodes not yet supported");
+         auto bindingDef = localIdents[bnodeTermAttr.getLocalId()];
+         nodeRef = columnManager.createRef(bindingDef.getColumnPtr().get());
+         nodeRefType = mlir::cast<gsubop::NodeRefType>(bindingDef.getColumn().type);
       }
       auto edgeSetType = memberManager.getType(nodeRefType.getOutgoingMembers().getMembers()[0]);
       auto [edgesDef, edgesRef] = createColumn(edgeSetType, "edges", "outgoing");
@@ -314,8 +316,10 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
          nodeRef = columnManager.createRef(bindingDef.getColumnPtr().get());
          nodeRefType = mlir::cast<gsubop::NodeRefType>(bindingDef.getColumn().type);
       }
-      else if (mlir::dyn_cast_or_null<gpm::BNodeTermAttr>(op.getO())) {
-         assert(false && "BNodes not yet supported");
+      else if (auto bnodeTermAttr = mlir::dyn_cast_or_null<gpm::BNodeTermAttr>(op.getO())) {
+         auto bindingDef = localIdents[bnodeTermAttr.getLocalId()];
+         nodeRef = columnManager.createRef(bindingDef.getColumnPtr().get());
+         nodeRefType = mlir::cast<gsubop::NodeRefType>(bindingDef.getColumn().type);
       }
       auto edgeSetType = memberManager.getType(nodeRefType.getIncomingMembers().getMembers()[0]);
       auto [edgesDef, edgesRef] = createColumn(edgeSetType, "edges", "incoming");
@@ -461,7 +465,37 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
          }
       }
       else if (auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(term)) {
-         assert(false && "BNodes not yet supported");
+         if (localIdents.count(bnode.getLocalId()) > 0) {
+            auto bindingDef = localIdents[bnode.getLocalId()];
+            auto bindingRef = columnManager.createRef(bindingDef.getColumnPtr().get());
+            auto [nodeRefColumnDef, nodeRefColumnRef] = createColumn(memberManager.getType(nodeMember), "nodes", "ref");
+            auto [leftDef, leftRef] = createColumn(gsubop::IdentifierType::get(rewriter.getContext()), "idents", "get");
+            auto [rightDef, rightRef] = createColumn(gsubop::IdentifierType::get(rewriter.getContext()), "idents", "get");
+            auto [filterDef, filterRef] = createColumn(rewriter.getI1Type(), "map", "ident");
+            stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeMember, nodeRefColumnDef}}));
+            stream = rewriter.create<gsubop::GetIdentifierOp>(loc, stream, bindingRef, leftDef);
+            stream = rewriter.create<gsubop::GetIdentifierOp>(loc, stream, nodeRefColumnRef, rightDef);
+            auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(rewriter.getContext()), stream, rewriter.getArrayAttr({filterDef}), rewriter.getArrayAttr({leftRef, rightRef}));
+            Block* mapBlock = new Block;
+            auto left = mapBlock->addArgument(rewriter.getI32Type(), loc);
+            auto right = mapBlock->addArgument(rewriter.getI32Type(), loc);
+            mapOp.getRegion().push_back(mapBlock);
+            {
+               mlir::OpBuilder::InsertionGuard guard(rewriter);
+               rewriter.setInsertionPointToStart(mapBlock);
+               auto leftI32 = rewriter.create<UnrealizedConversionCastOp>(loc, rewriter.getI32Type(), left).getResult(0);
+               auto rightI32 = rewriter.create<UnrealizedConversionCastOp>(loc, rewriter.getI32Type(), right).getResult(0);
+               mlir::Value val = rewriter.create<arith::CmpIOp>(loc, rewriter.getI1Type(), mlir::arith::CmpIPredicate::eq, leftI32, rightI32);
+               rewriter.create<tuples::ReturnOp>(loc, val);
+            }
+            stream = mapOp.getResult();
+            stream = rewriter.create<subop::FilterOp>(loc, stream, subop::FilterSemantic::all_true, rewriter.getArrayAttr({filterRef}));
+         } 
+         else {
+            auto def = createDef(columnManager, "bnode", bnode.localId(), memberManager.getType(nodeMember), true);
+            localIdents[bnode.getLocalId()] = def;
+            stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeMember, def}}));
+         }
       }
       return stream;
    }

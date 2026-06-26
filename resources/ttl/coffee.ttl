@@ -38,4 +38,8 @@ ex:bob ex:eats ex:miso .
 ex:bob ex:drinks ex:miso .
 # =================================
 ex:drinks ex:type ex:relation .
-ex:eats ex:type ex:relation
+ex:eats ex:type ex:relation .
+# =================================
+ex:steve ex:eats _:food0 .
+_:food0 ex:portions "100"^^xsd:int .
+_:food0 ex:portions "101"^^xsd:int .
