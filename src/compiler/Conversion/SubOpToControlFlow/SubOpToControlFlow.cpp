@@ -4895,7 +4895,7 @@ class EdgeRefGatherOpLowering : public SubOpTupleStreamConsumerConversionPattern
          auto nodeEntryType = getNodeEntryType<EntryStorageHelper>(mlir::cast<gsubop::NodeRefType>(memberManager.getType(member)), *typeConverter);
          auto nodeBufLen = rewriter.create<mlir::arith::IndexCastOp>(loc, rewriter.getIndexType(), nodeBufLenI64);
          auto nodeBuf = rewriter.create<util::BufferCreateOp>(loc, util::BufferType::get(ctxt, nodeEntryType), nodeBufPtr, nodeBufLen);
-         auto nodeIdRef = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, rewriter.getI32Type()), ref, gsubop::RELATIONSHIP_ENTRY_SECOND_NODE_ID_PTR);
+         auto nodeIdRef = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, rewriter.getI32Type()), ref, gsubop::RELATIONSHIP_ENTRY_FIRST_NODE_ID_PTR);
          auto nodeId = rewriter.create<util::LoadOp>(loc, nodeIdRef);
          auto nodeIndex = rewriter.create<mlir::arith::IndexCastOp>(loc, rewriter.getIndexType(), nodeId);
          auto nodeRef = rewriter.create<util::BufferGetElementRef>(loc, util::RefType::get(ctxt, nodeEntryType), nodeBuf, nodeIndex);

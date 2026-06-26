@@ -30,6 +30,7 @@ ex:bob ex:drinks ex:beer .
 ex:bob ex:eats ex:steak .
 ex:bob ex:eats ex:egg .
 ex:bob ex:eats ex:sushi .
+ex:steve ex:eats ex:sushi .
 # =================================
 ex:bob ex:eats ex:soup .
 ex:bob ex:drinks ex:soup .
