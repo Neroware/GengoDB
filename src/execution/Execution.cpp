@@ -2,11 +2,15 @@
 
 #include "lingodb/catalog/IndexCatalogEntry.h"
 #include "lingodb/catalog/TableCatalogEntry.h"
+#include "gengodb/catalog/GraphCatalogEntry.h"
 #include "lingodb/compiler/Conversion/ArrowToStd/ArrowToStd.h"
 #include "lingodb/compiler/Conversion/DBToStd/DBToStd.h"
+#include "gengodb/compiler/Conversion/GPMToSubOp/GPMToSubOpPass.h"
 #include "lingodb/compiler/Conversion/RelAlgToSubOp/RelAlgToSubOpPass.h"
 #include "lingodb/compiler/Conversion/SubOpToControlFlow/SubOpToControlFlowPass.h"
 #include "lingodb/compiler/Dialect/RelAlg/Passes.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorOps.h"
 #include "lingodb/compiler/Dialect/SubOperator/Transforms/Passes.h"
 #include "lingodb/compiler/helper.h"
@@ -33,6 +37,7 @@ utility::GlobalSetting<std::string> subopOptPassesSetting("system.subop.opt", "R
 utility::GlobalSetting<bool> cleanupAfterSubOp("system.opt.cleanup_after_subop", false);
 utility::GlobalSetting<bool> cleanupAfterImperative("system.opt.cleanup_after_imperative", false);
 utility::Tracer::Event queryOptimizationEvent("Compilation", "Query Opt.");
+utility::Tracer::Event lowerGpmEvent("Compilation", "Lower GPM");
 utility::Tracer::Event lowerRelalgEvent("Compilation", "Lower RelAlg");
 utility::Tracer::Event lowerSubOpEvent("Compilation", "Lower SubOp");
 utility::Tracer::Event lowerImperativeEvent("Compilation", "Lower DB");
@@ -40,6 +45,7 @@ utility::Tracer::Event loadIndicesEvent("Compilation", "Lower DB");
 } // end anonymous namespace
 namespace lingodb::execution {
 using namespace lingodb::compiler::dialect;
+using namespace gengodb::compiler::dialect;
 class DefaultQueryOptimizer : public QueryOptimizer {
    void optimize(mlir::ModuleOp& moduleOp) override {
       auto start = std::chrono::high_resolution_clock::now();
@@ -55,6 +61,39 @@ class DefaultQueryOptimizer : public QueryOptimizer {
       }
       auto end = std::chrono::high_resolution_clock::now();
       timing["QOpt"] = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+   }
+};
+class GpmLoweringStep : public LoweringStep {
+   std::string getShortName() const override {
+      return "gsubop";
+   }
+   void implement(mlir::ModuleOp& moduleOp) override {
+      utility::Tracer::Trace trace(lowerGpmEvent);
+
+      auto startLowerGpm = std::chrono::high_resolution_clock::now();
+      mlir::PassManager lowerGpmPm(moduleOp->getContext());
+      lowerGpmPm.enableVerifier(verify);
+      addLingoDBInstrumentation(lowerGpmPm, getSerializationState());
+      gpm::createLowerGPMToSubOpPipeline(lowerGpmPm);
+      if (mlir::failed(lowerGpmPm.run(moduleOp))) {
+         error.emit() << "Lowering of GPM to Sub-Operators failed";
+         return;
+      }
+      auto endLowerGpm = std::chrono::high_resolution_clock::now();
+      timing["lowerGpm"] = std::chrono::duration_cast<std::chrono::microseconds>(endLowerGpm - startLowerGpm).count() / 1000.0;
+      utility::Tracer::Trace indexLoadingTrace(loadIndicesEvent);
+      // Load the required tables/indices for the query
+      moduleOp.walk([&](mlir::Operation* op) {
+         if (auto getExternalOp = mlir::dyn_cast_or_null<gsubop::GetExternalGraphOp>(*op)) {
+            auto* catalog = getCatalog();
+            if (auto graph = catalog->getTypedEntry<gengodb::catalog::RDFGraphCatalogEntry>(getExternalOp.getName().str())) {
+               auto rdfGraph = graph.value();
+               rdfGraph->ensureFullyLoaded();
+               moduleOp->getContext()->getLoadedDialect<gsubop::GraphSubOpDialect>()->getNamedGraphManager().addNamedGraph(
+                  rdfGraph->getName(), rdfGraph->getIri().identifier().data(), rdfGraph->getNodes());
+            }
+         }
+      });
    }
 };
 class RelAlgLoweringStep : public LoweringStep {
@@ -404,6 +443,7 @@ std::unique_ptr<QueryExecutionConfig> createQueryExecutionConfig(execution::Exec
       config->frontend = createMLIRFrontend();
    }
    config->queryOptimizer = std::make_unique<DefaultQueryOptimizer>();
+   config->loweringSteps.emplace_back(std::make_unique<GpmLoweringStep>());
    config->loweringSteps.emplace_back(std::make_unique<RelAlgLoweringStep>());
    config->loweringSteps.emplace_back(std::make_unique<SubOpLoweringStep>());
    config->loweringSteps.emplace_back(std::make_unique<DefaultImperativeLowering>());

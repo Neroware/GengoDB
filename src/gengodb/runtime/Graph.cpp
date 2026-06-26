@@ -308,6 +308,9 @@ uint8_t* GraphStorage::getRelPropertyLListHeadOf(uint8_t* ref) {
         default: assert(false && "should not happen");
     }
 }
+uint8_t* GraphStorage::graphPtr(const uint8_t* ref) { 
+    return const_cast<uint8_t*>(lookupGraph(ref)); 
+}
 template<>
 const PropertyGraph* GraphStorage::lookupGraph<PropertyGraph>(const uint8_t* ref) {
     const uint8_t* ptr = lookupGraph(ref);

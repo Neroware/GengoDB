@@ -36,6 +36,7 @@
 #include "lingodb/gengodb/runtime/BuiltinGraphs.h"
 #include "lingodb/gengodb/runtime/GraphData.h"
 #include "gengodb/compiler/Conversion/GraphSubOpToCF/GraphHelpers.h"
+#include "gengodb/compiler/Conversion/GraphSubOpToCF/GraphEntryTypes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -976,7 +977,7 @@ static mlir::TupleType getHashMultiMapValueType(subop::HashMultiMapType t, mlir:
    return mlir::TupleType::get(t.getContext(), {i8PtrType, valTupleType});
 }
 
-#include "gengodb/compiler/Conversion/GraphSubOpToCF/GraphEntryTypes.inc"
+// Graph entry type helpers are in GraphEntryTypes.h (included at top of file).
 
 static TupleType convertTuple(TupleType tupleType, TypeConverter& typeConverter) {
    llvm::SmallVector<Type> types;
@@ -4353,6 +4354,37 @@ class CreateBuiltinGraphLowering : public SubOpConversionPattern<gsubop::CreateB
    }
 };
 
+class GetIdentifierLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::GetIdentifierOp>{
+   public:
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::GetIdentifierOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::GetIdentifierOp op) const override {
+      auto type = op.getRef().getColumn().type;
+      if (mlir::isa<gsubop::NodeRefType>(type) || mlir::isa<gsubop::EdgeRefType>(type) 
+         || mlir::isa<gsubop::PropertyRefType>(type))
+            return success();
+      return failure();
+   }
+   void rewrite(gsubop::GetIdentifierOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto loc = op->getLoc();
+      auto type = op.getRef().getColumn().type;
+      auto ref = mapping.resolve(op, op.getRef());
+      mlir::Value key;
+      if (mlir::isa<gsubop::NodeRefType>(type)) {
+         key = rt::GraphStorage::nodeId(rewriter, loc)(ref)[0];
+      }
+      if (mlir::isa<gsubop::EdgeRefType>(type)) {
+         auto resType = typeConverter->convertType(op.getIdentDef().getColumn().type);
+         key = rewriter.create<util::LoadElementOp>(loc, resType, ref, gsubop::RELATIONSHIP_ENTRY_RELATIONSHIP_TYPE_PTR);
+      }
+      if (mlir::isa<gsubop::PropertyRefType>(type)) {
+         auto resType = typeConverter->convertType(op.getIdentDef().getColumn().type);
+         key = rewriter.create<util::LoadElementOp>(loc, resType, ref, gsubop::PROPERTY_ENTRY_PROPERTY_KEY_PTR);
+      }
+      mapping.define(op.getIdentDef(), key);
+      rewriter.replaceTupleStream(op, mapping);
+   }
+};
+
 class GetExternalGraphLowering : public SubOpConversionPattern<gsubop::GetExternalGraphOp> {
    public:
    using SubOpConversionPattern<gsubop::GetExternalGraphOp>::SubOpConversionPattern;
@@ -4410,7 +4442,7 @@ class ScanNodeSetLowering : public SubOpConversionPattern<gsubop::ScanNodeSetOp>
       auto nodeRefColType = scanRefsOp.getProducedReference().getColumn().type;
       auto nodeRefType = mlir::cast<gsubop::NodeRefType>(nodeRefColType);
       auto loc = scanRefsOp->getLoc();
-      auto nodeEntryType = getNodeEntryType(nodeRefType, *typeConverter);
+      auto nodeEntryType = getNodeEntryType<EntryStorageHelper>(nodeRefType, *typeConverter);
       auto it = rt::GraphStorage::createNodeIterator(rewriter, loc)({adaptor.getNodeSet()})[0];
       implementBufferIteration(scanRefsOp->hasAttr("parallel"), it, nodeEntryType, loc, rewriter, *typeConverter, scanRefsOp.getOperation(), [&](SubOpRewriter& rewriter, mlir::Value ptr) {
          auto inUseRef = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(rewriter.getContext(), rewriter.getI1Type()), ptr, gsubop::NODE_ENTRY_IN_USE_PTR);
@@ -4453,7 +4485,7 @@ class ScanEdgeSetLowering : public SubOpConversionPattern<gsubop::ScanEdgeSetOp>
    LogicalResult genIterationStrategyAll(gsubop::ScanEdgeSetOp scanRefsOp, OpAdaptor adaptor, SubOpRewriter& rewriter, gsubop::EdgeRefType edgeRefType) const {
       ColumnMapping mapping;
       auto loc = scanRefsOp->getLoc();
-      auto edgeEntryType = getEdgeEntryType(edgeRefType, *typeConverter);
+      auto edgeEntryType = getEdgeEntryType<EntryStorageHelper>(edgeRefType, *typeConverter);
       auto it = rt::GraphStorage::createRelIterator(rewriter, loc)({adaptor.getEdgeSet()})[0];
       implementBufferIteration(scanRefsOp->hasAttr("parallel"), it, edgeEntryType, loc, rewriter, *typeConverter, scanRefsOp.getOperation(), [&](SubOpRewriter& rewriter, mlir::Value ptr) {
          auto inUseRef = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(rewriter.getContext(), rewriter.getI1Type()), ptr, gsubop::RELATIONSHIP_ENTRY_IN_USE_PTR);
@@ -4484,7 +4516,7 @@ class ScanEdgeSetLowering : public SubOpConversionPattern<gsubop::ScanEdgeSetOp>
          return cmpsgtez;
       };
 
-      auto edgeEntryType = getEdgeEntryType(refType, *typeConverter);
+      auto edgeEntryType = getEdgeEntryType<EntryStorageHelper>(refType, *typeConverter);
       auto producedRefType = mlir::cast<gsubop::EdgeRefType>(scanRefsOp.getProducedReference().getColumn().type);
       auto nodeRefType = memberManager.getType(producedRefType.getFromMembers().getMembers()[0]);
       auto nodeEntryRefType = mlir::cast<util::RefType>(typeConverter->convertType(nodeRefType));
@@ -4625,7 +4657,7 @@ class ScanEdgeSetLowering : public SubOpConversionPattern<gsubop::ScanEdgeSetOp>
          return cmpsgtez;
       };
 
-      auto edgeEntryType = getEdgeEntryType(refType, *typeConverter);
+      auto edgeEntryType = getEdgeEntryType<EntryStorageHelper>(refType, *typeConverter);
       auto producedRefType = mlir::cast<gsubop::EdgeRefType>(scanRefsOp.getProducedReference().getColumn().type);
       auto nodeRefType = memberManager.getType(producedRefType.getFromMembers().getMembers()[0]);
       auto nodeEntryRefType = mlir::cast<util::RefType>(typeConverter->convertType(nodeRefType));
@@ -4785,7 +4817,7 @@ class NodeRefGatherOpLowering : public SubOpTupleStreamConsumerConversionPattern
       processMembers(gatherOp, outgoingMembers, memberManager, processEdgeSetMembers);
       processMembers(gatherOp, incomingMembers, memberManager, processEdgeSetMembers);
       EntryStorageHelper storageHelper(gatherOp, propertyMembers, false, typeConverter);
-      auto nodeEntryType = getNodeEntryType(referenceType, *typeConverter);
+      auto nodeEntryType = getNodeEntryType<EntryStorageHelper>(referenceType, *typeConverter);
       auto propertyType = nodeEntryType.getTypes()[gsubop::NODE_ENTRY_PROPERTY_PTR];
       auto propRef = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, propertyType), ref, gsubop::NODE_ENTRY_PROPERTY_PTR);
       auto props = storageHelper.getValueMap(propRef, rewriter, loc);
@@ -4844,11 +4876,11 @@ class EdgeRefGatherOpLowering : public SubOpTupleStreamConsumerConversionPattern
          columns.append({columnDef});
          columnValues.append({edgeId});
       });
-      auto edgeEntryType = getEdgeEntryType(referenceType, *typeConverter);
+      auto edgeEntryType = getEdgeEntryType<EntryStorageHelper>(referenceType, *typeConverter);
       auto nodeBufPtr = rt::GraphStorage::nodeStorePtr(rewriter, loc)({ref})[0];
       auto nodeBufLenI64 = rt::GraphStorage::nodeHighWater(rewriter, loc)({ref})[0];
       processMembers(gatherOp, toMembers, memberManager, [&](size_t i, const Member& member){
-         auto nodeEntryType = getNodeEntryType(mlir::cast<gsubop::NodeRefType>(memberManager.getType(member)), *typeConverter);
+         auto nodeEntryType = getNodeEntryType<EntryStorageHelper>(mlir::cast<gsubop::NodeRefType>(memberManager.getType(member)), *typeConverter);
          auto nodeBufLen = rewriter.create<mlir::arith::IndexCastOp>(loc, rewriter.getIndexType(), nodeBufLenI64);
          auto nodeBuf = rewriter.create<util::BufferCreateOp>(loc, util::BufferType::get(ctxt, nodeEntryType), nodeBufPtr, nodeBufLen);
          auto nodeIdRef = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, rewriter.getI32Type()), ref, gsubop::RELATIONSHIP_ENTRY_SECOND_NODE_ID_PTR);
@@ -4860,10 +4892,10 @@ class EdgeRefGatherOpLowering : public SubOpTupleStreamConsumerConversionPattern
          columnValues.append({nodeRef});
       });
       processMembers(gatherOp, fromMembers, memberManager, [&](size_t i, const Member& member){
-         auto nodeEntryType = getNodeEntryType(mlir::cast<gsubop::NodeRefType>(memberManager.getType(member)), *typeConverter);
+         auto nodeEntryType = getNodeEntryType<EntryStorageHelper>(mlir::cast<gsubop::NodeRefType>(memberManager.getType(member)), *typeConverter);
          auto nodeBufLen = rewriter.create<mlir::arith::IndexCastOp>(loc, rewriter.getIndexType(), nodeBufLenI64);
          auto nodeBuf = rewriter.create<util::BufferCreateOp>(loc, util::BufferType::get(ctxt, nodeEntryType), nodeBufPtr, nodeBufLen);
-         auto nodeIdRef = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, rewriter.getI32Type()), ref, gsubop::RELATIONSHIP_ENTRY_SECOND_NODE_ID_PTR);
+         auto nodeIdRef = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, rewriter.getI32Type()), ref, gsubop::RELATIONSHIP_ENTRY_FIRST_NODE_ID_PTR);
          auto nodeId = rewriter.create<util::LoadOp>(loc, nodeIdRef);
          auto nodeIndex = rewriter.create<mlir::arith::IndexCastOp>(loc, rewriter.getIndexType(), nodeId);
          auto nodeRef = rewriter.create<util::BufferGetElementRef>(loc, util::RefType::get(ctxt, nodeEntryType), nodeBuf, nodeIndex);
@@ -4918,7 +4950,7 @@ class NodeRefScatterOpLowering : public SubOpTupleStreamConsumerConversionPatter
       auto ref = mapping.resolve(scatterOp, scatterOp.getRef());
       auto propertyMembers = referenceType.getPropertyMembers();
       EntryStorageHelper storageHelper(scatterOp, propertyMembers, false, typeConverter);
-      auto nodeEntryType = getNodeEntryType(referenceType, *typeConverter);
+      auto nodeEntryType = getNodeEntryType<EntryStorageHelper>(referenceType, *typeConverter);
       auto propertyType = nodeEntryType.getTypes()[gsubop::NODE_ENTRY_PROPERTY_PTR];
       auto propRef = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, propertyType), ref, gsubop::NODE_ENTRY_PROPERTY_PTR);
       auto values = storageHelper.getValueMap(propRef, rewriter, loc);
@@ -4944,7 +4976,7 @@ class EdgeRefScatterOpLowering : public SubOpTupleStreamConsumerConversionPatter
       auto ref = mapping.resolve(scatterOp, scatterOp.getRef());
       auto writtenMembers = scatterOp.getWrittenMembers();
       EntryStorageHelper storageHelper(scatterOp, referenceType.getPropertyMembers(), false, typeConverter);
-      auto edgeEntryType = getEdgeEntryType(referenceType, *typeConverter);
+      auto edgeEntryType = getEdgeEntryType<EntryStorageHelper>(referenceType, *typeConverter);
       auto propertyType = edgeEntryType.getTypes()[gsubop::RELATIONSHIP_ENTRY_PROPERTY_PTR];
       auto propRef = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, propertyType), ref, gsubop::RELATIONSHIP_ENTRY_PROPERTY_PTR);
       auto values = storageHelper.getValueMap(propRef, rewriter, loc);
@@ -4972,7 +5004,7 @@ class ReduceGraphRefLowering : public SubOpTupleStreamConsumerConversionPattern<
       bool hasLock = false;
       auto nodeRefType = mlir::dyn_cast_or_null<gsubop::NodeRefType>(reduceOp.getRef().getColumn().type);
       if (nodeRefType) {
-         auto nodeEntryType = getNodeEntryType(nodeRefType, *typeConverter);
+         auto nodeEntryType = getNodeEntryType<EntryStorageHelper>(nodeRefType, *typeConverter);
          auto propertyType = nodeEntryType.getTypes()[gsubop::NODE_ENTRY_PROPERTY_PTR];
          ref = rewriter.create<util::TupleElementPtrOp>(reduceOp->getLoc(), util::RefType::get(reduceOp->getContext(), propertyType), ref, gsubop::NODE_ENTRY_PROPERTY_PTR);
          propertyMembers = nodeRefType.getPropertyMembers();
@@ -4980,7 +5012,7 @@ class ReduceGraphRefLowering : public SubOpTupleStreamConsumerConversionPattern<
       }
       auto edgeRefType = mlir::dyn_cast_or_null<gsubop::EdgeRefType>(reduceOp.getRef().getColumn().type);
       if (edgeRefType) {
-         auto edgeEntryType = getEdgeEntryType(edgeRefType, *typeConverter);
+         auto edgeEntryType = getEdgeEntryType<EntryStorageHelper>(edgeRefType, *typeConverter);
          auto propertyType = edgeEntryType.getTypes()[gsubop::RELATIONSHIP_ENTRY_PROPERTY_PTR];
          ref = rewriter.create<util::TupleElementPtrOp>(reduceOp->getLoc(), util::RefType::get(reduceOp->getContext(), propertyType), ref, gsubop::RELATIONSHIP_ENTRY_PROPERTY_PTR);
          propertyMembers = edgeRefType.getPropertyMembers();
@@ -5042,7 +5074,7 @@ class LookupGraphSetLowering : public SubOpTupleStreamConsumerConversionPattern<
       mlir::Value resRef;
       if (mlir::isa<gsubop::NodeSetType>(lookupOp.getState().getType())) {
          auto nodeRefType = mlir::cast<gsubop::NodeRefType>(lookupOp.getRef().getColumn().type);
-         auto entryType = getNodeEntryType(nodeRefType, *typeConverter);
+         auto entryType = getNodeEntryType<EntryStorageHelper>(nodeRefType, *typeConverter);
          auto bufPtr = rt::GraphStorage::nodeStorePtr(rewriter, loc)({adaptor.getState()})[0];
          auto bufLenI64 = rt::GraphStorage::nodeHighWater(rewriter, loc)({adaptor.getState()})[0];
          auto bufLen = rewriter.create<mlir::arith::IndexCastOp>(loc, rewriter.getIndexType(), bufLenI64);
@@ -5052,7 +5084,7 @@ class LookupGraphSetLowering : public SubOpTupleStreamConsumerConversionPattern<
       }
       else if (mlir::isa<gsubop::EdgeSetType>(lookupOp.getState().getType())) {
          auto edgeRefType = mlir::cast<gsubop::EdgeRefType>(lookupOp.getRef().getColumn().type);
-         auto entryType = getEdgeEntryType(edgeRefType, *typeConverter);
+         auto entryType = getEdgeEntryType<EntryStorageHelper>(edgeRefType, *typeConverter);
          auto bufPtr = rt::GraphStorage::relStorePtr(rewriter, loc)({adaptor.getState()})[0];
          auto bufLenI64 = rt::GraphStorage::relHighWater(rewriter, loc)({adaptor.getState()})[0];
          auto bufLen = rewriter.create<mlir::arith::IndexCastOp>(loc, rewriter.getIndexType(), bufLenI64);
@@ -5072,48 +5104,6 @@ class LookupGraphSetLowering : public SubOpTupleStreamConsumerConversionPattern<
       }
       mapping.define(lookupOp.getRef(), resRef);
       rewriter.replaceTupleStream(lookupOp, mapping);
-   }
-};
-
-class NodeCountOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::NodeCountOp> {
-   public:
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::NodeCountOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::NodeCountOp nodeCountOp) const override {
-      return success();
-   }
-   void rewrite(gsubop::NodeCountOp nodeCountOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
-      auto loc = nodeCountOp.getLoc();
-      auto ctxt = nodeCountOp.getContext();
-      auto graphPtr = adaptor.getGraph();
-      auto nodeBufLenI64 = rt::GraphStorage::nodeCount(rewriter, loc)({graphPtr})[0];
-      auto nodeBufLen = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), nodeBufLenI64);
-      llvm::SmallVector<mlir::Attribute, 2> columns;
-      llvm::SmallVector<mlir::Value, 2> columnValues;
-      columns.append({nodeCountOp.getRef()});
-      columnValues.append({nodeBufLen});
-      mapping.define(mlir::ArrayAttr::get(ctxt, columns), columnValues);
-      rewriter.replaceTupleStream(nodeCountOp, mapping);
-   }
-};
-
-class EdgeCountOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::EdgeCountOp> {
-   public:
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::EdgeCountOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::EdgeCountOp nodeCountOp) const override {
-      return success();
-   }
-   void rewrite(gsubop::EdgeCountOp relCountOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
-      auto loc = relCountOp.getLoc();
-      auto ctxt = relCountOp.getContext();
-      auto graphPtr = adaptor.getGraph();
-      auto edgeBufLenI64 = rt::GraphStorage::relCount(rewriter, loc)({graphPtr})[0];
-      auto edgeBufLen = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), edgeBufLenI64);
-      llvm::SmallVector<mlir::Attribute, 2> columns;
-      llvm::SmallVector<mlir::Value, 2> columnValues;
-      columns.append({relCountOp.getRef()});
-      columnValues.append({edgeBufLen});
-      mapping.define(mlir::ArrayAttr::get(ctxt, columns), columnValues);
-      rewriter.replaceTupleStream(relCountOp, mapping);
    }
 };
 
@@ -5271,48 +5261,61 @@ private:
    }
 };
 
-class CreateGraphTypeLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::CreateTypeOp> {
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::CreateTypeOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::CreateTypeOp createTypeOp) const override {
-      return success();
-   }
-   void rewrite(gsubop::CreateTypeOp createTypeOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
-      auto loc = createTypeOp->getLoc();
+class CreateIdentifierLowering : public SubOpConversionPattern<gsubop::CreateIdentifierOp> {
+   using SubOpConversionPattern<gsubop::CreateIdentifierOp>::SubOpConversionPattern;
+   LogicalResult matchAndRewrite(gsubop::CreateIdentifierOp createOp, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
+      auto loc = createOp->getLoc();
+      auto& namedGraphManager = rewriter.getContext()->getLoadedDialect<gsubop::GraphSubOpDialect>()->getNamedGraphManager();
       // TODO Do lookup at compile time here!
-      int id = 42;
-      auto typeI32 = rewriter.create<arith::ConstantOp>(loc, rewriter.getIntegerAttr(rewriter.getI32Type(), id));
-      mapping.define(createTypeOp.getProducedReference(), typeI32);
-      rewriter.replaceTupleStream(createTypeOp, mapping);
+      int32_t id = namedGraphManager.resolve(createOp.getGraph().str(), createOp.getIdent().str());
+      mlir::Value typeI32 = rewriter.create<arith::ConstantOp>(loc, rewriter.getIntegerAttr(rewriter.getI32Type(), id));
+      rewriter.replaceOp(createOp, typeI32);
+      return success();
    }
 };
 
-class FilterByGraphTypeLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::FilterByTypeOp> {
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::FilterByTypeOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::FilterByTypeOp filterOp) const override {
+class ScanIdentifierLowering : public SubOpConversionPattern<gsubop::ScanIdentifierOp> {
+   using SubOpConversionPattern<gsubop::ScanIdentifierOp>::SubOpConversionPattern;
+   LogicalResult matchAndRewrite(gsubop::ScanIdentifierOp scanOp, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
+      if (!mlir::isa<gsubop::IdentifierType>(scanOp.getIdent().getType())) return failure();
+      ColumnMapping mapping;
+      mapping.define(scanOp.getRef(), adaptor.getIdent());
+      rewriter.replaceTupleStream(scanOp, mapping);
+      return success();
+   }
+};
+
+class FilterByIdentifierLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::FilterByIdentifierOp> {
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::FilterByIdentifierOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::FilterByIdentifierOp filterOp) const override {
       if (mlir::isa<gsubop::NodeRefType>(filterOp.getRef().getColumn().type) 
          || mlir::isa<gsubop::EdgeRefType>(filterOp.getRef().getColumn().type) 
          || mlir::isa<gsubop::PropertyRefType>(filterOp.getRef().getColumn().type))
             return success();
       return failure();
    }
-   void rewrite(gsubop::FilterByTypeOp filterOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+   void rewrite(gsubop::FilterByIdentifierOp filterOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
       auto loc = filterOp.getLoc();
       auto ctxt = filterOp.getContext();
       auto nodeRefType = mlir::dyn_cast_or_null<gsubop::NodeRefType>(filterOp.getRef().getColumn().type);
       auto relRefType = mlir::dyn_cast_or_null<gsubop::EdgeRefType>(filterOp.getRef().getColumn().type);
       auto propRefType = mlir::dyn_cast_or_null<gsubop::PropertyRefType>(filterOp.getRef().getColumn().type);
       mlir::Type refType;
-      refType = nodeRefType ? getNodeEntryType(nodeRefType, *typeConverter) : refType;
-      refType = relRefType ? getEdgeEntryType(relRefType, *typeConverter) : refType;
+      refType = nodeRefType ? getNodeEntryType<EntryStorageHelper>(nodeRefType, *typeConverter) : refType;
+      refType = relRefType ? getEdgeEntryType<EntryStorageHelper>(relRefType, *typeConverter) : refType;
       refType = propRefType ? getPropertyEntryType(propRefType, *typeConverter) : refType;
       auto ptr = mapping.resolve(filterOp, filterOp.getRef());
       auto ref = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, refType), ptr);
-      auto identI32 = mapping.resolve(filterOp, filterOp.getTypeRef());
+      auto identI32 = adaptor.getIdent();
       mlir::Value typeI32;
       if (nodeRefType) {
          typeI32 = rt::GraphStorage::nodeId(rewriter, loc)({ptr})[0];
       }
-      else if (relRefType || propRefType) {
+      else if (relRefType) {
+         auto typeI32Ref = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, rewriter.getI32Type()), ref, gsubop::RELATIONSHIP_ENTRY_RELATIONSHIP_TYPE_PTR);
+         typeI32 = rewriter.create<util::LoadOp>(loc, typeI32Ref);
+      }
+      else {
          auto typeI32Ref = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, rewriter.getI32Type()), ref, gsubop::PROPERTY_ENTRY_PROPERTY_KEY_PTR);
          typeI32 = rewriter.create<util::LoadOp>(loc, typeI32Ref);
       }
@@ -5330,8 +5333,16 @@ class CastPropertyRefLowering : public SubOpTupleStreamConsumerConversionPattern
    LogicalResult match(gsubop::CastPropertyRefOp castOp) const override {
       if (!mlir::isa<gsubop::TypedPropertyRefType>(castOp.getTypedRef().getColumn().type))
          return failure();
-      if (!isInlined(getPropertyType(mlir::cast<gsubop::TypedPropertyRefType>(castOp.getTypedRef().getColumn().type), *typeConverter))) {
-         assert(false && "No support for buffered property values yet.");
+      auto propTupType = getPropertyType<EntryStorageHelper>(mlir::cast<gsubop::TypedPropertyRefType>(castOp.getTypedRef().getColumn().type), *typeConverter);
+      if (propTupType.getTypes().size() != 1) {
+         assert(false && "Typed property refs with multiple members are not supported.");
+         return failure();
+      }
+      auto propType = propTupType.getTypes()[0];
+      if (mlir::isa<db::StringType>(propType))
+         return success();
+      if (!isInlined(propType)) {
+         assert(false && "Unsupported property member type.");
          return failure();
       }
       return mlir::isa<gsubop::PropertyRefType>(castOp.getRef().getColumn().type) ? success() : failure();
@@ -5341,27 +5352,77 @@ class CastPropertyRefLowering : public SubOpTupleStreamConsumerConversionPattern
       auto ctxt = castOp.getContext();
       auto ref = mapping.resolve(castOp, castOp.getRef());
       auto typedRefType = mlir::cast<gsubop::TypedPropertyRefType>(castOp.getTypedRef().getColumn().type);
-      auto propType = getPropertyType(typedRefType, *typeConverter);
+      auto propTupType = getPropertyType<EntryStorageHelper>(typedRefType, *typeConverter);
+      auto propType = propTupType.getTypes()[0];
       auto prop = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, rewriter.getI32Type()), ref, gsubop::PROPERTY_ENTRY_PROPERTY_VALUE_PTR);
-      auto propRef = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, propType), prop);
+      mlir::Value propRef;
+      if (isInlined(propType)) {
+         propRef = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, propTupType), prop);
+      }
+      else if (mlir::isa<db::StringType>(propType)) {
+         mlir::Value strRef;
+         rewriter.atStartOf(&prop->getParentOfType<func::FuncOp>().getBlocks().front(), [&](SubOpRewriter& rewriter){
+            strRef = rewriter.create<util::AllocaOp>(loc, util::RefType::get(ctxt, db::StringType::get(ctxt)), mlir::Value());
+         });
+         auto str = rt::PropertyData::lookupStr(rewriter, loc)({ref})[0];
+         rewriter.create<util::StoreOp>(loc, str, strRef, mlir::Value());
+         propRef = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, mlir::TupleType::get(ctxt, {propType})), strRef);
+      }
+      else {
+         assert(false && "not implemented");
+      }
       mapping.define(castOp.getTypedRef(), propRef);
       rewriter.replaceTupleStream(castOp, mapping);
    }
 private:
-   bool isInlined(const mlir::TupleType& type) const {
-      if (type.getTypes().size() != 1) {
-         return false;
-      }
-      auto t = type.getTypes()[0];
+   bool isInlined(const mlir::Type& t) const {
       auto integerType = mlir::dyn_cast_or_null<mlir::IntegerType>(t);
       if (integerType) {
-         return integerType.getWidth() <= 64;
+         return integerType.getWidth() <= 32;
       }
       auto floatType = mlir::dyn_cast_or_null<mlir::FloatType>(t);
       if (floatType) {
-         return floatType.getWidth() <= 64;
+         return floatType.getWidth() <= 32;
       }
       return false;
+   }
+};
+
+class GraphRefToStringOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::GraphRefToStringOp> {
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::GraphRefToStringOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::GraphRefToStringOp castOp) const override {
+      auto refType = castOp.getRef().getColumn().type;
+      if (!mlir::isa<gsubop::NodeRefType>(refType) && !mlir::isa<gsubop::EdgeRefType>(refType) 
+         && !mlir::isa<gsubop::PropertyRefType>(refType)) {
+            return failure();
+      }
+      if (!mlir::isa<db::StringType>(castOp.getStrRef().getColumn().type)) {
+         return failure();
+      }
+      return success();
+   }
+   void rewrite(gsubop::GraphRefToStringOp castOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto loc = castOp.getLoc();
+      auto ctxt = rewriter.getContext();
+      auto ref = mapping.resolve(castOp, castOp.getRef());
+      auto refType = castOp.getRef().getColumn().type;
+      mlir::Value strRef, str;
+      rewriter.atStartOf(&ref.getDefiningOp()->getParentOfType<func::FuncOp>().getBlocks().front(), [&](SubOpRewriter& rewriter){
+         strRef = rewriter.create<util::AllocaOp>(loc, util::RefType::get(ctxt, db::StringType::get(ctxt)), mlir::Value());
+      });
+      if (mlir::isa<gsubop::NodeRefType>(refType)) {
+         str = rt::GraphRefString::fromNode(rewriter, loc)({ref})[0];
+      }
+      else if (mlir::isa<gsubop::EdgeRefType>(refType)) {
+         str = rt::GraphRefString::fromRel(rewriter, loc)({ref})[0];
+      }
+      else {
+         str = rt::GraphRefString::fromProp(rewriter, loc)({ref})[0];
+      }
+      rewriter.create<util::StoreOp>(loc, str, strRef, mlir::Value());
+      auto res = rewriter.create<util::LoadOp>(loc, strRef);
+      mapping.define(castOp.getStrRef(), res);
+      rewriter.replaceTupleStream(castOp, mapping);
    }
 };
 
@@ -5438,15 +5499,16 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    patterns.insertPattern<EdgeRefGatherOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<NodeRefScatterOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<EdgeRefScatterOpLowering>(typeConverter, ctxt);
-   patterns.insertPattern<NodeCountOpLowering>(typeConverter, ctxt);
-   patterns.insertPattern<EdgeCountOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<ReduceGraphRefLowering>(typeConverter, ctxt);
    patterns.insertPattern<LookupGraphSetLowering>(typeConverter, ctxt);
    //PropertyGraph
    patterns.insertPattern<ScanPropertySetLowering>(typeConverter, ctxt);
-   patterns.insertPattern<CreateGraphTypeLowering>(typeConverter, ctxt);
-   patterns.insertPattern<FilterByGraphTypeLowering>(typeConverter, ctxt);
+   patterns.insertPattern<CreateIdentifierLowering>(typeConverter, ctxt);
+   patterns.insertPattern<ScanIdentifierLowering>(typeConverter, ctxt);
+   patterns.insertPattern<GetIdentifierLowering>(typeConverter, ctxt);
+   patterns.insertPattern<FilterByIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<CastPropertyRefLowering>(typeConverter, ctxt);
+   patterns.insertPattern<GraphRefToStringOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<TypedPropertyRefGatherOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<TypedPropertyRefScatterOpLowering>(typeConverter, ctxt);
 
@@ -5688,22 +5750,22 @@ void SubOpToControlFlowLoweringPass::runOnOperation() {
       return util::RefType::get(t.getContext(), mlir::IntegerType::get(ctxt, 8));
    });
    typeConverter.addConversion([&](gsubop::NodeRefType t) -> Type {
-      return util::RefType::get(t.getContext(), getNodeEntryType(t, typeConverter));
+      return util::RefType::get(t.getContext(), getNodeEntryType<EntryStorageHelper>(t, typeConverter));
    });
    typeConverter.addConversion([&](gsubop::EdgeRefType t) -> Type {
-      return util::RefType::get(t.getContext(), getEdgeEntryType(t, typeConverter));
+      return util::RefType::get(t.getContext(), getEdgeEntryType<EntryStorageHelper>(t, typeConverter));
    });
    typeConverter.addConversion([&](gsubop::PropertySetType t) -> Type {
-      return IntegerType::get(ctxt, 32); //util::RefType::get(t.getContext(), mlir::IntegerType::get(ctxt, 8));
+      return IntegerType::get(ctxt, 32);
    });
    typeConverter.addConversion([&](gsubop::TypedPropertyRefType t) -> Type {
-      return util::RefType::get(t.getContext(), getPropertyType(t, typeConverter));
+      return util::RefType::get(t.getContext(), getPropertyType<EntryStorageHelper>(t, typeConverter));
    });
    typeConverter.addConversion([&](gsubop::PropertyRefType t) -> Type {
-      return util::RefType::get(t.getContext(), getPropertyEntryType(t, typeConverter));
+      return IntegerType::get(ctxt, 32);
    });
-   typeConverter.addConversion([&](gsubop::TypeIdentifierType t) -> Type {
-      return util::RefType::get(t.getContext(), mlir::IntegerType::get(ctxt, 32));
+   typeConverter.addConversion([&](gsubop::IdentifierType t) -> Type {
+      return mlir::IntegerType::get(ctxt, 32);
    });
 
    //basic tuple stream manipulation

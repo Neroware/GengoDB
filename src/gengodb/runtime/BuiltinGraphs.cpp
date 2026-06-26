@@ -1,6 +1,9 @@
 #include "gengodb/runtime/BuiltinGraphs.h"
 
+#include "gengodb/semantics/RdfGraph.h"
+
 namespace lingodb::runtime {
+using namespace rdf4cpp;
 
 SimpleGraph* SimpleGraph::create(int32_t nodeCapacity, int32_t relCapacity) {
     return new SimpleGraph(nodeCapacity, relCapacity);

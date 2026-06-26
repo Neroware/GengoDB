@@ -24,6 +24,11 @@ def GraphSubOp_Dialect : Dialect {
             private:
             void registerTypes();
             void registerAttrs();
+            NamedGraphManager namedGraphManager;
+            public:
+            NamedGraphManager& getNamedGraphManager() {
+                return namedGraphManager;
+            }
         }];
 }
 
@@ -116,22 +121,24 @@ def PropertySet : GraphSubOp_Type<"PropertySet", "property_set", [State,LookupAb
             }
         }];
 }
-def PropertyRef : GraphSubOp_Type<"PropertyRef", "property_ref", [State]> {
+def PropertyRef : GraphSubOp_Type<"PropertyRef", "property_ref", []> {
     let summary = "property reference";
-    let extraClassDeclaration = [{
-            StateMembersAttr getMembers(){
-            return lingodb::compiler::dialect::subop::StateMembersAttr::get(getContext(), {});
-            }
-        }];
 }
 def TypedPropertyRef : GraphSubOp_Type<"TypedPropertyRef", "typed_property_ref", [State]> {
     let summary = "typed property ref";
     let parameters = (ins "StateMembersAttr":$members);
     let assemblyFormat = "`<` custom<StateMembers>($members) `>`";
 }
-def TypeIdentifier : GraphSubOp_Type<"TypeIdentifier", "type_identifier", []> {
-    let summary = "type identifier";
+def Identifier : GraphSubOp_Type<"Identifier", "identifier", [State]> {
+    let summary = "identifier";
+    let extraClassDeclaration = [{
+        StateMembersAttr getMembers(){
+            return lingodb::compiler::dialect::subop::StateMembersAttr::get(getContext(), {});
+        }
+    }];
 }
+
+def AnyGraphRef: AnyTypeOf<[NodeRef,EdgeRef,PropertyRef]>;
 
 //===----------------------------------------------------------------------===//
 // Attributes

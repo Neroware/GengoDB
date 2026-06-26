@@ -86,6 +86,9 @@ int main(int argc, char** argv) {
          iri = IRI{argv[3] + entry.path().filename().string() + "#rdf"};
       }
       else {
+         if (filePath[0] == '.' && filePath[1] == '/') {
+            filePath = filePath.substr(2, filePath.size());
+         }
          iri = IRI{"file://" + filePath + "#rdf"};
       }
 

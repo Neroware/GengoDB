@@ -3,7 +3,10 @@
 
 #include "gengodb/runtime/Graph.h"
 
+#include "gengodb/semantics/Datatypes.h"
+
 namespace lingodb::runtime {
+using namespace gengodb::semantics;
 struct BuiltinGraph {
     enum Type {
         BUILTIN_SIMPLE_GRAPH = 0,
@@ -67,6 +70,51 @@ static_assert(offsetof(SimpleGraph::RelEntry, payload)  == 32);
 
 using prop_id_t = int32_t;
 
+struct BlobTable {
+    BlobTable(size_t cap) : blobData_(cap) {}
+    ~BlobTable() = default;
+    std::pair<std::byte*, int32_t> alloc(size_t len) {
+        std::byte* ptr = blobData_.ptr;
+        if (!blobs_.empty()) {
+            ptr = blobs_.back().first + blobs_.back().second;
+        }
+        blobs_.push_back(std::make_pair(ptr, len));
+        const size_t index = blobs_.size() - 1;
+        if (index > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+            assert(false && "exceeded int32_t index range");
+        }
+        return std::make_pair(ptr, static_cast<int32_t>(index));
+    }
+    std::pair<std::byte*, size_t> get(int32_t idx) const {
+        return blobs_[idx];
+    }
+    template<typename T>
+    void store(int32_t idx, const T& value) {
+        static_assert(std::is_trivially_copyable_v<T>,
+            "T must be trivially copyable to store as a raw blob");
+        auto [ptr, len] = get(idx);
+        if (sizeof(T) > len) {
+            assert(false && "value size exceeds allocated blob length");
+        }
+        memcpy(ptr, &value, sizeof(T));
+    }
+    template<typename T>
+    T getValue(int32_t idx) const {
+        static_assert(std::is_trivially_copyable_v<T>,
+            "T must be trivially copyable to read back from a raw blob");
+        auto [ptr, len] = get(idx);
+        if (sizeof(T) > len) {
+            assert(false && "value size exceeds allocated blob length");
+        }
+        T value{};
+        memcpy(&value, ptr, sizeof(T));
+    return value;
+}
+private:
+    std::vector<std::pair<std::byte*, size_t>> blobs_;
+    LegacyFixedSizedBuffer<std::byte> blobData_;
+}; // BlobTable
+
 class PropertyGraph {
 public:
     using Base = Graph<prop_id_t, prop_id_t>;
@@ -81,6 +129,44 @@ public:
         uint32_t  type;
         uint32_t  value;
         bool      inUse;
+    };
+
+    struct PropertyData {
+        using BlobTableT = std::unordered_map<xsd::Type, std::unique_ptr<BlobTable>>;
+
+        inline int64_t     get_i64(int32_t idx) const { return lst_i64_[idx]; }
+        inline int32_t     add_i64(int64_t v) { lst_i64_.push_back(v); return static_cast<int32_t>(lst_i64_.size() - 1); }
+        inline uint64_t    get_ui64(int32_t idx) const { return lst_ui64_[idx]; }
+        inline int32_t     add_ui64(uint64_t v) { lst_ui64_.push_back(v); return static_cast<int32_t>(lst_ui64_.size() - 1); }
+        inline double      get_double(int32_t idx) const { return lst_ui64_[idx]; }
+        inline int32_t     add_double(double v) { lst_double_.push_back(v); return static_cast<int32_t>(lst_double_.size() - 1); }
+
+        template<xsd::Type t> 
+        inline std::pair<std::byte*, size_t> get_blob(int32_t idx) const { return blobs_.at(t)->get(idx); }
+        template<xsd::Type t, size_t blob_size = 1024> 
+        inline std::pair<std::byte*, int32_t> add_blob(int32_t idx) {
+            if (!blobs_.contains(t)) {
+                blobs_.insert(std::make_pair(t, std::make_unique<BlobTable>(blob_size)));
+            }
+            return blobs_.at(t)->get(idx); 
+        }
+
+        private:
+        std::vector<int64_t> lst_i64_;
+        std::vector<uint64_t> lst_ui64_;
+        std::vector<double> lst_double_;
+        BlobTableT blobs_;
+    };
+    
+    struct Metadata {
+        inline void set_identifier_mapping(std::function<std::string(int32_t)> identifier) { identifier_ = identifier; }
+        inline std::string identifier(int32_t id) const { return identifier_(id); }
+        inline const std::string& name() const { return name_; }
+        inline void set_name(const std::string& n) { name_ = n; }
+
+        private:
+        std::string name_ = "";
+        std::function<std::string(int32_t)> identifier_ = [](int32_t i){ return std::to_string(i); };
     };
 
     PropertyGraph(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);
@@ -121,6 +207,9 @@ public:
     static void destroy(PropertyGraph* g);
     void clear() { graph_.clear(); propMark_ = 0; freeProps_.clear(); }
 
+    PropertyData& getPropData() { return propData_; }
+    Metadata& getMetadata() { return metadata_; }
+
 private:
     prop_id_t addPropertyToChain(prop_id_t& chainHead, uint32_t key, uint32_t type, uint32_t value);
     prop_id_t allocProp();
@@ -131,6 +220,8 @@ private:
     int32_t propMark_, propCap_;
     std::vector<prop_id_t> freeProps_;
     int32_t nodeCap_, relCap_;
+    PropertyData propData_;
+    Metadata metadata_;
 
 }; // PropertyGraph
 

@@ -2,6 +2,9 @@
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
 ex:bob ex:drinks ex:coffee .
+ex:bob ex:drinks "42"^^xsd:int .
+ex:bob ex:drinks _:drink1 .
+ex:bob ex:drinks _:drink2 .
 ex:bob ex:age "30"^^xsd:int .
 ex:bob ex:awake "true"^^xsd:boolean .
 # ex:bob ex:name "Bob"^^xsd:string .
@@ -18,3 +21,25 @@ _:cup1 ex:clean "true"^^xsd:boolean .
 _:sip1 ex:who ex:bob .
 _:sip1 ex:what ex:coffee .
 _:sip1 ex:count "3"^^xsd:int .
+
+# =================================
+ex:bob ex:drinks ex:tea .
+ex:bob ex:drinks ex:soda .
+ex:bob ex:drinks ex:beer .
+# =================================
+ex:bob ex:eats ex:steak .
+ex:bob ex:eats ex:egg .
+ex:bob ex:eats ex:sushi .
+ex:steve ex:eats ex:sushi .
+# =================================
+ex:bob ex:eats ex:soup .
+ex:bob ex:drinks ex:soup .
+ex:bob ex:eats ex:miso .
+ex:bob ex:drinks ex:miso .
+# =================================
+ex:drinks ex:type ex:relation .
+ex:eats ex:type ex:relation .
+# =================================
+ex:steve ex:eats _:food0 .
+_:food0 ex:portions "100"^^xsd:int .
+_:food0 ex:portions "101"^^xsd:int .

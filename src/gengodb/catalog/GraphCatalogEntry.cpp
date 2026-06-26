@@ -20,16 +20,16 @@ std::shared_ptr<RDFGraphCatalogEntry> RDFGraphCatalogEntry::deserialize(lingodb:
 IRI RDFGraphCatalogEntry::getIri() const {
     return impl->getIri();
 }
-IRI RDFGraphCatalogEntry::getNodeIri(int32_t node) const {
-    return impl->getNodes().get_iri(node);
+Node RDFGraphCatalogEntry::getNode(int32_t node) const {
+    return impl->getNodes()->get_node(node);
 }
-IRI RDFGraphCatalogEntry::getRelationIri(int32_t rel) const {
-    return impl->getRelations().get_iri(rel);
+std::shared_ptr<gengodb::semantics::NodeDictionary> RDFGraphCatalogEntry::getNodes() const {
+    return impl->getNodes();
 }
 std::string_view RDFGraphCatalogEntry::getLocalId(int32_t node) const {
     for (const auto& pair : impl->getBlankNodes()) {
         if (pair.second == node) 
-            return pair.first;
+            return pair.first.identifier().view();
     }
     return "";
 }
