@@ -215,7 +215,7 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       else if (isBound(triplePatternOp.getO(), localIdents))
          stream = lowerObjectFirst(rewriter, loc, stream, triplePatternOp, localIdents, columnManager);
       else
-         return failure();
+         stream = lowerPredicateFirst(rewriter, loc, stream, triplePatternOp, localIdents, columnManager);
       rewriter.replaceOp(triplePatternOp, stream);
       return success();
    }
@@ -336,6 +336,31 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       stream = nestedMapOp;
       stream = lowerPredicate(rewriter, loc, stream, op.getP(), edgeRefColumnRef, group, graph, columnManager);
       stream = lowerTerm(rewriter, loc, stream, op.getS(), edgeRefType.getFromMembers().getMembers()[0], edgeRefColumnRef, graph, localIdents, columnManager);
+      return stream;
+   }
+   mlir::Value lowerPredicateFirst(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, gpm::TriplePatternOp op, LocalIdentifierMapping& localIdents, tuples::ColumnManager& columnManager) const {
+      auto ctxt = rewriter.getContext();
+      std::string group = op.getGraphRef().getName().getRootReference().str();
+      std::string graph = op.getGraphRef().getName().getLeafReference().str();
+      auto edgesRef = createRef(columnManager, group, graph + "_ex");
+      auto edgeSetType = getGraphSetColumnType<gsubop::EdgeSetType>(columnManager, group, graph + "_ex");
+      auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({edgesRef}));
+      auto* b = new Block();
+      b->addArgument(tuples::TupleType::get(ctxt), loc);
+      auto edgeSetArg = b->addArgument(edgeSetType, loc);
+      auto edgeRefType = createEdgeRefType(ctxt, group, graph);
+      auto [edgeRefColumnDef, edgeRefColumnRef] = createColumn(edgeRefType, "edges", "ref");
+      nestedMapOp.getRegion().push_back(b);
+      {
+         mlir::OpBuilder::InsertionGuard guard(rewriter);
+         rewriter.setInsertionPointToStart(b);
+         mlir::Value inner = rewriter.create<gsubop::ScanEdgeSetOp>(loc, edgeSetArg, edgeRefColumnDef);
+         rewriter.create<tuples::ReturnOp>(loc, inner);
+      }
+      stream = nestedMapOp;
+      stream = lowerPredicate(rewriter, loc, stream, op.getP(), edgeRefColumnRef, group, graph, columnManager);
+      stream = lowerTerm(rewriter, loc, stream, op.getS(), edgeRefType.getFromMembers().getMembers()[0], edgeRefColumnRef, graph, localIdents, columnManager);
+      stream = lowerTerm(rewriter, loc, stream, op.getO(), edgeRefType.getToMembers().getMembers()[0], edgeRefColumnRef, graph, localIdents, columnManager);
       return stream;
    }
    mlir::Value lowerPredicate(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, mlir::Attribute p, tuples::ColumnRefAttr edgeRef, std::string group, std::string graph, tuples::ColumnManager& columnManager) const {

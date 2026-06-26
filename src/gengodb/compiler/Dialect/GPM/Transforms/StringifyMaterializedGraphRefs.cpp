@@ -50,9 +50,8 @@ class StringifyMaterializedGraphRefs : public mlir::RewritePattern {
         for (size_t i = 0; i < op.getCols().size(); i++) {
             auto colRef = mlir::cast<tuples::ColumnRefAttr>(op.getCols()[i]);
             if (!mlir::isa<gsubop::NodeRefType>(colRef.getColumn().type) 
-                || mlir::isa<gsubop::EdgeRefType>(colRef.getColumn().type)
-                || mlir::isa<gsubop::PropertyRefType>(colRef.getColumn().type)) {
-                    newColRefs.push_back(colRef);
+                && !mlir::isa<gsubop::EdgeRefType>(colRef.getColumn().type)
+                && !mlir::isa<gsubop::PropertyRefType>(colRef.getColumn().type)) {
                     return mlir::failure();
             }
             auto tableMember = tableType.getMembers().getMembers()[i];
