@@ -7,8 +7,8 @@ module @querymodule  {
             tuples.return %2 : !tuples.tuplestream
         }
         %bgp1 = gpm.basic_graph_pattern %bgp0 (%arg : !tuples.tuplestream){
-            %3 = gpm.triple_pattern %arg @graphs::@coffee(?{@vars::@who({type = !gpm.variable_binding})}, id{"ex:drinks"}, id{"ex:Tea"})
-            %4 = gpm.triple_pattern %3 @graphs::@coffee(?{@vars::@who}, id{"rdf:type"}, id{"ex:Person"})
+            %3 = gpm.triple_pattern %arg @graphs::@coffee(?{@vars::@who2({type = !gpm.variable_binding})}, id{"ex:drinks"}, id{"ex:Tea"})
+            %4 = gpm.triple_pattern %3 @graphs::@coffee(?{@vars::@who2}, id{"rdf:type"}, id{"ex:Person"})
             tuples.return %4 : !tuples.tuplestream
         }
         %join = gpm.join %bgp0, %bgp1
