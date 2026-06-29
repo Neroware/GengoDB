@@ -467,7 +467,7 @@ class Translator {
    void translate(const sparql::Query& query) {
       auto loc = builder.getUnknownLoc();
 
-      // All GPM ops go inside a floating block that will become the execution_group body.
+      // All GPM ops go inside a floating block that will become the query body.
       auto* egBlock = new mlir::Block;
       mlir::Type tableType;
       mlir::Value matResult;
@@ -524,13 +524,13 @@ class Translator {
             mlir::ArrayAttr::get(ctxt, colNames));
          matResult = mat.getResult();
 
-         builder.create<subop::ExecutionGroupReturnOp>(loc, mlir::ValueRange{matResult});
+         builder.create<relalg::QueryReturnOp>(loc, mlir::ValueRange{matResult});
       }
 
-      // Wrap the floating block in an execution_group op
-      auto execGroup = builder.create<subop::ExecutionGroupOp>(
+      // Wrap the floating block in a query op
+      auto execGroup = builder.create<relalg::QueryOp>(
          loc, mlir::TypeRange{tableType}, mlir::ValueRange{});
-      execGroup.getSubOps().push_back(egBlock);
+      execGroup.getRegion().push_back(egBlock);
 
       builder.create<subop::SetResultOp>(loc, 0, execGroup.getResults().front());
    }
