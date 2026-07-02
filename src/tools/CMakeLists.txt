@@ -66,6 +66,12 @@ target_compile_definitions(gen-rdf-catalog PRIVATE ${COMPILE_DEFS})
 
 # run-sparql
 add_executable(run-sparql run-sparql.cpp)
-target_link_libraries(run-sparql PUBLIC runner runtime utility mlir-support scheduler gengodb)
+target_link_libraries(run-sparql PUBLIC ${LIBS} ${COMMON_LIBS} gengodb)
 set_target_properties(run-sparql PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 target_compile_definitions(run-sparql PRIVATE ${COMPILE_DEFS})
+
+# sparql-to-mlir
+add_executable(sparql-to-mlir sparql-to-mlir.cpp)
+target_link_libraries(sparql-to-mlir PUBLIC ${LIBS} ${COMMON_LIBS} gengodb)
+set_target_properties(sparql-to-mlir PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+target_compile_definitions(sparql-to-mlir PRIVATE ${COMPILE_DEFS})
