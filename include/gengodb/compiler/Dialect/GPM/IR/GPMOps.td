@@ -31,9 +31,9 @@ def TriplePatternOp : GPM_Op<"triple_pattern", [Pure,GPMOperator]> {
 
 def NamedGraphOp : GPM_Op<"named_graph", [Pure,GPMOperator]> {
   let summary = "named graph";
-  let arguments = (ins StrAttr:$graph, ColumnDefAttr:$def);
+  let arguments = (ins ColumnDefAttr:$def);
   let results = (outs TupleStream:$res);
-  let assemblyFormat = [{  `name` `:` $graph `,` `column` `:` custom<CustDef>($def) attr-dict }];
+  let assemblyFormat = [{  `column` `:` custom<CustDef>($def) attr-dict }];
 }
 
 def BasicGraphPatternOp : GPM_Op<"basic_graph_pattern", [Pure,GPMOperator]> {

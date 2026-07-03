@@ -57,6 +57,8 @@ def VariableBinding : GPM_Type<"VariableBinding", "variable_binding"> {
 
 def GraphRef : GPM_Type<"GraphReference", "graph_ref"> {
     let summary = "graph reference";
+    let parameters = (ins "mlir::StringAttr":$name, "mlir::StringAttr":$globalId);
+    let assemblyFormat = "`<` $name `,` $globalId `>`";
 }
 
 //===----------------------------------------------------------------------===//
