@@ -50,6 +50,8 @@ using BlankNodeMapping = llvm::DenseMap<Operation*, std::shared_ptr<LocalIdentif
 using VariableBinding = llvm::DenseMap<mlir::SymbolRefAttr, tuples::ColumnDefAttr>;
 using DefMappingCollector = llvm::SmallVector<subop::DefMappingPairT>;
 using RefMappingCollector = llvm::SmallVector<subop::RefMappingPairT>;
+using NamedGraphData = std::tuple<gsubop::GraphType, tuples::Column*, tuples::Column*>;
+using NamedGraphMapping = llvm::DenseMap<mlir::SymbolRefAttr, NamedGraphData>;
 struct GPMToSubOpLoweringPass
    : public PassWrapper<GPMToSubOpLoweringPass, OperationPass<ModuleOp>> {
    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(GPMToSubOpLoweringPass)
@@ -76,11 +78,6 @@ inline static GSetType createGraphSetType(MLIRContext* ctxt, std::string group, 
    auto itType = gsubop::GraphSetIteratorType::get(ctxt, mlir::ArrayAttr::get(ctxt, {StringAttr::get(ctxt, itStrategy)}));
    auto itMember = createMember(ctxt, memberName(graph, group, name + "_it"), itType);
    return GSetType::get(ctxt, createStateMembersAttr(ctxt, {itMember}));
-}
-template<typename GSetType>
-inline static GSetType getGraphSetColumnType(tuples::ColumnManager& columnManager, std::string scope, std::string name) {
-   auto col = columnManager.get(scope, name).get();
-   return mlir::cast<GSetType>(col->type);
 }
 inline static tuples::ColumnDefAttr createDef(tuples::ColumnManager& columnManager, std::string scope, std::string name, mlir::Type type, bool uniqueScope = true) {
    scope = uniqueScope ? columnManager.getUniqueScope(scope) : scope;
@@ -141,22 +138,33 @@ inline static bool isBound(mlir::Attribute term, const LocalIdentifierMapping& l
 }
 
 class NamedGraphLowering : public OpConversionPattern<gpm::NamedGraphOp> {
+   NamedGraphMapping& graphs;
    public:
-   NamedGraphLowering(TypeConverter& typeConverter, MLIRContext* context)
-      : OpConversionPattern<gpm::NamedGraphOp>(typeConverter, context) {}
+   NamedGraphLowering(TypeConverter& typeConverter, MLIRContext* context, NamedGraphMapping& graphs)
+      : OpConversionPattern<gpm::NamedGraphOp>(typeConverter, context), graphs(graphs) {}
    LogicalResult matchAndRewrite(gpm::NamedGraphOp namedGraphOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
       auto ctxt = rewriter.getContext();
       auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
       std::string graphGroup = namedGraphOp.getDef().getName().getRootReference().str();
       std::string graphName = namedGraphOp.getDef().getName().getLeafReference().str();
+      gsubop::GraphType graphType;
+      tuples::ColumnDefAttr nodeSetDef, edgeSetDef;
       auto graphNameAttr = StringAttr::get(ctxt, graphName);
-      auto nodeSetType = createGraphSetType<gsubop::NodeSetType>(ctxt, graphGroup, graphName, "vx");
-      auto edgeSetType = createGraphSetType<gsubop::EdgeSetType>(ctxt, graphGroup, graphName, "ex");
-      auto nodeSetMember = createMember(ctxt, memberName(graphName, graphGroup, "vx"), nodeSetType);
-      auto edgeSetMember = createMember(ctxt, memberName(graphName, graphGroup, "ex"), edgeSetType);
-      auto graphType = gsubop::GraphType::get(ctxt, createStateMembersAttr(ctxt, {nodeSetMember}), createStateMembersAttr(ctxt, {edgeSetMember}));
-      auto nodeSetDef = createDef(columnManager, graphGroup, graphName + "_vx", nodeSetType, false);
-      auto edgeSetDef = createDef(columnManager, graphGroup, graphName + "_ex", edgeSetType, false);
+      if (graphs.find(namedGraphOp.getDef().getName()) != graphs.end()) {
+         graphType = std::get<0>(graphs[namedGraphOp.getDef().getName()]);
+         nodeSetDef = columnManager.createDef(std::get<1>(graphs[namedGraphOp.getDef().getName()]));
+         edgeSetDef = columnManager.createDef(std::get<2>(graphs[namedGraphOp.getDef().getName()]));
+      }
+      else {
+         auto nodeSetType = createGraphSetType<gsubop::NodeSetType>(ctxt, graphGroup, graphName, "vx");
+         auto edgeSetType = createGraphSetType<gsubop::EdgeSetType>(ctxt, graphGroup, graphName, "ex");
+         auto nodeSetMember = createMember(ctxt, memberName(graphName, graphGroup, "vx"), nodeSetType);
+         auto edgeSetMember = createMember(ctxt, memberName(graphName, graphGroup, "ex"), edgeSetType);
+         graphType = gsubop::GraphType::get(ctxt, createStateMembersAttr(ctxt, {nodeSetMember}), createStateMembersAttr(ctxt, {edgeSetMember}));
+         nodeSetDef = createDef(columnManager, graphGroup, graphName + "_vx", nodeSetType, false);
+         edgeSetDef = createDef(columnManager, graphGroup, graphName + "_ex", edgeSetType, false);
+         graphs.insert(std::make_pair(namedGraphOp.getDef().getName(), std::make_tuple(graphType, &nodeSetDef.getColumn(), &edgeSetDef.getColumn())));
+      }
       mlir::Value graphRef = rewriter.create<gsubop::GetExternalGraphOp>(namedGraphOp->getLoc(), graphType, graphNameAttr, namedGraphOp.getGraph());
       rewriter.replaceOpWithNewOp<gsubop::ScanGraphOp>(namedGraphOp, graphRef, nodeSetDef, edgeSetDef);
       return success();
@@ -197,11 +205,12 @@ class BasicGraphPatternLowering : public OpConversionPattern<gpm::BasicGraphPatt
 };
 
 class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
+   NamedGraphMapping& graphs;
    VariableBinding& bindings;
    const BlankNodeMapping& blankNodes;
    public:
-   TriplePatternLowering(TypeConverter& typeConverter, MLIRContext* context, VariableBinding& bindings, const BlankNodeMapping& blankNodes)
-      : OpConversionPattern<gpm::TriplePatternOp>(typeConverter, context), bindings(bindings), blankNodes(blankNodes) {}
+   TriplePatternLowering(TypeConverter& typeConverter, MLIRContext* context, NamedGraphMapping& graphs, VariableBinding& bindings, const BlankNodeMapping& blankNodes)
+      : OpConversionPattern<gpm::TriplePatternOp>(typeConverter, context), graphs(graphs), bindings(bindings), blankNodes(blankNodes) {}
    LogicalResult matchAndRewrite(gpm::TriplePatternOp triplePatternOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
       auto it = blankNodes.find(triplePatternOp.getOperation());
       if (it == blankNodes.end()) return failure();
@@ -228,12 +237,12 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       gsubop::NodeRefType nodeRefType;
       tuples::ColumnRefAttr nodeRef;
       if (auto identTermAttr = mlir::dyn_cast_or_null<gpm::IdentifierTermAttr>(op.getS())) {
-         auto nodesRef = createRef(columnManager, group, graph + "_vx");
+         auto nodesRef = columnManager.createRef(std::get<1>(graphs[op.getGraphRef().getName()]));
          auto identState = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, identTermAttr.getIdent());
          auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({nodesRef}));
          auto* b = new Block();
          b->addArgument(tuples::TupleType::get(ctxt), loc);
-         auto nodeSetType = getGraphSetColumnType<gsubop::NodeSetType>(columnManager, group, graph + "_vx");
+         auto nodeSetType = std::get<1>(graphs[op.getGraphRef().getName()])->type;
          auto nodeSetArg = b->addArgument(nodeSetType, loc);
          nestedMapOp.getRegion().push_back(b);
          {
@@ -277,7 +286,7 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
          rewriter.create<tuples::ReturnOp>(loc, inner);
       }
       stream = nestedMapOp;
-      stream = lowerPredicate(rewriter, loc, stream, op.getP(), edgeRefColumnRef, group, graph, columnManager);
+      stream = lowerPredicate(rewriter, loc, stream, op.getGraphRef().getName(), op.getP(), edgeRefColumnRef, columnManager);
       stream = lowerTerm(rewriter, loc, stream, op.getO(), edgeRefType.getToMembers().getMembers()[0], edgeRefColumnRef, graph, localIdents, columnManager);
       return stream;
    }
@@ -289,12 +298,12 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       gsubop::NodeRefType nodeRefType;
       tuples::ColumnRefAttr nodeRef;
       if (auto identTermAttr = mlir::dyn_cast_or_null<gpm::IdentifierTermAttr>(op.getO())) {
-         auto nodesRef = createRef(columnManager, group, graph + "_vx");
+         auto nodesRef = columnManager.createRef(std::get<1>(graphs[op.getGraphRef().getName()]));
          auto identState = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, identTermAttr.getIdent());
          auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({nodesRef}));
          auto* b = new Block();
          b->addArgument(tuples::TupleType::get(ctxt), loc);
-         auto nodeSetType = getGraphSetColumnType<gsubop::NodeSetType>(columnManager, group, graph + "_vx");
+         auto nodeSetType = std::get<1>(graphs[op.getGraphRef().getName()])->type;
          auto nodeSetArg = b->addArgument(nodeSetType, loc);
          nestedMapOp.getRegion().push_back(b);
          {
@@ -338,7 +347,7 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
          rewriter.create<tuples::ReturnOp>(loc, inner);
       }
       stream = nestedMapOp;
-      stream = lowerPredicate(rewriter, loc, stream, op.getP(), edgeRefColumnRef, group, graph, columnManager);
+      stream = lowerPredicate(rewriter, loc, stream, op.getGraphRef().getName(), op.getP(), edgeRefColumnRef, columnManager);
       stream = lowerTerm(rewriter, loc, stream, op.getS(), edgeRefType.getFromMembers().getMembers()[0], edgeRefColumnRef, graph, localIdents, columnManager);
       return stream;
    }
@@ -346,8 +355,8 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       auto ctxt = rewriter.getContext();
       std::string group = op.getGraphRef().getName().getRootReference().str();
       std::string graph = op.getGraphRef().getName().getLeafReference().str();
-      auto edgesRef = createRef(columnManager, group, graph + "_ex");
-      auto edgeSetType = getGraphSetColumnType<gsubop::EdgeSetType>(columnManager, group, graph + "_ex");
+      auto edgesRef = columnManager.createRef(std::get<2>(graphs[op.getGraphRef().getName()]));
+      auto edgeSetType = std::get<2>(graphs[op.getGraphRef().getName()])->type;
       auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({edgesRef}));
       auto* b = new Block();
       b->addArgument(tuples::TupleType::get(ctxt), loc);
@@ -362,13 +371,15 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
          rewriter.create<tuples::ReturnOp>(loc, inner);
       }
       stream = nestedMapOp;
-      stream = lowerPredicate(rewriter, loc, stream, op.getP(), edgeRefColumnRef, group, graph, columnManager);
+      stream = lowerPredicate(rewriter, loc, stream, op.getGraphRef().getName(), op.getP(), edgeRefColumnRef, columnManager);
       stream = lowerTerm(rewriter, loc, stream, op.getS(), edgeRefType.getFromMembers().getMembers()[0], edgeRefColumnRef, graph, localIdents, columnManager);
       stream = lowerTerm(rewriter, loc, stream, op.getO(), edgeRefType.getToMembers().getMembers()[0], edgeRefColumnRef, graph, localIdents, columnManager);
       return stream;
    }
-   mlir::Value lowerPredicate(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, mlir::Attribute p, tuples::ColumnRefAttr edgeRef, std::string group, std::string graph, tuples::ColumnManager& columnManager) const {
+   mlir::Value lowerPredicate(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value stream, mlir::SymbolRefAttr graphRef, mlir::Attribute p, tuples::ColumnRefAttr edgeRef, tuples::ColumnManager& columnManager) const {
       auto ctxt = rewriter.getContext();
+      std::string group = graphRef.getRootReference().str();
+      std::string graph = graphRef.getLeafReference().str();
       if (auto constPred = mlir::dyn_cast<gpm::IdentifierTermAttr>(p)) {
          auto ident = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, constPred.getIdent());
          stream = rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, edgeRef, ident);
@@ -404,7 +415,7 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
             auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({nodesRef, identColumnRef}));
             auto* b = new Block();
             b->addArgument(tuples::TupleType::get(ctxt), loc);
-            auto nodeSetType = getGraphSetColumnType<gsubop::NodeSetType>(columnManager, group, graph + "_vx");
+            auto nodeSetType = std::get<1>(graphs[graphRef])->type;
             auto nodeSetArg = b->addArgument(nodeSetType, loc);
             auto identArg = b->addArgument(gsubop::IdentifierType::get(ctxt), loc);
             nestedMapOp.getRegion().push_back(b);
@@ -534,10 +545,11 @@ void GPMToSubOpLoweringPass::runOnOperation() {
 
    VariableBinding bindings;
    BlankNodeMapping blankNodes;
+   NamedGraphMapping graphs;
 
-   patterns.insert<NamedGraphLowering>(typeConverter, ctxt);
+   patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs);
    patterns.insert<BasicGraphPatternLowering>(typeConverter, ctxt, blankNodes);
-   patterns.insert<TriplePatternLowering>(typeConverter, ctxt, bindings, blankNodes);
+   patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs, bindings, blankNodes);
 
    if (failed(applyFullConversion(module, target, std::move(patterns))))
       signalPassFailure();
