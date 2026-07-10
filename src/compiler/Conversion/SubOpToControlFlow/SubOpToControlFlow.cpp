@@ -4537,7 +4537,7 @@ class ScanEdgeSetLowering : public SubOpConversionPattern<gsubop::ScanEdgeSetOp>
          mlir::func::FuncOp funcOp;
          auto ptrType = util::RefType::get(getContext(), IntegerType::get(getContext(), 8));
          rewriter.atStartOf(parentModule.getBody(), [&](SubOpRewriter& rewriter) {
-            funcOp = rewriter.create<mlir::func::FuncOp>(parentModule.getLoc(), "scan_linked_list" + std::to_string(funcIds++), mlir::FunctionType::get(getContext(), TypeRange{ptrType, ptrType}, TypeRange()));
+            funcOp = rewriter.create<mlir::func::FuncOp>(parentModule.getLoc(), "scan_linked_list_incoming" + std::to_string(funcIds++), mlir::FunctionType::get(getContext(), TypeRange{ptrType, ptrType}, TypeRange()));
          });
 
          auto* funcBody = new Block;
@@ -4678,7 +4678,7 @@ class ScanEdgeSetLowering : public SubOpConversionPattern<gsubop::ScanEdgeSetOp>
          mlir::func::FuncOp funcOp;
          auto ptrType = util::RefType::get(getContext(), IntegerType::get(getContext(), 8));
          rewriter.atStartOf(parentModule.getBody(), [&](SubOpRewriter& rewriter) {
-            funcOp = rewriter.create<mlir::func::FuncOp>(parentModule.getLoc(), "scan_linked_list" + std::to_string(funcIds++), mlir::FunctionType::get(getContext(), TypeRange{ptrType, ptrType}, TypeRange()));
+            funcOp = rewriter.create<mlir::func::FuncOp>(parentModule.getLoc(), "scan_linked_list_outgoing" + std::to_string(funcIds++), mlir::FunctionType::get(getContext(), TypeRange{ptrType, ptrType}, TypeRange()));
          });
 
          auto* funcBody = new Block;
@@ -5178,7 +5178,7 @@ private:
          mlir::func::FuncOp funcOp;
          auto ptrType = util::RefType::get(getContext(), IntegerType::get(getContext(), 8));
          rewriter.atStartOf(parentModule.getBody(), [&](SubOpRewriter& rewriter) {
-            funcOp = rewriter.create<mlir::func::FuncOp>(parentModule.getLoc(), "scan_linked_list" + std::to_string(funcIds++), mlir::FunctionType::get(getContext(), TypeRange{ptrType, ptrType}, TypeRange()));
+            funcOp = rewriter.create<mlir::func::FuncOp>(parentModule.getLoc(), "scan_linked_list_props" + std::to_string(funcIds++), mlir::FunctionType::get(getContext(), TypeRange{ptrType, ptrType}, TypeRange()));
          });
 
          auto* funcBody = new Block;
