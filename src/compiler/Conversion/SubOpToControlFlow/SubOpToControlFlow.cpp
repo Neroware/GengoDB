@@ -4745,6 +4745,48 @@ class ScanEdgeSetLowering : public SubOpConversionPattern<gsubop::ScanEdgeSetOp>
    }
 };
 
+class NodeCountOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::NodeCountOp> {
+   public:
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::NodeCountOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::NodeCountOp nodeCountOp) const override {
+      return success();
+   }
+   void rewrite(gsubop::NodeCountOp nodeCountOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto loc = nodeCountOp.getLoc();
+      auto ctxt = nodeCountOp.getContext();
+      auto graphPtr = adaptor.getGraph();
+      auto nodeBufLenI64 = rt::GraphStorage::nodeCount(rewriter, loc)({graphPtr})[0];
+      auto nodeBufLen = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), nodeBufLenI64);
+      llvm::SmallVector<mlir::Attribute, 2> columns;
+      llvm::SmallVector<mlir::Value, 2> columnValues;
+      columns.append({nodeCountOp.getRef()});
+      columnValues.append({nodeBufLen});
+      mapping.define(mlir::ArrayAttr::get(ctxt, columns), columnValues);
+      rewriter.replaceTupleStream(nodeCountOp, mapping);
+   }
+};
+
+class EdgeCountOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::EdgeCountOp> {
+   public:
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::EdgeCountOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::EdgeCountOp nodeCountOp) const override {
+      return success();
+   }
+   void rewrite(gsubop::EdgeCountOp relCountOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto loc = relCountOp.getLoc();
+      auto ctxt = relCountOp.getContext();
+      auto graphPtr = adaptor.getGraph();
+      auto edgeBufLenI64 = rt::GraphStorage::relCount(rewriter, loc)({graphPtr})[0];
+      auto edgeBufLen = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), edgeBufLenI64);
+      llvm::SmallVector<mlir::Attribute, 2> columns;
+      llvm::SmallVector<mlir::Value, 2> columnValues;
+      columns.append({relCountOp.getRef()});
+      columnValues.append({edgeBufLen});
+      mapping.define(mlir::ArrayAttr::get(ctxt, columns), columnValues);
+      rewriter.replaceTupleStream(relCountOp, mapping);
+   }
+};
+
 class NodeRefGatherOpLowering : public SubOpTupleStreamConsumerConversionPattern<subop::GatherOp, 2> {
    public:
    using SubOpTupleStreamConsumerConversionPattern<subop::GatherOp, 2>::SubOpTupleStreamConsumerConversionPattern;
@@ -5398,6 +5440,8 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    patterns.insertPattern<ScanGraphLowering>(typeConverter, ctxt);
    patterns.insertPattern<ScanNodeSetLowering>(typeConverter, ctxt);
    patterns.insertPattern<ScanEdgeSetLowering>(typeConverter, ctxt);
+   patterns.insertPattern<NodeCountOpLowering>(typeConverter, ctxt);
+   patterns.insertPattern<EdgeCountOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<NodeRefGatherOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<EdgeRefGatherOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<NodeRefScatterOpLowering>(typeConverter, ctxt);
