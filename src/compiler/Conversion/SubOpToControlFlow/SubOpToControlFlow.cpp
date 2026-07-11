@@ -4787,6 +4787,18 @@ class EdgeCountOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsu
    }
 };
 
+static void processMembers(GatherOp& gatherOp, StateMembersAttr& members, MemberManager& memberManager, std::function<void(size_t i, const Member& member)> fn) {
+   for (size_t i = 0; i < members.getMembers().size(); i++) {
+      for (auto member : gatherOp.getReadMembers()) {
+         auto other = members.getMembers()[i];
+         auto name = memberManager.getName(member);
+         if (name != memberManager.getName(other))
+            continue;
+         fn(i, member);
+      }
+   }
+}
+
 class NodeRefGatherOpLowering : public SubOpTupleStreamConsumerConversionPattern<subop::GatherOp, 2> {
    public:
    using SubOpTupleStreamConsumerConversionPattern<subop::GatherOp, 2>::SubOpTupleStreamConsumerConversionPattern;
@@ -4839,18 +4851,6 @@ class NodeRefGatherOpLowering : public SubOpTupleStreamConsumerConversionPattern
       });
       mapping.define(mlir::ArrayAttr::get(ctxt, columns), columnValues);
       rewriter.replaceTupleStream(gatherOp, mapping);
-   }
-   private:
-   void processMembers(GatherOp& gatherOp, StateMembersAttr& members, MemberManager& memberManager, std::function<void(size_t i, const Member& member)> fn) const {
-      for (size_t i = 0; i < members.getMembers().size(); i++) {
-         for (auto member : gatherOp.getReadMembers()) {
-            auto other = members.getMembers()[i];
-            auto name = memberManager.getName(member);
-            if (name != memberManager.getName(other))
-               continue;
-            fn(i, member);
-         }
-      }
    }
 };
 
@@ -4925,18 +4925,6 @@ class EdgeRefGatherOpLowering : public SubOpTupleStreamConsumerConversionPattern
       });
       mapping.define(mlir::ArrayAttr::get(ctxt, columns), columnValues);
       rewriter.replaceTupleStream(gatherOp, mapping);
-   }
-   private:
-   void processMembers(GatherOp& gatherOp, StateMembersAttr& members, MemberManager& memberManager, std::function<void(size_t i, const Member& member)> fn) const {
-      for (size_t i = 0; i < members.getMembers().size(); i++) {
-         for (auto member : gatherOp.getReadMembers()) {
-            auto other = members.getMembers()[i];
-            auto name = memberManager.getName(member);
-            if (name != memberManager.getName(other))
-               continue;
-            fn(i, member);
-         }
-      }
    }
 };
 
