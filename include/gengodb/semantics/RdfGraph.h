@@ -3,6 +3,7 @@
 
 #include "gengodb/runtime/GengoDBGraph.h"
 #include "gengodb/catalog/CreateRdfGraphDef.h"
+#include "gengodb/semantics/Identifiers.h"
 #include <rdf4cpp.hpp>
 
 #include <iostream>
