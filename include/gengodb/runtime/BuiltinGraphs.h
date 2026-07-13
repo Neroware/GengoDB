@@ -5,6 +5,8 @@
 
 #include "gengodb/semantics/Datatypes.h"
 
+#include <cstdio>
+
 namespace lingodb::runtime {
 using namespace gengodb::semantics;
 struct BuiltinGraph {
@@ -108,8 +110,22 @@ struct BlobTable {
         }
         T value{};
         memcpy(&value, ptr, sizeof(T));
-    return value;
-}
+        return value;
+    }
+    size_t blobCount() const { return blobs_.size(); }
+    size_t usedBytes() const {
+        if (blobs_.empty()) return 0;
+        return static_cast<size_t>(blobs_.back().first - blobData_.ptr) + blobs_.back().second;
+    }
+    const std::byte* rawData() const { return blobData_.ptr; }
+    void restore(const std::byte* raw, size_t rawLen, const std::vector<uint32_t>& lengths) {
+        if (rawLen) memcpy(blobData_.ptr, raw, rawLen);
+        size_t offset = 0;
+        for (auto len : lengths) {
+            blobs_.push_back(std::make_pair(blobData_.ptr + offset, static_cast<size_t>(len)));
+            offset += len;
+        }
+    }
 private:
     std::vector<std::pair<std::byte*, size_t>> blobs_;
     LegacyFixedSizedBuffer<std::byte> blobData_;
@@ -138,18 +154,21 @@ public:
         inline int32_t     add_i64(int64_t v) { lst_i64_.push_back(v); return static_cast<int32_t>(lst_i64_.size() - 1); }
         inline uint64_t    get_ui64(int32_t idx) const { return lst_ui64_[idx]; }
         inline int32_t     add_ui64(uint64_t v) { lst_ui64_.push_back(v); return static_cast<int32_t>(lst_ui64_.size() - 1); }
-        inline double      get_double(int32_t idx) const { return lst_ui64_[idx]; }
+        inline double      get_double(int32_t idx) const { return lst_double_[idx]; }
         inline int32_t     add_double(double v) { lst_double_.push_back(v); return static_cast<int32_t>(lst_double_.size() - 1); }
 
-        template<xsd::Type t> 
+        template<xsd::Type t>
         inline std::pair<std::byte*, size_t> get_blob(int32_t idx) const { return blobs_.at(t)->get(idx); }
-        template<xsd::Type t, size_t blob_size = 1024> 
-        inline std::pair<std::byte*, int32_t> add_blob(int32_t idx) {
+        template<xsd::Type t, size_t blob_size = 1024>
+        inline std::pair<std::byte*, int32_t> add_blob(size_t len) {
             if (!blobs_.contains(t)) {
                 blobs_.insert(std::make_pair(t, std::make_unique<BlobTable>(blob_size)));
             }
-            return blobs_.at(t)->get(idx); 
+            return blobs_.at(t)->alloc(len);
         }
+
+        void flush(std::FILE* f) const;
+        void load(std::FILE* f);
 
         private:
         std::vector<int64_t> lst_i64_;

@@ -2,6 +2,8 @@
 
 #include "gengodb/semantics/RdfGraph.h"
 
+#include <algorithm>
+
 namespace lingodb::runtime {
 using namespace rdf4cpp;
 
@@ -138,6 +140,63 @@ void PropertyGraph::removeProperty(prop_id_t id, prop_id_t& chainHead) {
         props_.ptr[p.nextPropId].prevPropId = p.prevPropId;
     p.inUse = false;
     freeProps_.push_back(id);
+}
+void PropertyGraph::PropertyData::flush(std::FILE* f) const {
+    auto writeVec = [&](const auto& vec) {
+        uint32_t n = static_cast<uint32_t>(vec.size());
+        std::fwrite(&n, sizeof(n), 1, f);
+        if (n) std::fwrite(vec.data(), sizeof(vec[0]), n, f);
+    };
+    writeVec(lst_i64_);
+    writeVec(lst_ui64_);
+    writeVec(lst_double_);
+
+    uint32_t typeCount = static_cast<uint32_t>(blobs_.size());
+    std::fwrite(&typeCount, sizeof(typeCount), 1, f);
+    for (const auto& [type, table] : blobs_) {
+        uint32_t typeVal = static_cast<uint32_t>(type);
+        std::fwrite(&typeVal, sizeof(typeVal), 1, f);
+        uint32_t blobCount = static_cast<uint32_t>(table->blobCount());
+        std::fwrite(&blobCount, sizeof(blobCount), 1, f);
+        for (uint32_t i = 0; i < blobCount; i++) {
+            uint32_t len = static_cast<uint32_t>(table->get(static_cast<int32_t>(i)).second);
+            std::fwrite(&len, sizeof(len), 1, f);
+        }
+        uint64_t used = static_cast<uint64_t>(table->usedBytes());
+        std::fwrite(&used, sizeof(used), 1, f);
+        if (used) std::fwrite(table->rawData(), 1, used, f);
+    }
+}
+void PropertyGraph::PropertyData::load(std::FILE* f) {
+    auto readVec = [&](auto& vec) {
+        uint32_t n = 0;
+        std::fread(&n, sizeof(n), 1, f);
+        vec.resize(n);
+        if (n) std::fread(vec.data(), sizeof(vec[0]), n, f);
+    };
+    readVec(lst_i64_);
+    readVec(lst_ui64_);
+    readVec(lst_double_);
+
+    uint32_t typeCount = 0;
+    std::fread(&typeCount, sizeof(typeCount), 1, f);
+    for (uint32_t i = 0; i < typeCount; i++) {
+        uint32_t typeVal = 0;
+        std::fread(&typeVal, sizeof(typeVal), 1, f);
+        uint32_t blobCount = 0;
+        std::fread(&blobCount, sizeof(blobCount), 1, f);
+        std::vector<uint32_t> lengths(blobCount);
+        for (uint32_t j = 0; j < blobCount; j++)
+            std::fread(&lengths[j], sizeof(uint32_t), 1, f);
+        uint64_t used = 0;
+        std::fread(&used, sizeof(used), 1, f);
+        std::vector<std::byte> raw(used);
+        if (used) std::fread(raw.data(), 1, used, f);
+
+        auto table = std::make_unique<BlobTable>(std::max<size_t>(used, 1024));
+        table->restore(raw.data(), used, lengths);
+        blobs_.emplace(static_cast<xsd::Type>(typeVal), std::move(table));
+    }
 }
 PropertyGraph* PropertyGraph::create(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity) {
     return new PropertyGraph(nodeCapacity, relCapacity, propCapacity);

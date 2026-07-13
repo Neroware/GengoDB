@@ -7,7 +7,7 @@ ex:bob ex:drinks _:drink1 .
 ex:bob ex:drinks _:drink2 .
 ex:bob ex:age "30"^^xsd:int .
 ex:bob ex:awake "true"^^xsd:boolean .
-# ex:bob ex:name "Bob"^^xsd:string .
+ex:bob ex:name "Bob"^^xsd:string .
 
 ex:coffee ex:temp "65"^^xsd:int .
 ex:coffee ex:strong "true"^^xsd:boolean .
