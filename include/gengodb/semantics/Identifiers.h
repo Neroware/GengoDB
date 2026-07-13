@@ -27,18 +27,12 @@ struct NodeId {
                 // Literal nodes have no identifier within an RDF graph
                 return 0;
             case RDFNodeType::IRI: {
-                std::size_t h1 = std::hash<std::underlying_type_t<RDFNodeType>>{}(
-                    static_cast<std::underlying_type_t<RDFNodeType>>(type));
-                std::size_t h2 = std::hash<IRI>{}(iri);
-                return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
+                return std::hash<std::string>{}(iri.identifier().data());
             }
             case RDFNodeType::BNode:
             case RDFNodeType::Variable:
             default: {
-                std::size_t h1 = std::hash<std::underlying_type_t<RDFNodeType>>{}(
-                    static_cast<std::underlying_type_t<RDFNodeType>>(type));
-                std::size_t h2 = std::hash<std::string>{}(localId);
-                return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
+                return std::hash<std::string>{}(localId);
             }
         }
     }

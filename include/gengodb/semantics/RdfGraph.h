@@ -23,48 +23,48 @@ struct extra_namespaces {
     const Namespace GENGODB = Namespace("https://github.com/Neroware/LingoDB#");
     const Namespace XSD = Namespace("http://www.w3.org/2001/XMLSchema#");
 };
-class NodeDictionary {
-private:
-    std::unordered_map<Node, int32_t> node_to_id;
-    std::vector<Node> id_to_node;
-public:
-    NodeDictionary(const std::initializer_list<Node>& l) {
-        for (auto it = l.begin(); it != l.end(); it++) {
-            int32_t id = static_cast<int32_t>(id_to_node.size());
-            id_to_node.push_back(*it);
-            node_to_id.emplace(id_to_node.back(), id);
-        }
-    }
-    NodeDictionary() {}
-    ~NodeDictionary() {}
-    int32_t insert(const Node& node) {
-        int32_t id = static_cast<int32_t>(id_to_node.size());
-        id_to_node.push_back(node);
-        node_to_id.emplace(id_to_node.back(), id);
-        return id;
-    }
-    int32_t get_or_insert(const Node& node) {
-        auto it = node_to_id.find(node);
-        if (it != node_to_id.end())
-            return it->second;
-        int32_t id = static_cast<int32_t>(id_to_node.size());
-        id_to_node.push_back(node);
-        node_to_id.emplace(id_to_node.back(), id);
-        return id;
-    }
-    int32_t get_safe(const Node& node) const {
-        auto it = node_to_id.find(node);
-        if (it == node_to_id.end())
-            return -1;
-        return it->second;
-    }
-    Node get_node(int32_t id) const {
-        if (static_cast<size_t>(id) > id_to_node.size())
-            return IRI{};
-        return id_to_node[id];
-    }
-    size_t size() const { return id_to_node.size(); }
-}; // NodeDictionary
+// class NodeDictionary {
+// private:
+//     std::unordered_map<Node, int32_t> node_to_id;
+//     std::vector<Node> id_to_node;
+// public:
+//     NodeDictionary(const std::initializer_list<Node>& l) {
+//         for (auto it = l.begin(); it != l.end(); it++) {
+//             int32_t id = static_cast<int32_t>(id_to_node.size());
+//             id_to_node.push_back(*it);
+//             node_to_id.emplace(id_to_node.back(), id);
+//         }
+//     }
+//     NodeDictionary() {}
+//     ~NodeDictionary() {}
+//     int32_t insert(const Node& node) {
+//         int32_t id = static_cast<int32_t>(id_to_node.size());
+//         id_to_node.push_back(node);
+//         node_to_id.emplace(id_to_node.back(), id);
+//         return id;
+//     }
+//     int32_t get_or_insert(const Node& node) {
+//         auto it = node_to_id.find(node);
+//         if (it != node_to_id.end())
+//             return it->second;
+//         int32_t id = static_cast<int32_t>(id_to_node.size());
+//         id_to_node.push_back(node);
+//         node_to_id.emplace(id_to_node.back(), id);
+//         return id;
+//     }
+//     int32_t get_safe(const Node& node) const {
+//         auto it = node_to_id.find(node);
+//         if (it == node_to_id.end())
+//             return -1;
+//         return it->second;
+//     }
+//     Node get_node(int32_t id) const {
+//         if (static_cast<size_t>(id) > id_to_node.size())
+//             return IRI{};
+//         return id_to_node[id];
+//     }
+//     size_t size() const { return id_to_node.size(); }
+// }; // NodeDictionary
 class RdfGraph;
 struct RdfDatatypeInlineHelper {
     /**
@@ -128,13 +128,10 @@ class RdfGraph {
 private:
     IRI iri;
     std::unique_ptr<runtime::GengoDBGraph> storage;
-    std::shared_ptr<NodeDictionary> nodes;
-    std::unordered_map<BlankNode, int32_t> bnodes;
-    std::unordered_map<Literal, int32_t> literals;
-    std::unordered_map<IRI, int32_t> literalTypes;
+    std::unique_ptr<NodeIdDict> nodes;
 public:
     RdfGraph(const IRI& iri, std::unique_ptr<runtime::GengoDBGraph> storage, std::string fileName) 
-        : iri(iri), storage(std::move(storage)), nodes(std::make_shared<NodeDictionary>()), persist(false), fileName(std::move(fileName)), loadedFromRdfFile(false), rdfParseFlags(parser::ParsingFlag::Turtle), nodeHelper(this) {}
+        : iri(iri), storage(std::move(storage)), nodes(std::make_unique<NodeIdDict>()), persist(false), fileName(std::move(fileName)), loadedFromRdfFile(false), rdfParseFlags(parser::ParsingFlag::Turtle), nodeHelper(this) {}
     void setPersist(bool persist) {
         this->persist = persist;
         if (persist) {
@@ -187,10 +184,11 @@ public:
     void addTriple(const BlankNode& s, const IRI& p, const BlankNode& o);
     void addTriple(const BlankNode& s, const IRI& p, const Literal& o);
     IRI getIri() const { return iri; }
-    std::shared_ptr<NodeDictionary> getNodes() const { return nodes; }
-    const std::unordered_map<BlankNode, int32_t>& getBlankNodes() const { return bnodes; }
-    const std::unordered_map<Literal, int32_t>& getLiterals() const { return literals; }
-    const std::unordered_map<IRI, int32_t>& getLiteralTypes() const { return literalTypes; }
+    const NodeIdDict& getNodes() const { return *nodes; }
+    RDFNodeType getNodeType(int32_t id) const { return nodes->get(id).type; }
+    IRI getIri(int32_t id) const { return nodes->get(id).iri; }
+    BlankNode getBNode(int32_t id) const { return BlankNode{nodes->get(id).localId}; }
+    Literal getLiteral(int32_t id) const;
     void serialize(lingodb::utility::Serializer& serializer) const;
     static std::unique_ptr<RdfGraph> deserialize(lingodb::utility::Deserializer& deserializer);
 private:

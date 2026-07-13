@@ -23,22 +23,23 @@ inline int32_t NodeHelper::resolve(const IRI& iri) {
 inline int32_t NodeHelper::resolve(const BlankNode& b) {
     auto id = g->nodes->get_or_insert(b);
     ensureNode();
-    g->bnodes.emplace(b, id);
     return id;
 }
 inline int32_t NodeHelper::resolve(const Literal& l) {
-    auto it = g->literals.find(l);
-    if (it != g->literals.end())
-        return it->second;
-    RdfDatatypeInlineHelper inlineHelper;
-    auto id = g->nodes->get_or_insert(l);
-    ensureNode();
-    int32_t datatype = resolve(l.datatype());
-    uint32_t v = 0;
-    assert(inlineHelper.isInlined(l.datatype()) && "only inlined literals supported");
-    inlineHelper.inlineValue(&v, l.value(), l.datatype());
-    g->storage->storage().addNodeProperty(id, datatype, static_cast<uint32_t>(xsd::from_iri(l.datatype())), v);
-    return id;
+    // TODO implement
+    return -1;
+    // auto it = g->literals.find(l);
+    // if (it != g->literals.end())
+    //     return it->second;
+    // RdfDatatypeInlineHelper inlineHelper;
+    // auto id = g->nodes->get_or_insert(l);
+    // ensureNode();
+    // int32_t datatype = resolve(l.datatype());
+    // uint32_t v = 0;
+    // assert(inlineHelper.isInlined(l.datatype()) && "only inlined literals supported");
+    // inlineHelper.inlineValue(&v, l.value(), l.datatype());
+    // g->storage->storage().addNodeProperty(id, datatype, static_cast<uint32_t>(xsd::from_iri(l.datatype())), v);
+    // return id;
 }
 void RdfGraph::addTriple(const IRI& s, const IRI& p, const IRI& o) {
     storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
@@ -100,9 +101,24 @@ void RdfGraph::ensureLoaded() {
             // should be retreived from.
             //
             // This solution is currently a shortcut to generate an output!
-            return static_cast<std::string>(getNodes()->get_node(id)); 
+
+            auto nodeId = getNodes().get(id);
+            switch(nodeId.type) {
+                case RDFNodeType::IRI: return static_cast<std::string>(nodeId.iri);
+                case RDFNodeType::BNode: return "_:" + nodeId.localId;
+                default: return std::string("UNKNOWN"); 
+            }
         });
     }
+}
+Literal RdfGraph::getLiteral(int32_t id) const {
+    // const auto& n = storage->storage().node(id);
+    // if (n.payload < 0) {
+    //     assert(false > 0 && "literal node missing data property");
+    // }
+    // const auto& p = storage->storage().prop(n.payload);
+    // TODO implement
+    return Literal{};
 }
 void RdfGraph::serialize(lingodb::utility::Serializer& serializer) const {
     serializer.writeProperty(1, iri.identifier());

@@ -90,7 +90,7 @@ class GpmLoweringStep : public LoweringStep {
                auto rdfGraph = graph.value();
                rdfGraph->ensureFullyLoaded();
                moduleOp->getContext()->getLoadedDialect<gsubop::GraphSubOpDialect>()->getNamedGraphManager().addNamedGraph(
-                  rdfGraph->getName(), rdfGraph->getIri().identifier().data(), rdfGraph->getNodes());
+                  rdfGraph->getName(), rdfGraph->getIri().identifier().data(), rdfGraph);
             }
          }
       });
