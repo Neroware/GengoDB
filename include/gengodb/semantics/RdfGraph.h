@@ -220,6 +220,8 @@ private:
     
     bool loaded = false;
 
+    void rebuildLiteralNodeCache();
+
     NodeHelper nodeHelper;
     friend class NodeHelper;
 };

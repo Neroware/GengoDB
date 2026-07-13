@@ -139,35 +139,82 @@ std::unique_ptr<RdfGraph> RdfGraph::create(const std::string& name, const IRI& i
     return rdfGraph;
 }
 void RdfGraph::flush() {
-    if (loadedFromRdfFile) {
-        return;
-    }
     storage->flush();
 }
 void RdfGraph::ensureLoaded() {
     if (!loaded) {
         loaded = true;
+        bool loadedFromCache = false;
         if (loadedFromRdfFile) {
-            storage = std::make_unique<runtime::GengoDBGraph>(fileName,
-                GENGODB_DEFAULT_CAPACITY, GENGODB_DEFAULT_CAPACITY, GENGODB_DEFAULT_CAPACITY);
-            storage->setDBDir(dbDir);
-            // The graph is rebuilt from scratch below, so any node dictionary
-            // restored from a stale catalog snapshot must be discarded too.
-            nodes = std::make_unique<NodeIdDict>();
-            literalNodes.clear();
-            loadTriples();
+            const std::string sourcePath = dbDir + fileName + getRDFFileExtension(rdfParseFlags);
+            if (storage->hasFreshCache(sourcePath)) {
+                loadedFromCache = true;
+            } 
+            else {
+                storage = std::make_unique<runtime::GengoDBGraph>(fileName,
+                    GENGODB_DEFAULT_CAPACITY, GENGODB_DEFAULT_CAPACITY, GENGODB_DEFAULT_CAPACITY);
+                storage->setDBDir(dbDir);
+                nodes = std::make_unique<NodeIdDict>();
+                literalNodes.clear();
+                loadTriples();
+            }
         }
         storage->ensureLoaded();
+        if (loadedFromCache) {
+            rebuildLiteralNodeCache();
+        }
         storage->storage().getMetadata().set_name(iri.identifier().data());
         storage->storage().getMetadata().set_identifier_mapping([&](int32_t id) {
             auto nodeId = getNodes().get(id);
             switch(nodeId.type) {
-                case RDFNodeType::IRI: return static_cast<std::string>(nodeId.iri);
-                case RDFNodeType::BNode: return "_:" + nodeId.localId;
-                case RDFNodeType::Literal: return static_cast<std::string>(getLiteral(id));
-                default: return std::string("UNKNOWN");
+                case RDFNodeType::IRI:      return static_cast<std::string>(nodeId.iri);
+                case RDFNodeType::BNode:    return "_:" + nodeId.localId;
+                case RDFNodeType::Literal:  return static_cast<std::string>(getLiteral(id));
+                default: return std::string();
             }
         });
+    }
+}
+void RdfGraph::rebuildLiteralNodeCache() {
+    RdfDatatypeInlineHelper inlineHelper;
+    RdfDatatypeFixedHelper fixedHelper;
+    auto& propData = storage->storage().getPropData();
+    for (int32_t id = 0; id < static_cast<int32_t>(nodes->size()); id++) {
+        if (nodes->get(id).type != RDFNodeType::Literal) continue;
+        const auto& n = storage->storage().node(id);
+        if (n.payload < 0) continue;
+        const auto& p = storage->storage().prop(n.payload);
+        const IRI datatype = getIri(static_cast<int32_t>(p.key));
+
+        std::string data;
+        if (inlineHelper.isInlined(datatype)) {
+            data.assign(reinterpret_cast<const char*>(&p.value), sizeof(p.value));
+        } 
+        else if (const auto fixedKind = fixedHelper.kindOf(datatype)) {
+            const auto idx = static_cast<int32_t>(p.value);
+            switch (*fixedKind) {
+                case RdfDatatypeFixedHelper::Kind::Int64: {
+                    const int64_t v = propData.get_i64(idx);
+                    data.assign(reinterpret_cast<const char*>(&v), sizeof(v));
+                    break;
+                }
+                case RdfDatatypeFixedHelper::Kind::UInt64: {
+                    const uint64_t v = propData.get_ui64(idx);
+                    data.assign(reinterpret_cast<const char*>(&v), sizeof(v));
+                    break;
+                }
+                case RdfDatatypeFixedHelper::Kind::Double: {
+                    const double v = propData.get_double(idx);
+                    data.assign(reinterpret_cast<const char*>(&v), sizeof(v));
+                    break;
+                }
+            }
+        } 
+        else {
+            auto [ptr, len] = propData.get_blob<xsd::Type::String>(static_cast<int32_t>(p.value));
+            data.assign(reinterpret_cast<const char*>(ptr), len);
+        }
+        literalNodes.emplace(LiteralKey{std::string(datatype.identifier()), data}, id);
     }
 }
 Literal RdfGraph::getLiteral(int32_t id) const {

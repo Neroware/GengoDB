@@ -68,6 +68,13 @@ void GengoDBGraph::ensureLoaded() {
    storage_->getPropData().load(f);
    std::fclose(f);
 }
+bool GengoDBGraph::hasFreshCache(const std::string& sourcePath) const {
+   if (dbDir_.empty() || fileName_.empty()) return false;
+   std::string path = graphPath(dbDir_, fileName_);
+   if (!std::filesystem::exists(path)) return false;
+   if (sourcePath.empty() || !std::filesystem::exists(sourcePath)) return true;
+   return std::filesystem::last_write_time(path) >= std::filesystem::last_write_time(sourcePath);
+}
 void GengoDBGraph::serialize(lingodb::utility::Serializer& serializer) const {
    serializer.writeProperty<std::string>(1, fileName_);
 }
