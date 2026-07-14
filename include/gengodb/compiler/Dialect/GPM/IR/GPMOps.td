@@ -21,7 +21,7 @@ class GPM_Op<string mnemonic, list<Trait> traits = []> : Op<GPM_Dialect, mnemoni
   let hasCustomAssemblyFormat = 1;
 }
 
-def TriplePatternOp : GPM_Op<"triple_pattern", [Pure,GPMOperator]> {
+def TriplePatternOp : GPM_Op<"triple_pattern", [Pure,GPMOperator,Operator,UnaryOperator]> {
   let summary = "triple pattern";
   let arguments = (ins TupleStream:$rel, ColumnRefAttr:$graphRef, AnyAttr:$s, AnyAttr:$p, AnyAttr:$o);
   let results = (outs TupleStream:$res);
@@ -29,14 +29,14 @@ def TriplePatternOp : GPM_Op<"triple_pattern", [Pure,GPMOperator]> {
   let hasVerifier = 1;
 }
 
-def NamedGraphOp : GPM_Op<"named_graph", [Pure,GPMOperator]> {
+def NamedGraphOp : GPM_Op<"named_graph", [Pure,GPMOperator,Operator]> {
   let summary = "named graph";
   let arguments = (ins ColumnDefAttr:$def);
   let results = (outs TupleStream:$res);
   let assemblyFormat = [{  `column` `:` custom<CustDef>($def) attr-dict }];
 }
 
-def BasicGraphPatternOp : GPM_Op<"basic_graph_pattern", [Pure,GPMOperator]> {
+def BasicGraphPatternOp : GPM_Op<"basic_graph_pattern", [Pure,GPMOperator,Operator,UnaryOperator]> {
   let summary = "basic graph pattern";
   let arguments = (ins TupleStream:$rel);
   let results = (outs TupleStream:$res);
@@ -50,20 +50,5 @@ def BasicGraphPatternOp : GPM_Op<"basic_graph_pattern", [Pure,GPMOperator]> {
   }];
   let hasVerifier = 1;
 }
-
-// Joins
-class GPM_JoinOp<string mnemonic> : GPM_Op<mnemonic,
-        [Pure,GPMOperator,GPMBinaryOperator]> {
-    let arguments = (ins TupleStream:$left,TupleStream:$right);
-    let results = (outs TupleStream:$result);
-    let assemblyFormat = [{ $left `,` $right attr-dict-with-keyword }];
-}
-
-def InnerJoinOp : GPM_JoinOp<"join"> {
-  let summary = "join over bound variables";
-}
-// def LeftJoinOp : GPM_JoinOp<"leftjoin"> {
-//   let summary = "left join over bound variables";
-// }
 
 #endif // GENGODB_DIALECT_GPM_IR_GPMOPS
