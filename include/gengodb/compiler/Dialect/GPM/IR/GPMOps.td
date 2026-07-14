@@ -51,4 +51,15 @@ def BasicGraphPatternOp : GPM_Op<"basic_graph_pattern", [Pure,GPMOperator,Operat
   let hasVerifier = 1;
 }
 
+//===----------------------------------------------------------------------===//
+// In-flight to RelAlg dialect
+//===----------------------------------------------------------------------===//
+
+def InFlightOp : GPM_Op<"in_flight", [Pure,Operator,UnaryOperator]> {
+    let summary = "in flight relational operator";
+    let arguments = (ins TupleStream : $stream);
+    let results = (outs TupleStream : $res);
+    let assemblyFormat = [{  $stream attr-dict }];
+}
+
 #endif // GENGODB_DIALECT_GPM_IR_GPMOPS

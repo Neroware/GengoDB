@@ -9,6 +9,7 @@ include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.td"
+include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgInterfaces.td"
 
 //===----------------------------------------------------------------------===//
 // Ops

@@ -745,6 +745,7 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    target.addLegalOp<ModuleOp>();
    target.addLegalOp<UnrealizedConversionCastOp>();
    target.addIllegalDialect<gpm::GPMDialect>();
+   target.addLegalOp<gpm::InFlightOp>();
    target.addLegalDialect<subop::SubOperatorDialect>();
    target.addLegalDialect<gsubop::GraphSubOpDialect>();
    target.addLegalDialect<db::DBDialect>();
