@@ -5,4 +5,7 @@ void gpm::registerGpmTransformations() {
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
       return gpm::createStringifyMaterializedGraphRefsPass();
    });
+   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
+      return gpm::createPrepareRelAlgLoweringPass();
+   });
 }

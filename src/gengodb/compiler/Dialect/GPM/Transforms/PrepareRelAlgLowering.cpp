@@ -8,6 +8,7 @@
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOps.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOpsTypes.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/IR/IRMapping.h"
 #include "lingodb/compiler/helper.h"
 
 namespace {
@@ -17,17 +18,38 @@ using namespace lingodb::compiler::dialect;
 class CreateInFlightOps : public mlir::RewritePattern {
     public:
     CreateInFlightOps(mlir::MLIRContext* context)
-        : RewritePattern(relalg::MaterializeOp::getOperationName(), 1, context) {}
+        : RewritePattern(MatchAnyOpTypeTag(), 1, context) {}
     mlir::LogicalResult matchAndRewrite(mlir::Operation* op, mlir::PatternRewriter& rewriter) const override {
-        if (mlir::isa<gpm::InFlightOp>(op) || mlir::isa<GPMOperator>(op) 
+        if (mlir::isa<relalg::InFlightOp>(op) || mlir::isa<GPMOperator>(op) 
             || !mlir::isa<Operator>(op)) return mlir::failure();
+        mlir::IRMapping mapper;
         if (auto unaryOp = mlir::dyn_cast_or_null<UnaryOperator>(op)) {
-            // TODO implement
+            auto subOp = unaryOp->getOperand(0).getDefiningOp();
+            if (!mlir::isa<subop::SubOperator>(subOp))
+                return mlir::failure();
+            auto inFlight = rewriter.create<relalg::InFlightOp>(op->getLoc(), unaryOp->getOperand(0));
+            mapper.map(op->getOperand(0), inFlight.getRes());
         }
         else if (auto binaryOp = mlir::dyn_cast_or_null<BinaryOperator>(op)) {
-            // TODO implement
+            auto left = binaryOp->getOperand(0).getDefiningOp();
+            auto right = binaryOp->getOperand(1).getDefiningOp();
+            if (!mlir::isa<subop::SubOperator>(left) && !mlir::isa<subop::SubOperator>(right))
+                return mlir::failure();
+            if (mlir::isa<subop::SubOperator>(left)) {
+                auto inFlight = rewriter.create<relalg::InFlightOp>(op->getLoc(), binaryOp->getOperand(0));
+                mapper.map(op->getOperand(0), inFlight.getRes());
+            }
+            if (mlir::isa<subop::SubOperator>(right)) {
+                auto inFlight = rewriter.create<relalg::InFlightOp>(op->getLoc(), binaryOp->getOperand(1));
+                mapper.map(op->getOperand(1), inFlight.getRes());
+            }
         }
-        return mlir::failure();
+        else {
+            return mlir::failure();
+        }
+        auto newOp = rewriter.clone(*op, mapper);
+        rewriter.replaceOp(op, newOp);
+        return mlir::success();
     }
 };
 class PrepareRelAlgLoweringPass : public mlir::PassWrapper<PrepareRelAlgLoweringPass, mlir::OperationPass<mlir::ModuleOp>> {

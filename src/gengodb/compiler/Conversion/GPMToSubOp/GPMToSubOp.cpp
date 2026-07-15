@@ -745,7 +745,6 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    target.addLegalOp<ModuleOp>();
    target.addLegalOp<UnrealizedConversionCastOp>();
    target.addIllegalDialect<gpm::GPMDialect>();
-   target.addLegalOp<gpm::InFlightOp>();
    target.addLegalDialect<subop::SubOperatorDialect>();
    target.addLegalDialect<gsubop::GraphSubOpDialect>();
    target.addLegalDialect<db::DBDialect>();
@@ -788,6 +787,7 @@ gpm::createLowerToSubOpPass() {
 void gpm::createLowerGPMToSubOpPipeline(mlir::OpPassManager& pm) {
    pm.addPass(gpm::createLowerToSubOpPass());
    pm.addPass(gpm::createStringifyMaterializedGraphRefsPass());
+   pm.addPass(gpm::createPrepareRelAlgLoweringPass());
 }
 void gpm::registerGPMToSubOpConversionPasses() {
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
