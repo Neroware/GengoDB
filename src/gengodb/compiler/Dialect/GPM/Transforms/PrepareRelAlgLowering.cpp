@@ -7,6 +7,9 @@
 #include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOps.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOpsTypes.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpsTypes.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/IR/IRMapping.h"
 #include "lingodb/compiler/helper.h"
@@ -14,6 +17,11 @@
 namespace {
 using namespace gengodb::compiler::dialect;
 using namespace lingodb::compiler::dialect;
+using DefMappingCollector = llvm::SmallVector<subop::DefMappingPairT>;
+
+static subop::ColumnDefMemberMappingAttr createColumnDefMemberMappingAttr(mlir::MLIRContext* context, DefMappingCollector pairs) {
+   return subop::ColumnDefMemberMappingAttr::get(context, pairs);
+}
 
 class CreateInFlightOps : public mlir::RewritePattern {
     public:
@@ -52,6 +60,43 @@ class CreateInFlightOps : public mlir::RewritePattern {
         return mlir::success();
     }
 };
+class PrepareHashJoins : public mlir::RewritePattern {
+    public:
+    PrepareHashJoins(mlir::MLIRContext* context)
+        : RewritePattern(relalg::InFlightOp::getOperationName(), 1, context) {}
+    mlir::LogicalResult matchAndRewrite(mlir::Operation* op, mlir::PatternRewriter& rewriter) const override {
+        auto userOp = *(op->getResult(0).getUsers().begin());
+        if (!mlir::isa<relalg::InnerJoinOp>(userOp)) 
+            return mlir::failure();
+        auto joinOp = mlir::cast<relalg::InnerJoinOp>(userOp);
+        if (auto implAttr = joinOp->getAttrOfType<mlir::StringAttr>("impl")) {
+            if (implAttr.getValue() != "hash") return mlir::failure();
+        }
+        auto leftHashAttr = joinOp->getAttrOfType<mlir::ArrayAttr>("leftHash");
+        auto rightHashAttr = joinOp->getAttrOfType<mlir::ArrayAttr>("rightHash");
+        // TODO implement
+        // if (!mlir::isa<gsubop::NodeRefType>(leftHash.getColumn().type) && !mlir::isa<gsubop::NodeRefType>(rightHash.getColumn().type))
+        //     return mlir::failure();
+        
+        // auto ctxt = rewriter.getContext();
+        // auto loc = op->getLoc();
+        // auto& colManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+        // mlir::IRMapping mapper;
+        // if (auto nodeRefType = mlir::dyn_cast_or_null<gsubop::NodeRefType>(leftHash.getColumn().type)) {
+        //     auto nodeIdValDefAttr = colManager.createDef(colManager.getUniqueScope("hashjoin"), "left");
+        //     auto nodeId = rewriter.create<subop::GatherOp>(loc, joinOp.getLeft(), leftHash, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeRefType.getNodeMembers().getMembers()[0], nodeIdValDefAttr}}));
+        //     mapper.map(joinOp.getLeft(), nodeId);
+        // }
+        // if (auto nodeRefType = mlir::dyn_cast_or_null<gsubop::NodeRefType>(rightHash.getColumn().type)) {
+        //     auto nodeIdValDefAttr = colManager.createDef(colManager.getUniqueScope("hashjoin"), "right");
+        //     auto nodeId = rewriter.create<subop::GatherOp>(loc, joinOp.getRight(), rightHash, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeRefType.getNodeMembers().getMembers()[0], nodeIdValDefAttr}}));
+        //     mapper.map(joinOp.getRight(), nodeId);
+        // }
+        // auto newOp = rewriter.clone(*op, mapper);
+        // rewriter.replaceOp(op, newOp);
+        return mlir::success();
+    }
+};
 class PrepareRelAlgLoweringPass : public mlir::PassWrapper<PrepareRelAlgLoweringPass, mlir::OperationPass<mlir::ModuleOp>> {
     virtual llvm::StringRef getArgument() const override { return "gpm-prepare-relalg-lowering"; }
 
@@ -60,6 +105,7 @@ class PrepareRelAlgLoweringPass : public mlir::PassWrapper<PrepareRelAlgLowering
     void runOnOperation() override {
         mlir::RewritePatternSet patterns(&getContext());
         patterns.insert<CreateInFlightOps>(&getContext());
+        patterns.insert<PrepareHashJoins>(&getContext());
         if (lingodb::compiler::applyPatternsGreedily(getOperation().getRegion(), std::move(patterns)).failed()) {
             signalPassFailure();
         }
