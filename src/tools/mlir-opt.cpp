@@ -12,7 +12,9 @@
 #include "lingodb/compiler/Dialect/SubOperator/Transforms/Passes.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamDialect.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
+#include "gengodb/compiler/Dialect/GPM/Transforms/Passes.h"
 #include "lingodb/compiler/Dialect/util/UtilDialect.h"
 #include "lingodb/compiler/mlir-support/eval.h"
 #include "lingodb/execution/BackendPasses.h"
@@ -63,6 +65,8 @@ int main(int argc, char** argv) {
    subop::registerSubOpToControlFlowConversionPasses();
    subop::registerSubOpTransformations();
    gpm::registerGPMToSubOpConversionPasses();
+   gpm::registerGpmTransformations();
+   gsubop::registerGraphSubOpTransformations();
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
       return lingodb::compiler::dialect::arrow::createLowerToStdPass();
    });

@@ -787,7 +787,6 @@ gpm::createLowerToSubOpPass() {
 void gpm::createLowerGPMToSubOpPipeline(mlir::OpPassManager& pm) {
    pm.addPass(gpm::createCreateRelAlgInFlightsPass());
    pm.addPass(gpm::createLowerToSubOpPass());
-   pm.addPass(gpm::createStringifyMaterializedGraphRefsPass());
    pm.addPass(gpm::createPrepareRelAlgLoweringPass());
 }
 void gpm::registerGPMToSubOpConversionPasses() {
