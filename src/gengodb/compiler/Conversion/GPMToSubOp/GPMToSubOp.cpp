@@ -56,7 +56,7 @@ using NamedGraphMapping = llvm::DenseMap<mlir::SymbolRefAttr, NamedGraphData>;
 struct TripleData {
    tuples::ColumnRefAttr graphRef;
    mlir::Attribute s, p, o;
-   std::string joinStrategy;
+   std::string sJoinStrategy, pJoinStrategy, oJoinStrategy;
 };
 using TripleList = std::shared_ptr<llvm::SmallVector<TripleData>>;
 struct HashJoinBuild {
@@ -221,7 +221,7 @@ static TripleList extractTriples(gpm::BasicGraphPatternOp basicGraphPatternOp) {
    TripleList triples = std::make_shared<llvm::SmallVector<TripleData>>();
    for (auto& op : block.without_terminator()) {
       auto triple = mlir::cast<gpm::TriplePatternOp>(&op);
-      triples->push_back(TripleData{triple.getGraphRef(), triple.getS(), triple.getP(), triple.getO(), triple.getJoinStrategy()});
+      triples->push_back(TripleData{triple.getGraphRef(), triple.getS(), triple.getP(), triple.getO(), triple.getSJoinStrategy(), triple.getPJoinStrategy(), triple.getOJoinStrategy()});
    }
    return triples;
 }
@@ -271,12 +271,13 @@ static bool isProbed(const BindingRef& ref, const TripleEmitContext& emitCtxt) {
 }
 static llvm::SmallVector<BindingRef, 3> collectOriginSiblings(const TripleData& triple, size_t index, TripleList triples, TripleEmitContext& emitCtxt) {
    llvm::SmallVector<BindingRef, 3> result;
-   auto consider = [&](mlir::Attribute term) {
+   auto consider = [&](mlir::Attribute term, const std::string& joinStrategy) {
+      if (joinStrategy != "hash") return;
       if (auto var = mlir::dyn_cast<gpm::VariableTermAttr>(term)) {
          if (!var.hasBinding()) {
             result.push_back({true, var.getProducedBinding().getName(), {}});
          }
-      } 
+      }
       else if (auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(term)) {
          auto it = emitCtxt.localIdents.find(bnode.getLocalId());
          if (it != emitCtxt.localIdents.end() && it->second.triples == triples && it->second.originIndex == index) {
@@ -284,9 +285,9 @@ static llvm::SmallVector<BindingRef, 3> collectOriginSiblings(const TripleData& 
          }
       }
    };
-   consider(triple.p);
-   consider(triple.s);
-   consider(triple.o);
+   consider(triple.p, triple.pJoinStrategy);
+   consider(triple.s, triple.sJoinStrategy);
+   consider(triple.o, triple.oJoinStrategy);
    return result;
 }
 
@@ -426,7 +427,6 @@ class TriplePatternEmitter {
       return block;
    }
    void ensureJointHashIndex(mlir::Location loc, mlir::Value stream, const TripleData& triple, size_t index, TripleList triples, TripleEmitContext& emitCtxt) const {
-      if (triple.joinStrategy != "hash") return;
       auto siblings = collectOriginSiblings(triple, index, triples, emitCtxt);
       size_t keyIdx = siblings.size();
       for (size_t i = 0; i < siblings.size(); ++i) {
