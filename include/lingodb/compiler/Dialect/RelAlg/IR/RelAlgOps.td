@@ -552,9 +552,12 @@ def QueryReturnOp : RelAlg_Op<"query_return",[Terminator]> {
 
 def InFlightOp : RelAlg_Op<"in_flight", [Pure,Operator,UnaryOperator]> {
     let summary = "in flight relational operator";
-    let arguments = (ins TupleStream : $stream);
+    let arguments = (ins TupleStream : $stream, ArrayAttr : $columns);
     let results = (outs TupleStream : $res);
     let assemblyFormat = [{  $stream attr-dict }];
+    let extraClassDeclaration = [{
+        ColumnSet getCreatedColumns();
+    }];
 }
 
 

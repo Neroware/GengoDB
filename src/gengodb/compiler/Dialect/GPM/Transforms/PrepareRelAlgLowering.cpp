@@ -23,43 +23,6 @@ static subop::ColumnDefMemberMappingAttr createColumnDefMemberMappingAttr(mlir::
    return subop::ColumnDefMemberMappingAttr::get(context, pairs);
 }
 
-class CreateInFlightOps : public mlir::RewritePattern {
-    public:
-    CreateInFlightOps(mlir::MLIRContext* context)
-        : RewritePattern(MatchAnyOpTypeTag(), 1, context) {}
-    mlir::LogicalResult matchAndRewrite(mlir::Operation* op, mlir::PatternRewriter& rewriter) const override {
-        if (mlir::isa<relalg::InFlightOp>(op) || mlir::isa<GPMOperator>(op) 
-            || !mlir::isa<Operator>(op)) return mlir::failure();
-        mlir::IRMapping mapper;
-        if (auto unaryOp = mlir::dyn_cast_or_null<UnaryOperator>(op)) {
-            auto subOp = unaryOp->getOperand(0).getDefiningOp();
-            if (!mlir::isa<subop::SubOperator>(subOp))
-                return mlir::failure();
-            auto inFlight = rewriter.create<relalg::InFlightOp>(op->getLoc(), unaryOp->getOperand(0));
-            mapper.map(op->getOperand(0), inFlight.getRes());
-        }
-        else if (auto binaryOp = mlir::dyn_cast_or_null<BinaryOperator>(op)) {
-            auto left = binaryOp->getOperand(0).getDefiningOp();
-            auto right = binaryOp->getOperand(1).getDefiningOp();
-            if (!mlir::isa<subop::SubOperator>(left) && !mlir::isa<subop::SubOperator>(right))
-                return mlir::failure();
-            if (mlir::isa<subop::SubOperator>(left)) {
-                auto inFlight = rewriter.create<relalg::InFlightOp>(op->getLoc(), binaryOp->getOperand(0));
-                mapper.map(op->getOperand(0), inFlight.getRes());
-            }
-            if (mlir::isa<subop::SubOperator>(right)) {
-                auto inFlight = rewriter.create<relalg::InFlightOp>(op->getLoc(), binaryOp->getOperand(1));
-                mapper.map(op->getOperand(1), inFlight.getRes());
-            }
-        }
-        else {
-            return mlir::failure();
-        }
-        auto newOp = rewriter.clone(*op, mapper);
-        rewriter.replaceOp(op, newOp);
-        return mlir::success();
-    }
-};
 class PrepareHashJoins : public mlir::RewritePattern {
     public:
     PrepareHashJoins(mlir::MLIRContext* context)
@@ -145,7 +108,6 @@ class PrepareRelAlgLoweringPass : public mlir::PassWrapper<PrepareRelAlgLowering
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PrepareRelAlgLoweringPass)
     void runOnOperation() override {
         mlir::RewritePatternSet patterns(&getContext());
-        patterns.insert<CreateInFlightOps>(&getContext());
         patterns.insert<PrepareHashJoins>(&getContext());
         if (lingodb::compiler::applyPatternsGreedily(getOperation().getRegion(), std::move(patterns)).failed()) {
             signalPassFailure();

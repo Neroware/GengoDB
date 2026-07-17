@@ -3,6 +3,9 @@ using namespace gengodb::compiler::dialect;
 
 void gpm::registerGpmTransformations() {
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
+      return gpm::createCreateRelAlgInFlightsPass();
+   });
+   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
       return gpm::createStringifyMaterializedGraphRefsPass();
    });
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {

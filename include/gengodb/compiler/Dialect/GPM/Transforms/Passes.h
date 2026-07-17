@@ -4,6 +4,7 @@
 #include <memory>
 namespace gengodb::compiler::dialect {
 namespace gpm {
+std::unique_ptr<mlir::Pass> createCreateRelAlgInFlightsPass();
 std::unique_ptr<mlir::Pass> createPrepareRelAlgLoweringPass();
 std::unique_ptr<mlir::Pass> createStringifyMaterializedGraphRefsPass();
 void registerGpmTransformations();

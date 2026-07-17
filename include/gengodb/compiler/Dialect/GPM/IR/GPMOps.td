@@ -27,6 +27,12 @@ def TriplePatternOp : GPM_Op<"triple_pattern", [Pure,GPMOperator,Operator,UnaryO
   let results = (outs TupleStream:$res);
   let assemblyFormat = [{  $rel custom<CustRef>($graphRef) `(` custom<Term>($s) `,` custom<Term>($p) `,` custom<Term>($o) `)` attr-dict }];
   let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
+    bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
+  }];
 }
 
 def NamedGraphOp : GPM_Op<"named_graph", [Pure,GPMOperator,Operator]> {
@@ -34,6 +40,12 @@ def NamedGraphOp : GPM_Op<"named_graph", [Pure,GPMOperator,Operator]> {
   let arguments = (ins ColumnDefAttr:$def);
   let results = (outs TupleStream:$res);
   let assemblyFormat = [{  `column` `:` custom<CustDef>($def) attr-dict }];
+  let extraClassDeclaration = [{
+    lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
+    bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
+  }];
 }
 
 def BasicGraphPatternOp : GPM_Op<"basic_graph_pattern", [Pure,GPMOperator,Operator,UnaryOperator]> {
@@ -47,6 +59,10 @@ def BasicGraphPatternOp : GPM_Op<"basic_graph_pattern", [Pure,GPMOperator,Operat
     lingodb::compiler::dialect::relalg::ColumnSet getBoundVariables() { return getUsedVariables(); }
     lingodb::compiler::dialect::relalg::ColumnSet getCreatedVariables();
     lingodb::compiler::dialect::relalg::ColumnSet getUsedVariables();
+    lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
+    bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
   }];
   let hasVerifier = 1;
 }

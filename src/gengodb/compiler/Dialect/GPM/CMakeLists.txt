@@ -5,6 +5,7 @@ add_mlir_dialect_library(MLIRGPM
         GPMEnums.cpp
         GPMTypes.cpp
         GPMAttributes.cpp
+        Transforms/CreateRelAlgInFlights.cpp
         Transforms/StringifyMaterializedGraphRefs.cpp
         Transforms/PrepareRelAlgLowering.cpp
         Transforms/Passes.cpp
