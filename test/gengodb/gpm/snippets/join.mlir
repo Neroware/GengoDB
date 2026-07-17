@@ -15,7 +15,7 @@ module {
       }
       %join = relalg.join %gpm0, %gpm1 (%arg0: !tuples.tuple){
         tuples.return
-      } attributes {impl = "hash", leftHash = [#tuples.columnref<@vars::@who>,#tuples.columnref<@vars::@what>], nullsEqual = [0 : i8], rightHash = [#tuples.columnref<@vars::@who2>,#tuples.columnref<@vars::@what2>], rows = 0.0010000000000000002 : f64, useHashJoin}
+      } attributes {impl = "hash", leftHash = [#tuples.columnref<@vars::@who>], nullsEqual = [0 : i8], rightHash = [#tuples.columnref<@vars::@who2>], rows = 0.0010000000000000002 : f64, useHashJoin}
       %3 = relalg.materialize %join [@vars::@who,@vars::@who2] => ["left", "right"] : !subop.local_table<[col1$0 : !db.string, col2$0 : !db.string], ["left", "right"]>
       relalg.query_return %3 : !subop.local_table<[col1$0 : !db.string, col2$0 : !db.string], ["left", "right"]>
     } -> !subop.local_table<[col1$0 : !db.string, col2$0 : !db.string], ["left", "right"]>

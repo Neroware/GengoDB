@@ -101,11 +101,13 @@ static llvm::SmallVector<mlir::Value> inlineBlock(mlir::Block* b, mlir::OpBuilde
    }
    return res;
 }
-static llvm::SmallVector<Type> unpackTypes(subop::StateMembersAttr membersAttr) {
+static llvm::SmallVector<Type> unpackTypes(subop::StateMembersAttr membersAttr, mlir::TypeConverter& typeConverter) {
    auto& memberManager = membersAttr.getContext()->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
    llvm::SmallVector<Type> res;
    for (auto x : membersAttr.getMembers()) {
-      res.push_back(memberManager.getType(x));
+      auto type = memberManager.getType(x);
+      auto converted = typeConverter.convertType(type);
+      res.push_back(converted ? converted : type);
    }
    return res;
 };
@@ -2207,7 +2209,7 @@ class ScanHashMapListLowering : public SubOpConversionPattern<subop::ScanListOp>
       auto htEntryType = getHtEntryType(hashmapType, *typeConverter);
       auto htEntryPtrType = util::RefType::get(getContext(), htEntryType);
       auto kvPtrType = util::RefType::get(getContext(), getHtKVType(hashmapType, *typeConverter));
-      auto valPtrType = util::RefType::get(getContext(), mlir::TupleType::get(getContext(), unpackTypes(hashmapType.getValueMembers())));
+      auto valPtrType = util::RefType::get(getContext(), mlir::TupleType::get(getContext(), unpackTypes(hashmapType.getValueMembers(), *typeConverter)));
       ifOp.ensureTerminator(ifOp.getThenRegion(), rewriter, scanOp->getLoc());
       rewriter.atStartOf(&ifOp.getThenRegion().front(), [&](SubOpRewriter& rewriter) {
          Value ptr = rewriter.create<util::GenericMemrefCastOp>(loc, htEntryPtrType, adaptor.getList());
@@ -2247,7 +2249,7 @@ class ScanPreAggregationHtListLowering : public SubOpConversionPattern<subop::Sc
       auto htEntryType = getHtEntryType(hashmapType, *typeConverter);
       auto htEntryPtrType = util::RefType::get(getContext(), htEntryType);
       auto kvPtrType = util::RefType::get(getContext(), getHtKVType(hashmapType, *typeConverter));
-      auto valPtrType = util::RefType::get(getContext(), mlir::TupleType::get(getContext(), unpackTypes(hashmapType.getValueMembers())));
+      auto valPtrType = util::RefType::get(getContext(), mlir::TupleType::get(getContext(), unpackTypes(hashmapType.getValueMembers(), *typeConverter)));
       ifOp.ensureTerminator(ifOp.getThenRegion(), rewriter, scanOp->getLoc());
       rewriter.atStartOf(&ifOp.getThenRegion().front(), [&](SubOpRewriter& rewriter) {
          Value ptr = rewriter.create<util::GenericMemrefCastOp>(loc, htEntryPtrType, adaptor.getList());
@@ -2295,7 +2297,7 @@ class ScanListLowering : public SubOpConversionPattern<subop::ScanListOp> {
             mlir::Value beforePtr = before->addArgument(iteratorType, loc);
             mlir::Value afterPtr = after->addArgument(iteratorType, loc);
             rewriter.atStartOf(before, [&](SubOpRewriter& rewriter) {
-               auto tupleType = mlir::TupleType::get(getContext(), unpackTypes(referenceType.getMembers()));
+               auto tupleType = mlir::TupleType::get(getContext(), unpackTypes(referenceType.getMembers(), *typeConverter));
                auto i8PtrType = rewriter.getPtrType();
                Value castedPtr = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(getContext(), mlir::TupleType::get(getContext(), {i8PtrType, rewriter.getIndexType(), tupleType})), beforePtr);
                Value valuePtr = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(getContext(), tupleType), castedPtr, 2);
@@ -2348,7 +2350,7 @@ class ScanExternalHashIndexListLowering : public SubOpConversionPattern<subop::S
       auto* ctxt = rewriter.getContext();
 
       // Get correct types
-      auto tupleType = mlir::TupleType::get(ctxt, unpackTypes(externalHashIndexType.getMembers()));
+      auto tupleType = mlir::TupleType::get(ctxt, unpackTypes(externalHashIndexType.getMembers(), *typeConverter));
       mlir::TypeRange typeRange{tupleType.getTypes()};
       auto i16T = mlir::IntegerType::get(rewriter.getContext(), 16);
       auto recordBatchInfoRepr = mlir::TupleType::get(ctxt, {rewriter.getIndexType(), rewriter.getIndexType(), util::RefType::get(i16T), util::RefType::get(arrow::ArrayType::get(ctxt))});
@@ -2607,7 +2609,7 @@ class LookupSegmentTreeViewLowering : public SubOpTupleStreamConsumerConversionP
 
    void rewrite(subop::LookupOp lookupOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
       auto valueMembers = mlir::cast<subop::SegmentTreeViewType>(lookupOp.getState().getType()).getValueMembers();
-      mlir::TupleType stateType = mlir::TupleType::get(getContext(), unpackTypes(valueMembers));
+      mlir::TupleType stateType = mlir::TupleType::get(getContext(), unpackTypes(valueMembers, *typeConverter));
 
       auto loc = lookupOp->getLoc();
       llvm::SmallVector<mlir::Value> unpackedLeft;

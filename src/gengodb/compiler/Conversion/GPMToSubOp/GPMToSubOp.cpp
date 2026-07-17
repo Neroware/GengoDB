@@ -331,7 +331,7 @@ class NamedGraphLowering : public OpConversionPattern<gpm::NamedGraphOp> {
    NamedGraphLowering(TypeConverter& typeConverter, MLIRContext* context, NamedGraphMapping& graphs)
       : OpConversionPattern<gpm::NamedGraphOp>(typeConverter, context), graphs(graphs) {}
    LogicalResult matchAndRewrite(gpm::NamedGraphOp namedGraphOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
-      rewriter.replaceOp(namedGraphOp, scanNamedGraph(rewriter, namedGraphOp->getLoc(), namedGraphOp.getDef(), graphs));
+      rewriter.replaceOp(namedGraphOp, scanNamedGraph(rewriter, namedGraphOp->getLoc(), namedGraphOp.getDef(), graphs, true));
       return success();
    }
 };
