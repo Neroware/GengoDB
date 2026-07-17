@@ -242,5 +242,7 @@ llvm::SmallVector<std::tuple<Attribute, Attribute, Attribute>, 16> gpm::BasicGra
     return result;
 }
 
+const std::string gpm::TriplePatternOp::DEFAULT_JOIN_STRATEGY = "hash";
+
 #define GET_OP_CLASSES
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOps.cpp.inc"

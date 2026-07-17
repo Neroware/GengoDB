@@ -194,11 +194,16 @@ static bool reusesExistingBinding(mlir::Attribute term, const BNodeSet& seenBNod
    return false;
 }
 template<typename BNodeSet>
+static bool reusesHashBinding(mlir::Attribute term, const std::string& joinStrategy, const BNodeSet& seenBNodes) {
+   if (joinStrategy != "hash") return false;
+   return reusesExistingBinding(term, seenBNodes);
+}
+template<typename BNodeSet>
 static bool needsProbeRestart(const TripleData& triple, bool anchorIsSubject, bool anchorIsObject, const BNodeSet& seenBNodes) {
-   if (reusesExistingBinding(triple.p, seenBNodes)) return true;
-   if (anchorIsSubject) return reusesExistingBinding(triple.o, seenBNodes);
-   if (anchorIsObject) return reusesExistingBinding(triple.s, seenBNodes);
-   return reusesExistingBinding(triple.s, seenBNodes) || reusesExistingBinding(triple.o, seenBNodes);
+   if (reusesHashBinding(triple.p, triple.pJoinStrategy, seenBNodes)) return true;
+   if (anchorIsSubject) return reusesHashBinding(triple.o, triple.oJoinStrategy, seenBNodes);
+   if (anchorIsObject) return reusesHashBinding(triple.s, triple.sJoinStrategy, seenBNodes);
+   return reusesHashBinding(triple.s, triple.sJoinStrategy, seenBNodes) || reusesHashBinding(triple.o, triple.oJoinStrategy, seenBNodes);
 }
 struct AnchorSelection {
    bool anchorIsSubject;
@@ -524,6 +529,28 @@ class TriplePatternEmitter {
       stream = mapOp.getResult();
       return rewriter.create<subop::FilterOp>(loc, stream, subop::FilterSemantic::all_true, rewriter.getArrayAttr({filterRef}));
    }
+   mlir::Value filterMatchingIdentifiers(mlir::Location loc, mlir::Value stream, tuples::ColumnRefAttr leftSource, tuples::ColumnRefAttr rightSource, subop::FilterSemantic semantic) const {
+      auto [leftDef, leftRef] = createColumn(gsubop::IdentifierType::get(ctxt), "idents", "get");
+      auto [rightDef, rightRef] = createColumn(gsubop::IdentifierType::get(ctxt), "idents", "get");
+      auto [filterDef, filterRef] = createColumn(rewriter.getI1Type(), "map", "ident");
+      stream = rewriter.create<gsubop::GetIdentifierOp>(loc, stream, leftSource, leftDef);
+      stream = rewriter.create<gsubop::GetIdentifierOp>(loc, stream, rightSource, rightDef);
+      auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({filterDef}), rewriter.getArrayAttr({leftRef, rightRef}));
+      Block* mapBlock = new Block;
+      auto left = mapBlock->addArgument(rewriter.getI32Type(), loc);
+      auto right = mapBlock->addArgument(rewriter.getI32Type(), loc);
+      mapOp.getRegion().push_back(mapBlock);
+      {
+         mlir::OpBuilder::InsertionGuard guard(rewriter);
+         rewriter.setInsertionPointToStart(mapBlock);
+         auto leftI32 = rewriter.create<UnrealizedConversionCastOp>(loc, rewriter.getI32Type(), left).getResult(0);
+         auto rightI32 = rewriter.create<UnrealizedConversionCastOp>(loc, rewriter.getI32Type(), right).getResult(0);
+         mlir::Value val = rewriter.create<arith::CmpIOp>(loc, rewriter.getI1Type(), mlir::arith::CmpIPredicate::eq, leftI32, rightI32);
+         rewriter.create<tuples::ReturnOp>(loc, val);
+      }
+      stream = mapOp.getResult();
+      return rewriter.create<subop::FilterOp>(loc, stream, semantic, rewriter.getArrayAttr({filterRef}));
+   }
    mlir::Value probeOrFilter(mlir::Location loc, mlir::Value stream, tuples::ColumnRefAttr candidateIdRef, Binding& target, tuples::ColumnRefAttr vxRef, mlir::Type vxType, llvm::DenseSet<mlir::Value>& joinedMultiMaps) const {
       if (!target.hashJoinBuild)
          return filterAgainstReconstructed(loc, stream, candidateIdRef, target);
@@ -553,7 +580,7 @@ class TriplePatternEmitter {
       stream = scanEdges(loc, stream, edgesRef, edgeSetType, group, graph, edgeRefType, edgeRefColumnRef);
       llvm::DenseSet<mlir::Value> joinedMultiMaps;
       stream = lowerPredicate(loc, stream, graphRefAttr, triple.p, edgeRefColumnRef, columnManager, emitCtxt, triples, index, joinedMultiMaps);
-      stream = lowerTerm(loc, stream, triple.o, edgeRefType.getToMembers().getMembers()[0], edgeRefColumnRef, graph, emitCtxt, triples, index, joinedMultiMaps);
+      stream = lowerTerm(loc, stream, triple.o, edgeRefType.getToMembers().getMembers()[0], edgeRefColumnRef, graph, triple.oJoinStrategy, emitCtxt, triples, index, joinedMultiMaps);
       ensureJointHashIndex(loc, stream, triple, index, triples, emitCtxt);
       return stream;
    }
@@ -578,7 +605,7 @@ class TriplePatternEmitter {
       stream = scanEdges(loc, stream, edgesRef, edgeSetType, group, graph, edgeRefType, edgeRefColumnRef);
       llvm::DenseSet<mlir::Value> joinedMultiMaps;
       stream = lowerPredicate(loc, stream, graphRefAttr, triple.p, edgeRefColumnRef, columnManager, emitCtxt, triples, index, joinedMultiMaps);
-      stream = lowerTerm(loc, stream, triple.s, edgeRefType.getFromMembers().getMembers()[0], edgeRefColumnRef, graph, emitCtxt, triples, index, joinedMultiMaps);
+      stream = lowerTerm(loc, stream, triple.s, edgeRefType.getFromMembers().getMembers()[0], edgeRefColumnRef, graph, triple.sJoinStrategy, emitCtxt, triples, index, joinedMultiMaps);
       ensureJointHashIndex(loc, stream, triple, index, triples, emitCtxt);
       return stream;
    }
@@ -600,8 +627,8 @@ class TriplePatternEmitter {
       stream = scanEdges(loc, stream, edgesRef, edgeSetType, group, graph, edgeRefType, edgeRefColumnRef);
       llvm::DenseSet<mlir::Value> joinedMultiMaps;
       stream = lowerPredicate(loc, stream, graphRefAttr, triple.p, edgeRefColumnRef, columnManager, emitCtxt, triples, index, joinedMultiMaps);
-      stream = lowerTerm(loc, stream, triple.s, edgeRefType.getFromMembers().getMembers()[0], edgeRefColumnRef, graph, emitCtxt, triples, index, joinedMultiMaps);
-      stream = lowerTerm(loc, stream, triple.o, edgeRefType.getToMembers().getMembers()[0], edgeRefColumnRef, graph, emitCtxt, triples, index, joinedMultiMaps);
+      stream = lowerTerm(loc, stream, triple.s, edgeRefType.getFromMembers().getMembers()[0], edgeRefColumnRef, graph, triple.sJoinStrategy, emitCtxt, triples, index, joinedMultiMaps);
+      stream = lowerTerm(loc, stream, triple.o, edgeRefType.getToMembers().getMembers()[0], edgeRefColumnRef, graph, triple.oJoinStrategy, emitCtxt, triples, index, joinedMultiMaps);
       ensureJointHashIndex(loc, stream, triple, index, triples, emitCtxt);
       return stream;
    }
@@ -613,6 +640,11 @@ class TriplePatternEmitter {
          stream = rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, edgeRef, ident);
       }
       else if (auto varPred = mlir::dyn_cast<gpm::VariableTermAttr>(p)) {
+         if (varPred.hasBinding() && (*triples)[index].pJoinStrategy != "hash") {
+            auto& target = emitCtxt.bindings[varPred.getBindingReference().getName()];
+            auto bindingRef = columnManager.createRef(target.def.getColumnPtr().get());
+            return filterMatchingIdentifiers(loc, stream, bindingRef, edgeRef, subop::FilterSemantic::all_true);
+         }
          auto [identColumnDef, identColumnRef] = createColumn(gsubop::IdentifierType::get(ctxt), "ident", "map");
          stream = rewriter.create<gsubop::GetIdentifierOp>(loc, stream, edgeRef, identColumnDef);
          auto nodeRefType = createNodeRefType(ctxt, group, graph);
@@ -657,7 +689,7 @@ class TriplePatternEmitter {
       }
       return stream;
    }
-   mlir::Value lowerTerm(mlir::Location loc, mlir::Value stream, mlir::Attribute term, Member nodeMember, tuples::ColumnRefAttr edgeRef, std::string graph, TripleEmitContext& emitCtxt, TripleList triples, size_t index, llvm::DenseSet<mlir::Value>& joinedMultiMaps) const {
+   mlir::Value lowerTerm(mlir::Location loc, mlir::Value stream, mlir::Attribute term, Member nodeMember, tuples::ColumnRefAttr edgeRef, std::string graph, const std::string& joinStrategy, TripleEmitContext& emitCtxt, TripleList triples, size_t index, llvm::DenseSet<mlir::Value>& joinedMultiMaps) const {
       auto ctxt = rewriter.getContext();
       auto& memberManager = ctxt->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
       if (auto constTerm = mlir::dyn_cast<gpm::IdentifierTermAttr>(term)) {
@@ -670,13 +702,19 @@ class TriplePatternEmitter {
          if (varTerm.hasBinding()) {
             auto [nodeRefColumnDef, nodeRefColumnRef] = createColumn(memberManager.getType(nodeMember), "nodes", "ref");
             stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(ctxt, {{nodeMember, nodeRefColumnDef}}));
-            auto candidateNodeRefType = mlir::cast<gsubop::NodeRefType>(memberManager.getType(nodeMember));
-            auto idMember = candidateNodeRefType.getNodeMembers().getMembers()[0];
-            auto [candidateIdDef, candidateIdRef] = createColumn(memberManager.getType(idMember), "hj", "candidate");
-            stream = rewriter.create<subop::GatherOp>(loc, stream, nodeRefColumnRef, createColumnDefMemberMappingAttr(ctxt, {{idMember, candidateIdDef}}));
             auto& target = emitCtxt.bindings[varTerm.getBindingReference().getName()];
-            auto& graphData = emitCtxt.graphs[(*triples)[index].graphRef.getName()];
-            stream = probeOrFilter(loc, stream, candidateIdRef, target, columnManager.createRef(graphData.nodeSetColumn), graphData.nodeSetColumn->type, joinedMultiMaps);
+            if (joinStrategy != "hash") {
+               auto bindingRef = columnManager.createRef(target.def.getColumnPtr().get());
+               stream = filterMatchingIdentifiers(loc, stream, bindingRef, nodeRefColumnRef, subop::FilterSemantic::all_true);
+            } 
+            else {
+               auto candidateNodeRefType = mlir::cast<gsubop::NodeRefType>(memberManager.getType(nodeMember));
+               auto idMember = candidateNodeRefType.getNodeMembers().getMembers()[0];
+               auto [candidateIdDef, candidateIdRef] = createColumn(memberManager.getType(idMember), "hj", "candidate");
+               stream = rewriter.create<subop::GatherOp>(loc, stream, nodeRefColumnRef, createColumnDefMemberMappingAttr(ctxt, {{idMember, candidateIdDef}}));
+               auto& graphData = emitCtxt.graphs[(*triples)[index].graphRef.getName()];
+               stream = probeOrFilter(loc, stream, candidateIdRef, target, columnManager.createRef(graphData.nodeSetColumn), graphData.nodeSetColumn->type, joinedMultiMaps);
+            }
          }
          else {
             auto ref = varTerm.getProducedBinding();
@@ -692,13 +730,19 @@ class TriplePatternEmitter {
          if (emitCtxt.localIdents.count(bnode.getLocalId()) > 0) {
             auto [nodeRefColumnDef, nodeRefColumnRef] = createColumn(memberManager.getType(nodeMember), "nodes", "ref");
             stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(ctxt, {{nodeMember, nodeRefColumnDef}}));
-            auto candidateNodeRefType = mlir::cast<gsubop::NodeRefType>(memberManager.getType(nodeMember));
-            auto idMember = candidateNodeRefType.getNodeMembers().getMembers()[0];
-            auto [candidateIdDef, candidateIdRef] = createColumn(memberManager.getType(idMember), "hj", "candidate");
-            stream = rewriter.create<subop::GatherOp>(loc, stream, nodeRefColumnRef, createColumnDefMemberMappingAttr(ctxt, {{idMember, candidateIdDef}}));
             auto& target = emitCtxt.localIdents[bnode.getLocalId()];
-            auto& graphData = emitCtxt.graphs[(*triples)[index].graphRef.getName()];
-            stream = probeOrFilter(loc, stream, candidateIdRef, target, columnManager.createRef(graphData.nodeSetColumn), graphData.nodeSetColumn->type, joinedMultiMaps);
+            if (joinStrategy != "hash") {
+               auto bindingRef = columnManager.createRef(target.def.getColumnPtr().get());
+               stream = filterMatchingIdentifiers(loc, stream, bindingRef, nodeRefColumnRef, subop::FilterSemantic::all_true);
+            } 
+            else {
+               auto candidateNodeRefType = mlir::cast<gsubop::NodeRefType>(memberManager.getType(nodeMember));
+               auto idMember = candidateNodeRefType.getNodeMembers().getMembers()[0];
+               auto [candidateIdDef, candidateIdRef] = createColumn(memberManager.getType(idMember), "hj", "candidate");
+               stream = rewriter.create<subop::GatherOp>(loc, stream, nodeRefColumnRef, createColumnDefMemberMappingAttr(ctxt, {{idMember, candidateIdDef}}));
+               auto& graphData = emitCtxt.graphs[(*triples)[index].graphRef.getName()];
+               stream = probeOrFilter(loc, stream, candidateIdRef, target, columnManager.createRef(graphData.nodeSetColumn), graphData.nodeSetColumn->type, joinedMultiMaps);
+            }
          }
          else {
             auto def = createDef(columnManager, "bnode", bnode.localId(), memberManager.getType(nodeMember), true);
