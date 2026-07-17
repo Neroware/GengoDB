@@ -56,6 +56,7 @@ using NamedGraphMapping = llvm::DenseMap<mlir::SymbolRefAttr, NamedGraphData>;
 struct TripleData {
    tuples::ColumnRefAttr graphRef;
    mlir::Attribute s, p, o;
+   std::string joinStrategy;
 };
 using TripleList = std::shared_ptr<llvm::SmallVector<TripleData>>;
 struct HashJoinBuild {
@@ -220,7 +221,7 @@ static TripleList extractTriples(gpm::BasicGraphPatternOp basicGraphPatternOp) {
    TripleList triples = std::make_shared<llvm::SmallVector<TripleData>>();
    for (auto& op : block.without_terminator()) {
       auto triple = mlir::cast<gpm::TriplePatternOp>(&op);
-      triples->push_back(TripleData{triple.getGraphRef(), triple.getS(), triple.getP(), triple.getO()});
+      triples->push_back(TripleData{triple.getGraphRef(), triple.getS(), triple.getP(), triple.getO(), triple.getJoinStrategy()});
    }
    return triples;
 }
@@ -425,6 +426,7 @@ class TriplePatternEmitter {
       return block;
    }
    void ensureJointHashIndex(mlir::Location loc, mlir::Value stream, const TripleData& triple, size_t index, TripleList triples, TripleEmitContext& emitCtxt) const {
+      if (triple.joinStrategy != "hash") return;
       auto siblings = collectOriginSiblings(triple, index, triples, emitCtxt);
       size_t keyIdx = siblings.size();
       for (size_t i = 0; i < siblings.size(); ++i) {
@@ -523,6 +525,8 @@ class TriplePatternEmitter {
       return rewriter.create<subop::FilterOp>(loc, stream, subop::FilterSemantic::all_true, rewriter.getArrayAttr({filterRef}));
    }
    mlir::Value probeOrFilter(mlir::Location loc, mlir::Value stream, tuples::ColumnRefAttr candidateIdRef, Binding& target, tuples::ColumnRefAttr vxRef, mlir::Type vxType, llvm::DenseSet<mlir::Value>& joinedMultiMaps) const {
+      if (!target.hashJoinBuild)
+         return filterAgainstReconstructed(loc, stream, candidateIdRef, target);
       auto& hj = *target.hashJoinBuild;
       if (joinedMultiMaps.insert(hj.multiMap).second)
          return probeHashJoin(loc, stream, candidateIdRef, hj, vxRef, vxType);
