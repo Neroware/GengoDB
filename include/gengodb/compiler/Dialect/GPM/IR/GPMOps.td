@@ -33,18 +33,8 @@ def TriplePatternOp : GPM_Op<"triple_pattern", [Pure,GPMOperator,Operator,UnaryO
     lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
     lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
     bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
-    const std::string getSJoinStrategy() const {
-      if (auto joinStrategyAttr = (*this)->getAttrOfType<mlir::StringAttr>("sJoinStrategy"))
-        return joinStrategyAttr.str();
-      return DEFAULT_JOIN_STRATEGY;
-    }
-    const std::string getPJoinStrategy() const {
-      if (auto joinStrategyAttr = (*this)->getAttrOfType<mlir::StringAttr>("pJoinStrategy"))
-        return joinStrategyAttr.str();
-      return DEFAULT_JOIN_STRATEGY;
-    }
-    const std::string getOJoinStrategy() const {
-      if (auto joinStrategyAttr = (*this)->getAttrOfType<mlir::StringAttr>("oJoinStrategy"))
+    const std::string getJoinStrategy() const {
+      if (auto joinStrategyAttr = (*this)->getAttrOfType<mlir::StringAttr>("joinStrategy"))
         return joinStrategyAttr.str();
       return DEFAULT_JOIN_STRATEGY;
     }
