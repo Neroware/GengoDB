@@ -24,7 +24,7 @@ class CreateInFlightOps : public mlir::RewritePattern {
         : RewritePattern(MatchAnyOpTypeTag(), 1, context) {}
     mlir::LogicalResult matchAndRewrite(mlir::Operation* op, mlir::PatternRewriter& rewriter) const override {
         auto isRelalg = [](const mlir::Operation* op) -> bool {
-            return !mlir::isa<GPMOperator>(op) && mlir::isa<Operator>(op);
+            return op && !mlir::isa<GPMOperator>(op) && mlir::isa<Operator>(op);
         };
         if (!isRelalg(op) || mlir::isa<relalg::InFlightOp>(op)) return mlir::failure();
         relalg::AvailabilityCache availabilityCache;

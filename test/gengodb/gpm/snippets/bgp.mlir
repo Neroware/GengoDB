@@ -8,7 +8,7 @@ module {
         tuples.return %5 : !tuples.tuplestream
       }
       %gpm1 = gpm.basic_graph_pattern %gpm0 (%arg1: !tuples.tuplestream){
-        %inner0 = gpm.triple_pattern %arg1 @graphs::@ref(?{@vars::@who2({type = !gpm.variable_binding})}, id{"http://example.org/drinks"}, ?{@vars::@what2({type = !gpm.variable_binding})})
+        %inner0 = gpm.triple_pattern %arg1 @graphs::@ref(?{@vars::@who2({type = !gpm.variable_binding})}, id{"http://example.org/drinks"}, ?{@vars::@what})
         %inner1 = gpm.triple_pattern %inner0 @graphs::@ref(?{@vars::@who2}, id{"http://example.org/eats"}, id{"http://example.org/sushi"})
         tuples.return %inner1 : !tuples.tuplestream
       }

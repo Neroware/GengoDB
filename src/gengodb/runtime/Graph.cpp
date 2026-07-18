@@ -7,7 +7,7 @@ namespace lingodb::runtime {
 template<class GraphT>
 struct GraphStorageHelper {
     GraphStorageHelper(const uint8_t* graph)
-        : graph_(convertType<GraphT>(graph)) {}
+        : graph_(convertType(graph)) {}
     inline size_t nodeCount() const {
         return static_cast<size_t>(graph_->nodeHighWater()) - graph_->freeNodes(); 
     }
@@ -34,26 +34,25 @@ struct GraphStorageHelper {
     inline int32_t relHighWater() const { return graph_->relHighWater(); }
 private:
     const GraphT* graph_;
-    template<class GraphT_> 
-    static inline const GraphT_* convertType(const uint8_t* graph) { 
+    static inline const GraphT* convertType(const uint8_t* graph) {
         throw std::runtime_error("unsupported builtin graph");
     }
-    template<>
-    inline const SimpleGraph* convertType(const uint8_t* sgraph) {
-        assert(BuiltinGraph::type(sgraph) == BuiltinGraph::Type::BUILTIN_SIMPLE_GRAPH);
-        return reinterpret_cast<const SimpleGraph*>(sgraph);
-    }
-    template<>
-    inline const PropertyGraph* convertType(const uint8_t* pgraph) {
-        assert(BuiltinGraph::type(pgraph) == BuiltinGraph::Type::BUILTIN_PROPERTY_GRAPH);
-        return reinterpret_cast<const PropertyGraph*>(pgraph);
-    }
-    template<>
-    inline const AlignmentGraph_8x3_8x1* convertType(const uint8_t* graph) {
-        assert(BuiltinGraph::type(graph) == BuiltinGraph::Type::BUILTIN_ALIGN_8X3_8X1_GRAPH);
-        return reinterpret_cast<const AlignmentGraph_8x3_8x1*>(graph);
-    }
 }; // GraphStorageHelper
+template<>
+inline const SimpleGraph* GraphStorageHelper<SimpleGraph>::convertType(const uint8_t* sgraph) {
+    assert(BuiltinGraph::type(sgraph) == BuiltinGraph::Type::BUILTIN_SIMPLE_GRAPH);
+    return reinterpret_cast<const SimpleGraph*>(sgraph);
+}
+template<>
+inline const PropertyGraph* GraphStorageHelper<PropertyGraph>::convertType(const uint8_t* pgraph) {
+    assert(BuiltinGraph::type(pgraph) == BuiltinGraph::Type::BUILTIN_PROPERTY_GRAPH);
+    return reinterpret_cast<const PropertyGraph*>(pgraph);
+}
+template<>
+inline const AlignmentGraph_8x3_8x1* GraphStorageHelper<AlignmentGraph_8x3_8x1>::convertType(const uint8_t* graph) {
+    assert(BuiltinGraph::type(graph) == BuiltinGraph::Type::BUILTIN_ALIGN_8X3_8X1_GRAPH);
+    return reinterpret_cast<const AlignmentGraph_8x3_8x1*>(graph);
+}
 void GraphStorage::add(const uint8_t* start, size_t len, const uint8_t* graph) {
     mem_.push_back(std::make_tuple(start, len, graph));
 }

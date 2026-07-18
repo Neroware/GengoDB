@@ -39,7 +39,7 @@ namespace gengodb::compiler::dialect::gpm::detail {
 using namespace lingodb::compiler::dialect::relalg;
 inline auto filterVariableTerms(mlir::Operation* op, bool isBound) {
     return llvm::make_filter_range(
-      op->getAttrs(), [&](mlir::NamedAttribute attr) {
+      op->getAttrs(), [isBound](mlir::NamedAttribute attr) {
         auto v = mlir::dyn_cast<VariableTermAttr>(attr.getValue());
         return v && (v.hasBinding() == isBound);
       });
