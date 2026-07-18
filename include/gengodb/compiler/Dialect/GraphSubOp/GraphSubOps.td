@@ -9,6 +9,7 @@ include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.td"
+include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgInterfaces.td"
 
 //===----------------------------------------------------------------------===//
 // Ops
@@ -66,11 +67,36 @@ def ScanNodeSetOp : GraphSubOp_Op<"scan_node_set", [Pure,SubOperator,ReferencePr
         mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
     }];
 }
+
 def ScanEdgeSetOp : GraphSubOp_Op<"scan_edge_set", [Pure,SubOperator,ReferenceProducer,DeclareOpInterfaceMethods<StateUsingSubOperator>]> {
     let summary = "scan state (sequentially)";
     let arguments = (ins AnyType : $edge_set, ColumnDefAttr: $ref);
     let results = (outs TupleStream : $res);
     let assemblyFormat = [{ $edge_set `:` type($edge_set) custom<CustDef>($ref) attr-dict }];
+    let extraClassDeclaration = [{
+        lingodb::compiler::dialect::tuples::ColumnDefAttr getProducedReference(){ return getRef(); }
+        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
+    }];
+}
+
+def NodeCountOp : GraphSubOp_Op<"node_count", [Pure,SubOperator,ReferenceProducer,DeclareOpInterfaceMethods<StateUsingSubOperator>]> {
+    let summary = "graph node count";
+
+    let arguments = (ins TupleStream : $stream, Graph : $graph, ColumnDefAttr:$ref);
+    let results = (outs TupleStream : $res);
+    let assemblyFormat = [{  $stream `,` $graph `->` custom<CustDef>($ref) `:` type($graph) attr-dict }];
+    let extraClassDeclaration = [{
+        lingodb::compiler::dialect::tuples::ColumnDefAttr getProducedReference(){ return getRef(); }
+        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
+    }];
+}
+
+def EdgeCountOp : GraphSubOp_Op<"edge_count", [Pure,SubOperator,ReferenceProducer,DeclareOpInterfaceMethods<StateUsingSubOperator>]> {
+    let summary = "graph edge count";
+
+    let arguments = (ins TupleStream : $stream, Graph : $graph, ColumnDefAttr:$ref);
+    let results = (outs TupleStream : $res);
+    let assemblyFormat = [{  $stream `,` $graph `->` custom<CustDef>($ref) `:` type($graph) attr-dict }];
     let extraClassDeclaration = [{
         lingodb::compiler::dialect::tuples::ColumnDefAttr getProducedReference(){ return getRef(); }
         mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);

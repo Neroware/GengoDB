@@ -3042,6 +3042,15 @@ class QueryReturnOpLowering : public OpConversionPattern<relalg::QueryReturnOp> 
       return mlir::success();
    }
 };
+class InFlightOpLowering : public OpConversionPattern<relalg::InFlightOp>{
+   public:
+   using OpConversionPattern<relalg::InFlightOp>::OpConversionPattern;
+
+   LogicalResult matchAndRewrite(relalg::InFlightOp inFlightOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      rewriter.replaceOp(inFlightOp, adaptor.getOperands()[0]);
+      return mlir::success();
+   }
+};
 
 void RelalgToSubOpLoweringPass::runOnOperation() {
    auto module = getOperation();
@@ -3110,6 +3119,7 @@ void RelalgToSubOpLoweringPass::runOnOperation() {
    patterns.insert<TrackTuplesLowering>(ctxt);
    patterns.insert<QueryOpLowering>(ctxt);
    patterns.insert<QueryReturnOpLowering>(ctxt);
+   patterns.insert<InFlightOpLowering>(ctxt);
 
    if (failed(applyFullConversion(module, target, std::move(patterns))))
       signalPassFailure();

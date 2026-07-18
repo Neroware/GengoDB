@@ -11,6 +11,7 @@
 #include "lingodb/compiler/Dialect/RelAlg/Passes.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorOps.h"
 #include "lingodb/compiler/Dialect/SubOperator/Transforms/Passes.h"
 #include "lingodb/compiler/helper.h"
@@ -90,7 +91,7 @@ class GpmLoweringStep : public LoweringStep {
                auto rdfGraph = graph.value();
                rdfGraph->ensureFullyLoaded();
                moduleOp->getContext()->getLoadedDialect<gsubop::GraphSubOpDialect>()->getNamedGraphManager().addNamedGraph(
-                  rdfGraph->getName(), rdfGraph->getIri().identifier().data(), rdfGraph->getNodes());
+                  rdfGraph->getName(), rdfGraph->getIri().identifier().data(), rdfGraph);
             }
          }
       });
@@ -158,6 +159,7 @@ class SubOpLoweringStep : public LoweringStep {
       while (std::getline(configList, optPass, ',')) {
          enabledPasses.insert(optPass);
       }
+      optSubOpPm.addPass(gsubop::createStringifyMaterializedGraphRefsPass());
       optSubOpPm.addPass(subop::createFoldColumnsPass());
       optSubOpPm.addPass(subop::createCommonPiplineEliminationPass());
       if (enabledPasses.contains("ReuseLocal"))

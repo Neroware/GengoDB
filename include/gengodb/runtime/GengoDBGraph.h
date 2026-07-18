@@ -30,9 +30,8 @@ public:
    void setDBDir(std::string dir) { dbDir_ = std::move(dir); }
    void ensureLoaded();
    void flush();
+   bool hasFreshCache(const std::string& sourcePath) const;
 
-   // Catalog serialization: only the file name is persisted; the binary data
-   // is stored separately in the db directory.
    void serialize(lingodb::utility::Serializer& serializer) const;
    static std::unique_ptr<GengoDBGraph> deserialize(lingodb::utility::Deserializer& deserializer);
 

@@ -46,6 +46,8 @@ resources/data/%/.stamp: resources/data/%/.rawdata build/lingodb-$(DATA_BUILD_TY
 
 LDB_ARGS= -DCMAKE_EXPORT_COMPILE_COMMANDS=ON  \
 	   	 -DCMAKE_BUILD_TYPE=Debug \
+	   	 -DCMAKE_CXX_COMPILER=clang++-20 \
+	   	 -DCMAKE_C_COMPILER=clang-20 \
 	   	 -DENABLE_BASELINE_BACKEND=$(ENABLE_BASELINE_BACKEND) \
 	   	 -DENABLE_MIMALLOC=$(ENABLE_MIMALLOC)
 

@@ -36,6 +36,7 @@ void GengoDBGraph::flush() {
    std::fwrite(neo->nodes.ptr, sizeof(Neo4JGraph::NodeEntry),   neo->nNodes, f);
    std::fwrite(neo->rels.ptr,  sizeof(Neo4JGraph::RelEntry),    neo->nRels,  f);
    std::fwrite(neo->props.ptr, sizeof(Neo4JGraph::PropRecord),  neo->nProps, f);
+   storage_->getPropData().flush(f);
    std::fclose(f);
 }
 
@@ -62,9 +63,17 @@ void GengoDBGraph::ensureLoaded() {
    std::fread(neo.nodes.ptr, sizeof(Neo4JGraph::NodeEntry),  neo.nNodes, f);
    std::fread(neo.rels.ptr,  sizeof(Neo4JGraph::RelEntry),   neo.nRels,  f);
    std::fread(neo.props.ptr, sizeof(Neo4JGraph::PropRecord), neo.nProps, f);
-   std::fclose(f);
 
    GraphData::deserialize(*storage_, neo);
+   storage_->getPropData().load(f);
+   std::fclose(f);
+}
+bool GengoDBGraph::hasFreshCache(const std::string& sourcePath) const {
+   if (dbDir_.empty() || fileName_.empty()) return false;
+   std::string path = graphPath(dbDir_, fileName_);
+   if (!std::filesystem::exists(path)) return false;
+   if (sourcePath.empty() || !std::filesystem::exists(sourcePath)) return true;
+   return std::filesystem::last_write_time(path) >= std::filesystem::last_write_time(sourcePath);
 }
 void GengoDBGraph::serialize(lingodb::utility::Serializer& serializer) const {
    serializer.writeProperty<std::string>(1, fileName_);

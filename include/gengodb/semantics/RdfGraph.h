@@ -3,9 +3,14 @@
 
 #include "gengodb/runtime/GengoDBGraph.h"
 #include "gengodb/catalog/CreateRdfGraphDef.h"
+#include "gengodb/semantics/Identifiers.h"
 #include <rdf4cpp.hpp>
 
+#include <cstring>
 #include <iostream>
+#include <optional>
+#include <string>
+#include <unordered_map>
 
 namespace lingodb::runtime {
     class GengoDBGraph;
@@ -22,48 +27,6 @@ struct extra_namespaces {
     const Namespace GENGODB = Namespace("https://github.com/Neroware/LingoDB#");
     const Namespace XSD = Namespace("http://www.w3.org/2001/XMLSchema#");
 };
-class NodeDictionary {
-private:
-    std::unordered_map<Node, int32_t> node_to_id;
-    std::vector<Node> id_to_node;
-public:
-    NodeDictionary(const std::initializer_list<Node>& l) {
-        for (auto it = l.begin(); it != l.end(); it++) {
-            int32_t id = static_cast<int32_t>(id_to_node.size());
-            id_to_node.push_back(*it);
-            node_to_id.emplace(id_to_node.back(), id);
-        }
-    }
-    NodeDictionary() {}
-    ~NodeDictionary() {}
-    int32_t insert(const Node& node) {
-        int32_t id = static_cast<int32_t>(id_to_node.size());
-        id_to_node.push_back(node);
-        node_to_id.emplace(id_to_node.back(), id);
-        return id;
-    }
-    int32_t get_or_insert(const Node& node) {
-        auto it = node_to_id.find(node);
-        if (it != node_to_id.end())
-            return it->second;
-        int32_t id = static_cast<int32_t>(id_to_node.size());
-        id_to_node.push_back(node);
-        node_to_id.emplace(id_to_node.back(), id);
-        return id;
-    }
-    int32_t get_safe(const Node& node) const {
-        auto it = node_to_id.find(node);
-        if (it == node_to_id.end())
-            return -1;
-        return it->second;
-    }
-    Node get_node(int32_t id) const {
-        if (static_cast<size_t>(id) > id_to_node.size())
-            return IRI{};
-        return id_to_node[id];
-    }
-    size_t size() const { return id_to_node.size(); }
-}; // NodeDictionary
 class RdfGraph;
 struct RdfDatatypeInlineHelper {
     /**
@@ -112,6 +75,60 @@ struct RdfDatatypeInlineHelper {
         std::memcpy(&tmp, v, sizeof(T));
         *out = tmp;
     }
+    /**
+     * Reconstructs the canonical lexical form of an inlined value, undefined behavior if type cannot be inlined
+     */
+    std::string toLexicalForm(uint32_t bits, const IRI& datatype) const {
+        const Namespace xsd = extra_namespaces().XSD;
+        if (datatype == xsd + "boolean")                return toLexicalFormImpl<bool>(bits) ? "true" : "false";
+        if (datatype == xsd + "byte")                   return std::to_string(toLexicalFormImpl<int8_t>(bits));
+        if (datatype == xsd + "float")                  return std::to_string(toLexicalFormImpl<float>(bits));
+        if (datatype == xsd + "int")                    return std::to_string(toLexicalFormImpl<int32_t>(bits));
+        if (datatype == xsd + "short")                  return std::to_string(toLexicalFormImpl<int16_t>(bits));
+        if (datatype == xsd + "unsignedByte")           return std::to_string(toLexicalFormImpl<uint8_t>(bits));
+        if (datatype == xsd + "unsignedInt")            return std::to_string(toLexicalFormImpl<uint32_t>(bits));
+        if (datatype == xsd + "unsignedShort")          return std::to_string(toLexicalFormImpl<uint16_t>(bits));
+        assert(false && "unsupported datatype for inlining.");
+        return "";
+    }
+    template<typename T>
+    T toLexicalFormImpl(uint32_t bits) const {
+        static_assert(sizeof(T) <= sizeof(uint32_t), "Type too large to inline");
+        T v{};
+        std::memcpy(&v, &bits, sizeof(T));
+        return v;
+    }
+};
+struct RdfDatatypeFixedHelper {
+    enum class Kind { Int64, UInt64, Double };
+    std::optional<Kind> kindOf(const IRI& datatype) const {
+        const Namespace xsd = extra_namespaces().XSD;
+        if (datatype == xsd + "long")          return Kind::Int64;
+        if (datatype == xsd + "unsignedLong")  return Kind::UInt64;
+        if (datatype == xsd + "double")        return Kind::Double;
+        return std::nullopt;
+    }
+    template<typename T>
+    T extract(const std::any& in) const {
+        const T* v = std::any_cast<T>(&in);
+        if (!v) {
+            assert(false && "bad cast");
+            return T{};
+        }
+        return *v;
+    }
+};
+struct LiteralKey {
+    std::string datatypeIri;
+    std::string data;
+    bool operator==(const LiteralKey& other) const noexcept {
+        return datatypeIri == other.datatypeIri && data == other.data;
+    }
+};
+struct LiteralKeyHash {
+    std::size_t operator()(const LiteralKey& k) const noexcept {
+        return std::hash<std::string>{}(k.datatypeIri) ^ (std::hash<std::string>{}(k.data) << 1);
+    }
 };
 class NodeHelper {
 private:
@@ -127,13 +144,11 @@ class RdfGraph {
 private:
     IRI iri;
     std::unique_ptr<runtime::GengoDBGraph> storage;
-    std::shared_ptr<NodeDictionary> nodes;
-    std::unordered_map<BlankNode, int32_t> bnodes;
-    std::unordered_map<Literal, int32_t> literals;
-    std::unordered_map<IRI, int32_t> literalTypes;
+    std::unique_ptr<NodeIdDict> nodes;
+    std::unordered_map<LiteralKey, int32_t, LiteralKeyHash> literalNodes;
 public:
     RdfGraph(const IRI& iri, std::unique_ptr<runtime::GengoDBGraph> storage, std::string fileName) 
-        : iri(iri), storage(std::move(storage)), nodes(std::make_shared<NodeDictionary>()), persist(false), fileName(std::move(fileName)), loadedFromRdfFile(false), rdfParseFlags(parser::ParsingFlag::Turtle), nodeHelper(this) {}
+        : iri(iri), storage(std::move(storage)), nodes(std::make_unique<NodeIdDict>()), persist(false), fileName(std::move(fileName)), loadedFromRdfFile(false), rdfParseFlags(parser::ParsingFlag::Turtle), nodeHelper(this) {}
     void setPersist(bool persist) {
         this->persist = persist;
         if (persist) {
@@ -148,6 +163,7 @@ public:
     void ensureLoaded();
     virtual void setDBDir(std::string dbDir) {
         this->dbDir = dbDir;
+        storage->setDBDir(dbDir);
     }
     virtual void setLoadedFromRdfFile(bool loadedFromRdfFile) {
         this->loadedFromRdfFile = loadedFromRdfFile;
@@ -167,7 +183,8 @@ public:
             else if (o.is_literal())        addTriple(subj, pred, o.as_literal());
             else assert(false && "triple object invalid");
 
-        } else if (s.is_blank_node()) {
+        }
+        else if (s.is_blank_node()) {
             const auto& subj = s.as_blank_node();
 
             if (o.is_iri())                 addTriple(subj, pred, o.as_iri());
@@ -175,7 +192,8 @@ public:
             else if (o.is_literal())        addTriple(subj, pred, o.as_literal());
             else assert(false && "triple object invalid");
 
-        } else {
+        }
+        else {
             assert(false && "triple subject invalid");
         }
     }
@@ -186,10 +204,11 @@ public:
     void addTriple(const BlankNode& s, const IRI& p, const BlankNode& o);
     void addTriple(const BlankNode& s, const IRI& p, const Literal& o);
     IRI getIri() const { return iri; }
-    std::shared_ptr<NodeDictionary> getNodes() const { return nodes; }
-    const std::unordered_map<BlankNode, int32_t>& getBlankNodes() const { return bnodes; }
-    const std::unordered_map<Literal, int32_t>& getLiterals() const { return literals; }
-    const std::unordered_map<IRI, int32_t>& getLiteralTypes() const { return literalTypes; }
+    const NodeIdDict& getNodes() const { return *nodes; }
+    RDFNodeType getNodeType(int32_t id) const { return nodes->get(id).type; }
+    IRI getIri(int32_t id) const { return nodes->get(id).iri; }
+    BlankNode getBNode(int32_t id) const { return BlankNode{nodes->get(id).localId}; }
+    Literal getLiteral(int32_t id) const;
     void serialize(lingodb::utility::Serializer& serializer) const;
     static std::unique_ptr<RdfGraph> deserialize(lingodb::utility::Deserializer& deserializer);
 private:
@@ -200,6 +219,8 @@ private:
     parser::ParsingFlag rdfParseFlags;
     
     bool loaded = false;
+
+    void rebuildLiteralNodeCache();
 
     NodeHelper nodeHelper;
     friend class NodeHelper;

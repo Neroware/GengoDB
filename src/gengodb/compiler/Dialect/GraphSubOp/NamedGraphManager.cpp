@@ -2,12 +2,12 @@
 
 namespace gengodb::compiler::dialect::gsubop {
 
-void NamedGraphManager::addNamedGraph(std::string name, std::string uid, std::shared_ptr<NodeDictionary> graph) {
-    namedGraphs_[name] = std::make_pair(uid, graph);
+void NamedGraphManager::addNamedGraph(std::string name, std::string uid, std::shared_ptr<gengodb::catalog::RDFGraphCatalogEntry> graph) {
+    namedGraphs_[name] = std::make_pair(std::move(uid), std::move(graph));
 }
 int32_t NamedGraphManager::resolve(std::string name, std::string identifier) const {
     if (namedGraphs_.find(name) != namedGraphs_.end()) {
-        return namedGraphs_.at(name).second->get_safe(IRI{identifier});
+        return namedGraphs_.at(name).second->getNodes().get_safe(IRI{identifier});
     }
     return 0;
 }
