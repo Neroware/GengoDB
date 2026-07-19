@@ -231,14 +231,28 @@ void printCustRegion(OpAsmPrinter& p, Operation* op, Region& r) {
 }
 ::mlir::LogicalResult gpm::BasicGraphPatternOp::verify() {
     return std::all_of(getPattern().getOps().begin(), getPattern().getOps().end(), [](const Operation& op){
-        return mlir::isa<gpm::TriplePatternOp, tuples::ReturnOp>(op);
-    }) ? mlir::success() : emitOpError("A basic graph pattern must only contain triples.");
+        return mlir::isa<gpm::TriplePatternOp, gpm::BasicGraphPatternOp, gpm::OptionalGraphPatternOp, tuples::ReturnOp>(op);
+    }) ? mlir::success() : emitOpError("A basic graph pattern must only contain triples or nested graph patterns.");
 }
 llvm::SmallVector<std::tuple<Attribute, Attribute, Attribute>, 16> gpm::BasicGraphPatternOp::getTriples() {
     llvm::SmallVector<std::tuple<Attribute, Attribute, Attribute>, 16> result;
     getPattern().walk([&](gpm::TriplePatternOp triple){
         result.push_back(std::make_tuple(triple.getS(), triple.getP(), triple.getO()));
     });
+    return result;
+}
+::mlir::LogicalResult gpm::OptionalGraphPatternOp::verify() {
+    return std::all_of(getPattern().getOps().begin(), getPattern().getOps().end(), [](const Operation& op){
+        return mlir::isa<gpm::TriplePatternOp, gpm::BasicGraphPatternOp, gpm::OptionalGraphPatternOp, tuples::ReturnOp>(op);
+    }) ? mlir::success() : emitOpError("An optional graph pattern must only contain triples triples or nested graph patterns.");
+}
+llvm::SmallVector<std::tuple<Attribute, Attribute, Attribute>, 16> gpm::OptionalGraphPatternOp::getTriples() {
+    llvm::SmallVector<std::tuple<Attribute, Attribute, Attribute>, 16> result;
+    for (Operation& op : getPattern().getOps()) {
+        if (auto triple = mlir::dyn_cast<gpm::TriplePatternOp>(op)) {
+            result.push_back(std::make_tuple(triple.getS(), triple.getP(), triple.getO()));
+        }
+    }
     return result;
 }
 

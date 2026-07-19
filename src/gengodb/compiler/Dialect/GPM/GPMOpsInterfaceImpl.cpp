@@ -154,6 +154,42 @@ bool gpm::BasicGraphPatternOp::canColumnReach(Operator source, Operator target, 
     return lingodb::compiler::dialect::relalg::detail::canColumnReach(getOperation(), source, target, column);
 }
 
+lingodb::compiler::dialect::relalg::ColumnSet gpm::OptionalGraphPatternOp::getCreatedVariables() {
+    lingodb::compiler::dialect::relalg::ColumnSet res;
+    getPattern().walk([&](TriplePatternOp triple){
+        res.insert(triple.getCreatedVariables());
+    });
+    return res;
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::OptionalGraphPatternOp::getUsedVariables() {
+    lingodb::compiler::dialect::relalg::ColumnSet res;
+    getPattern().walk([&](TriplePatternOp triple){
+        res.insert(triple.getUsedVariables());
+    });
+    return res;
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::OptionalGraphPatternOp::getCreatedColumns() {
+    return getCreatedVariables();
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::OptionalGraphPatternOp::getUsedColumns() {
+    lingodb::compiler::dialect::relalg::ColumnSet used;
+    getPattern().walk([&](TriplePatternOp triple){
+        used.insert(triple.getBoundVariables());
+    });
+    return used;
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::OptionalGraphPatternOp::getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache) {
+    lingodb::compiler::dialect::relalg::ColumnSet available;
+    if (auto child = mlir::dyn_cast_or_null<Operator>(getRel().getDefiningOp())) {
+        available.insert(cache.getAvailableColumnsFor(child));
+    }
+    available.insert(getCreatedColumns());
+    return available;
+}
+bool gpm::OptionalGraphPatternOp::canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column) {
+    return lingodb::compiler::dialect::relalg::detail::canColumnReach(getOperation(), source, target, column);
+}
+
 } // namespace gengodb::compiler::dialect
 
 

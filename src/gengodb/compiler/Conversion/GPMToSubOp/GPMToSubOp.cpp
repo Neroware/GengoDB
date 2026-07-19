@@ -225,7 +225,8 @@ static TripleList extractTriples(gpm::BasicGraphPatternOp basicGraphPatternOp) {
    auto& block = basicGraphPatternOp.getPattern().front();
    TripleList triples = std::make_shared<llvm::SmallVector<TripleData>>();
    for (auto& op : block.without_terminator()) {
-      auto triple = mlir::cast<gpm::TriplePatternOp>(&op);
+      auto triple = mlir::dyn_cast<gpm::TriplePatternOp>(&op);
+      if (!triple) continue;
       triples->push_back(TripleData{triple.getGraphRef(), triple.getS(), triple.getP(), triple.getO(), triple.getJoinStrategy()});
    }
    return triples;
@@ -758,6 +759,31 @@ class TriplePatternEmitter {
    }
 };
 
+static mlir::FailureOr<mlir::Value> lowerBasicGraphPatternBody(gpm::BasicGraphPatternOp basicGraphPatternOp, mlir::Value stream, NamedGraphMapping& graphs, VariableBinding& bindings, const llvm::DenseSet<mlir::SymbolRefAttr>& probedVariableNames, TriplePatternEmitter& emitter) {
+   TripleList triples = extractTriples(basicGraphPatternOp);
+   llvm::DenseSet<mlir::SymbolRefAttr> unusedVars;
+   llvm::DenseSet<mlir::StringRef> probedBNodeIds;
+   collectProbedNames(triples, unusedVars, &probedBNodeIds);
+   TripleEmitContext emitCtxt{graphs, bindings, LocalIdentifierMapping(), probedVariableNames, std::move(probedBNodeIds)};
+   auto loc = basicGraphPatternOp->getLoc();
+   size_t tripleIndex = 0;
+   for (auto& op : basicGraphPatternOp.getPattern().front().without_terminator()) {
+      if (mlir::isa<gpm::TriplePatternOp>(op)) {
+         stream = emitter.lowerTriple(loc, stream, triples, tripleIndex++, emitCtxt);
+      } 
+      else if (auto subBgp = mlir::dyn_cast<gpm::BasicGraphPatternOp>(&op)) {
+         auto lowered = lowerBasicGraphPatternBody(subBgp, stream, graphs, bindings, probedVariableNames, emitter);
+         if (failed(lowered)) return failure();
+         stream = *lowered;
+      } 
+      else {
+         op.emitOpError("lowering of this graph-pattern operator nested inside a basic graph pattern is not supported");
+         return failure();
+      }
+   }
+   return stream;
+}
+
 class BasicGraphPatternLowering : public OpConversionPattern<gpm::BasicGraphPatternOp> {
    NamedGraphMapping& graphs;
    VariableBinding& bindings;
@@ -766,19 +792,13 @@ class BasicGraphPatternLowering : public OpConversionPattern<gpm::BasicGraphPatt
    BasicGraphPatternLowering(TypeConverter& typeConverter, MLIRContext* context, NamedGraphMapping& graphs, VariableBinding& bindings, const llvm::DenseSet<mlir::SymbolRefAttr>& probedVariableNames)
       : OpConversionPattern<gpm::BasicGraphPatternOp>(typeConverter, context), graphs(graphs), bindings(bindings), probedVariableNames(probedVariableNames) {}
    LogicalResult matchAndRewrite(gpm::BasicGraphPatternOp basicGraphPatternOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
-      TripleList triples = extractTriples(basicGraphPatternOp);
-      llvm::DenseSet<mlir::SymbolRefAttr> unusedVars;
-      llvm::DenseSet<mlir::StringRef> probedBNodeIds;
-      collectProbedNames(triples, unusedVars, &probedBNodeIds);
+      if (mlir::isa_and_nonnull<gpm::BasicGraphPatternOp>(basicGraphPatternOp->getParentOp()))
+         return failure();
       rewriter.setInsertionPoint(basicGraphPatternOp);
-      mlir::Value stream = adaptor.getRel();
-      TripleEmitContext emitCtxt{graphs, bindings, LocalIdentifierMapping(), probedVariableNames, std::move(probedBNodeIds)};
       TriplePatternEmitter emitter(rewriter);
-      auto loc = basicGraphPatternOp->getLoc();
-      for (size_t i = 0; i < triples->size(); ++i) {
-         stream = emitter.lowerTriple(loc, stream, triples, i, emitCtxt);
-      }
-      rewriter.replaceOp(basicGraphPatternOp, stream);
+      auto lowered = lowerBasicGraphPatternBody(basicGraphPatternOp, adaptor.getRel(), graphs, bindings, probedVariableNames, emitter);
+      if (failed(lowered)) return failure();
+      rewriter.replaceOp(basicGraphPatternOp, *lowered);
       return success();
    }
 };
