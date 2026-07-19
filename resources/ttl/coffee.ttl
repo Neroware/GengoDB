@@ -3,7 +3,7 @@
 
 # --- core "who drinks what" facts (used by test.sparql) ---
 ex:bob ex:drinks ex:coffee .
-ex:bob ex:drinks "42"^^xsd:int .
+ex:bob ex:drinks "Coffee"^^xsd:string .
 ex:bob ex:drinks _:drink1 .
 ex:bob ex:drinks _:drink2 .
 
