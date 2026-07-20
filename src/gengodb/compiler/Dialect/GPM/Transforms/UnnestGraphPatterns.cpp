@@ -2,55 +2,16 @@
 
 #include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOps.h"
+#include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
-// This pass is the boilerplate/outline for turning nested gpm.basic_graph_pattern /
-// gpm.optional_graph_pattern regions into a single flat sequence of gpm.triple_pattern
-// operators (a "pipeline") wired directly into the surrounding tuple stream - the same way
-// e.g. relalg operators are chained. The triple pattern itself becomes the relational
-// operator; the pattern-container ops (implementing GraphPatternOp) disappear after this pass.
-//
-// Motivation (see discussion): lowering BGPs by recursively walking their nested regions (as
-// GPMToSubOp currently does) means the dialect-conversion driver never gets to dispatch on the
-// individual triple patterns directly, and every new pattern construct (OPTIONAL, MINUS, ...)
-// would need its own recursive-lowering special case nested inside the others. Unnesting
-// up front instead gives a single, flat, iteratively-lowerable list of triple-pattern
-// operators (each carrying its own semantic info: join strategy, pattern kind (BASIC/OPTIONAL/
-// MINUS), bound variables), which is unnested exactly once here and never nested again
-// downstream.
-//
-// This pass must run before gpm-create-relalg-inflights (i.e. at the very front of
-// gpm::createLowerGPMToSubOpPipeline): relalg::InFlightOp insertion assumes a flat operator
-// chain and does not know how to look inside a GraphPatternOp's nested region.
-//
-// Planned algorithm (not yet implemented - this pass is currently a no-op walk):
-//   1. Collect all "root" GraphPatternOp instances, i.e. those whose parent op is not itself a
-//      GraphPatternOp (nested patterns are handled recursively from their root, see below).
-//   2. For each root, unnest bottom-up / post-order:
-//        a. For a nested GraphPatternOp child, recurse first, so it has already been reduced to
-//           a flat chain of TriplePatternOps before its parent processes it. Propagate the
-//           child's getPatternKind() (OPTIONAL/MINUS in particular) down onto each of its
-//           triples - e.g. via a to-be-added PatternKind attribute on TriplePatternOp, since
-//           pattern-kind semantics are per-triple-pattern once unnested, not per-container. A
-//           nested pattern whose ancestor is itself OPTIONAL/MINUS stays tagged as such (the
-//           outermost non-BASIC ancestor wins).
-//        b. For a TriplePatternOp child, just move/rewire it into the flat chain, connecting its
-//           $rel operand to the last flattened stream so far.
-//        c. Track bound-variable info while flattening: a variable that is *created* by an
-//           earlier triple in program order and *used* again later must be turned into a bound
-//           reference (mirrors what TriplePatternLowering currently does implicitly via nested
-//           NestedMapOp scoping in GPMToSubOp.cpp).
-//   3. Replace all uses of the root GraphPatternOp's result with the final flattened stream and
-//      erase the now-empty pattern container op(s).
-//
-// Once this pass produces a flat chain of TriplePatternOps directly, GPMToSubOp's lowering can
-// become a simple per-op OpConversionPattern<TriplePatternOp> (like any other relational
-// operator), instead of the current recursive per-BGP-region walk.
+#include "llvm/ADT/StringMap.h"
 
 namespace {
 using namespace gengodb::compiler::dialect;
+using namespace lingodb::compiler::dialect;
 
 class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass, mlir::OperationPass<mlir::ModuleOp>> {
    virtual llvm::StringRef getArgument() const override { return "gpm-unnest-patterns"; }
@@ -67,16 +28,64 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          roots.push_back(patternOp);
       });
       for (auto root : roots) {
-         unnest(root);
+         unnestInto(root, root.getOperation(), gpm::PatternKind::basic);
       }
    }
 
    private:
-   // TODO: flatten `root` (and, recursively, any GraphPatternOp nested inside it) into a single
-   // chain of gpm::TriplePatternOp operators as outlined above, then erase the pattern
-   // container op(s). Currently a no-op so that wiring this pass into the pipeline is safe.
-   void unnest(GraphPatternOp root) {
-      (void) root;
+   mlir::Value unnestInto(GraphPatternOp patternOp, mlir::Operation* insertBefore, gpm::PatternKind inheritedKind) {
+      gpm::PatternKind kind = inheritedKind != gpm::PatternKind::basic ? inheritedKind : patternOp.getPatternKind();
+      llvm::StringMap<tuples::ColumnRefAttr> bnodeScope;
+      mlir::Value stream = patternOp.getRel();
+      for (auto& op : llvm::make_early_inc_range(patternOp.getPattern().front().without_terminator())) {
+         if (auto triple = mlir::dyn_cast<gpm::TriplePatternOp>(&op)) {
+            annotateBNodeScope(triple, bnodeScope);
+            triple.getRelMutable().set(stream);
+            triple->moveBefore(insertBefore);
+            stream = triple.getRes();
+         } 
+         else if (auto nested = mlir::dyn_cast<GraphPatternOp>(&op)) {
+            stream = unnestInto(nested, insertBefore, kind);
+         } 
+         else {
+            op.emitOpError("unnesting of this operator nested inside a graph pattern is not supported");
+            signalPassFailure();
+            return stream;
+         }
+      }
+      mlir::Operation* rawOp = patternOp.getOperation();
+      rawOp->getResult(0).replaceAllUsesWith(stream);
+      rawOp->erase();
+      return stream;
+   }
+   void annotateBNodeScope(gpm::TriplePatternOp triple, llvm::StringMap<tuples::ColumnRefAttr>& scope) {
+      auto* ctxt = triple.getContext();
+      auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      llvm::StringMap<tuples::ColumnRefAttr> usedHere;
+      for (mlir::Attribute term : {triple.getS(), triple.getP(), triple.getO()}) {
+         auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(term);
+         if (!bnode) continue;
+         auto localId = bnode.getLocalId().getValue();
+         auto it = scope.find(localId);
+         tuples::ColumnRefAttr ref;
+         if (it == scope.end()) {
+            auto uniqueScope = columnManager.getUniqueScope("bnode");
+            auto def = columnManager.createDef(uniqueScope, localId.str());
+            def.getColumn().type = gpm::VariableBindingType::get(ctxt);
+            ref = columnManager.createRef(def.getColumnPtr().get());
+            scope[localId] = ref;
+         } 
+         else {
+            ref = it->second;
+         }
+         usedHere[localId] = ref;
+      }
+      if (!usedHere.empty()) {
+         llvm::SmallVector<mlir::NamedAttribute> entries;
+         for (auto& entry : usedHere)
+            entries.emplace_back(mlir::StringAttr::get(ctxt, entry.getKey()), entry.getValue());
+         triple->setAttr("bnodeScope", mlir::DictionaryAttr::get(ctxt, entries));
+      }
    }
 };
 

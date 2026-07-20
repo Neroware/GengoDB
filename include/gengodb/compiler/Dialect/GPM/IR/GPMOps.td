@@ -38,6 +38,14 @@ def TriplePatternOp : GPM_Op<"triple_pattern", [Pure,GPMOperator,Operator,UnaryO
         return joinStrategyAttr.str();
       return DEFAULT_JOIN_STRATEGY;
     }
+    gengodb::compiler::dialect::gpm::PatternKind getModifier() const {
+      if (auto patternKindAttr = (*this)->getAttrOfType<gengodb::compiler::dialect::gpm::PatternKindAttr>("modifier"))
+        return patternKindAttr.getValue();
+      return gengodb::compiler::dialect::gpm::PatternKind::basic;
+    }
+    mlir::DictionaryAttr getBNodeScope() {
+      return (*this)->getAttrOfType<mlir::DictionaryAttr>("bnodeScope");
+    }
   }];
 }
 
