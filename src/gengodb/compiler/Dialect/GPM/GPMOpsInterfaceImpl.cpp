@@ -82,6 +82,26 @@ void moveSubTreeBefore(mlir::Operation* op, mlir::Operation* before) {
    }
 }
 
+llvm::SmallVector<std::tuple<mlir::Attribute, mlir::Attribute, mlir::Attribute>, 16> getPatternTriples(mlir::Operation* op) {
+   llvm::SmallVector<std::tuple<mlir::Attribute, mlir::Attribute, mlir::Attribute>, 16> result;
+   auto patternOp = mlir::cast<GraphPatternOp>(op);
+   patternOp.getPattern().walk([&](gengodb::compiler::dialect::gpm::TriplePatternOp triple) {
+      result.push_back(std::make_tuple(triple.getS(), triple.getP(), triple.getO()));
+   });
+   return result;
+}
+
+mlir::LogicalResult verifyGraphPatternBody(mlir::Operation* op) {
+   auto patternOp = mlir::cast<GraphPatternOp>(op);
+   bool valid = std::all_of(patternOp.getPattern().getOps().begin(), patternOp.getPattern().getOps().end(), [](const mlir::Operation& nested) {
+      return mlir::isa<gengodb::compiler::dialect::gpm::TriplePatternOp, gengodb::compiler::dialect::gpm::BasicGraphPatternOp, gengodb::compiler::dialect::gpm::OptionalGraphPatternOp, tuples::ReturnOp>(nested);
+   });
+   if (!valid) {
+      return op->emitOpError("A graph pattern must only contain triples or nested graph patterns.");
+   }
+   return mlir::success();
+}
+
 } // namespace gengodb::compiler::dialect::gpm::detail
 
 namespace gengodb::compiler::dialect {

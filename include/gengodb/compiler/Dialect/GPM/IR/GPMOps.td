@@ -54,14 +54,14 @@ def NamedGraphOp : GPM_Op<"named_graph", [Pure,GPMOperator,Operator]> {
   }];
 }
 
-def BasicGraphPatternOp : GPM_Op<"basic_graph_pattern", [Pure,GPMOperator,Operator,UnaryOperator]> {
+def BasicGraphPatternOp : GPM_Op<"basic_graph_pattern", [Pure,GPMOperator,GraphPatternOp,Operator,UnaryOperator]> {
   let summary = "basic graph pattern";
   let arguments = (ins TupleStream:$rel);
   let results = (outs TupleStream:$res);
   let regions = (region SizedRegion<1>:$pattern);
   let assemblyFormat = [{  $rel custom<CustRegion>($pattern) attr-dict  }];
   let extraClassDeclaration = [{
-    llvm::SmallVector<std::tuple<mlir::Attribute, mlir::Attribute, mlir::Attribute>, 16> getTriples();
+    gengodb::compiler::dialect::gpm::PatternKind getPatternKind() { return gengodb::compiler::dialect::gpm::PatternKind::basic; }
     lingodb::compiler::dialect::relalg::ColumnSet getBoundVariables() { return getUsedVariables(); }
     lingodb::compiler::dialect::relalg::ColumnSet getCreatedVariables();
     lingodb::compiler::dialect::relalg::ColumnSet getUsedVariables();
@@ -73,14 +73,14 @@ def BasicGraphPatternOp : GPM_Op<"basic_graph_pattern", [Pure,GPMOperator,Operat
   let hasVerifier = 1;
 }
 
-def OptionalGraphPatternOp : GPM_Op<"optional_graph_pattern", [Pure,GPMOperator,Operator,UnaryOperator]> {
+def OptionalGraphPatternOp : GPM_Op<"optional_graph_pattern", [Pure,GPMOperator,GraphPatternOp,Operator,UnaryOperator]> {
   let summary = "optional graph pattern (SPARQL OPTIONAL)";
   let arguments = (ins TupleStream:$rel);
   let results = (outs TupleStream:$res);
   let regions = (region SizedRegion<1>:$pattern);
   let assemblyFormat = [{  $rel custom<CustRegion>($pattern) attr-dict  }];
   let extraClassDeclaration = [{
-    llvm::SmallVector<std::tuple<mlir::Attribute, mlir::Attribute, mlir::Attribute>, 16> getTriples();
+    gengodb::compiler::dialect::gpm::PatternKind getPatternKind() { return gengodb::compiler::dialect::gpm::PatternKind::optional; }
     lingodb::compiler::dialect::relalg::ColumnSet getBoundVariables() { return getUsedVariables(); }
     lingodb::compiler::dialect::relalg::ColumnSet getCreatedVariables();
     lingodb::compiler::dialect::relalg::ColumnSet getUsedVariables();

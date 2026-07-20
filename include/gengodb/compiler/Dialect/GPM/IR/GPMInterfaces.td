@@ -31,4 +31,27 @@ InterfaceMethod<
 ];
 }
 
+def GraphPatternOp : OpInterface<"GraphPatternOp"> {
+let methods = [
+InterfaceMethod<
+    "get the incoming tuple stream this pattern is applied to",
+    "mlir::Value", "getRel",(ins )
+>,
+InterfaceMethod<
+    "get the region containing the nested triple/pattern operators",
+    "mlir::Region&", "getPattern",(ins )
+>,
+InterfaceMethod<
+    "which graph pattern construct this operator represents (SPARQL BGP / OPTIONAL / MINUS)",
+    "gengodb::compiler::dialect::gpm::PatternKind", "getPatternKind",(ins )
+>,
+InterfaceMethod<
+    "collect the (subject,predicate,object) terms of all triple patterns nested (transitively) inside this pattern",
+    "llvm::SmallVector<std::tuple<mlir::Attribute, mlir::Attribute, mlir::Attribute>, 16>", "getTriples",(ins ),"", /*defaultImplementation=*/[{
+    return gengodb::compiler::dialect::gpm::detail::getPatternTriples(this->getOperation());
+}]
+>,
+];
+}
+
 #endif // GENGODB_DIALECT_GPM_IR_GPMINTERFACES
