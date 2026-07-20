@@ -39,6 +39,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include <iostream>
+#include <optional>
 
 using namespace mlir;
 
@@ -63,28 +64,19 @@ struct HashJoinBuild {
 };
 struct Binding {
    tuples::ColumnDefAttr def;
-   gpm::TripleList triples;
-   size_t originIndex;
+   mlir::Operation* originTriple = nullptr;
    std::shared_ptr<HashJoinBuild> hashJoinBuild;
 };
-using LocalIdentifierMapping = llvm::DenseMap<mlir::StringRef, Binding>;
 using VariableBinding = llvm::DenseMap<mlir::SymbolRefAttr, Binding>;
 struct TripleEmitContext {
-   NamedGraphMapping graphs;
+   NamedGraphMapping& graphs;
    VariableBinding& bindings;
-   LocalIdentifierMapping localIdents;
-   const llvm::DenseSet<mlir::SymbolRefAttr>& probedVariableNames;
-   llvm::DenseSet<mlir::StringRef> probedBNodeIds;
+   const llvm::DenseSet<mlir::SymbolRefAttr>& probedNames;
 };
 struct AnchorSelection {
    bool anchorIsSubject;
    bool anchorIsObject;
    bool restart;
-};
-struct BindingRef {
-   bool isVar;
-   mlir::SymbolRefAttr varName;
-   mlir::StringRef bnodeId;
 };
 
 struct GPMToSubOpLoweringPass
@@ -143,10 +135,10 @@ inline static gsubop::NodeRefType createNodeRefType(MLIRContext* ctxt, std::stri
    auto incoming = createMember(ctxt, memberName(graph, group, "incoming"), edgeSetType0);
    auto outgoing = createMember(ctxt, memberName(graph, group, "outgoing"), edgeSetType1);
    auto property = createMember(ctxt, memberName(graph, group, "property"), gsubop::PropertyRefType::get(ctxt));
-   return gsubop::NodeRefType::get(ctxt, 
-      createStateMembersAttr(ctxt, {nodeId}), 
-      createStateMembersAttr(ctxt, {incoming}), 
-      createStateMembersAttr(ctxt, {outgoing}), 
+   return gsubop::NodeRefType::get(ctxt,
+      createStateMembersAttr(ctxt, {nodeId}),
+      createStateMembersAttr(ctxt, {incoming}),
+      createStateMembersAttr(ctxt, {outgoing}),
       createStateMembersAttr(ctxt, {property})
    );
 }
@@ -155,10 +147,10 @@ inline static gsubop::EdgeRefType createEdgeRefType(MLIRContext* ctxt, std::stri
    auto from = createMember(ctxt, memberName(graph, group, "from"), createNodeRefType(ctxt, group, graph));
    auto to = createMember(ctxt, memberName(graph, group, "to"), createNodeRefType(ctxt, group, graph));
    auto property = createMember(ctxt, memberName(graph, group, "property"), gsubop::PropertyRefType::get(ctxt));
-   return gsubop::EdgeRefType::get(ctxt, 
-      createStateMembersAttr(ctxt, {edgeId}), 
-      createStateMembersAttr(ctxt, {from}), 
-      createStateMembersAttr(ctxt, {to}), 
+   return gsubop::EdgeRefType::get(ctxt,
+      createStateMembersAttr(ctxt, {edgeId}),
+      createStateMembersAttr(ctxt, {from}),
+      createStateMembersAttr(ctxt, {to}),
       createStateMembersAttr(ctxt, {property})
    );
 }
@@ -168,77 +160,90 @@ static std::pair<tuples::ColumnDefAttr, tuples::ColumnRefAttr> createColumn(mlir
    auto ref = createRef(columnManager, def.getName().getRootReference().str(), def.getName().getLeafReference().str());
    return {def, ref};
 }
-template<typename BNodeSet>
-inline static bool isBound(mlir::Attribute term, const BNodeSet& seenBNodes) {
+static std::optional<mlir::SymbolRefAttr> resolveBindingName(mlir::Attribute term, gpm::TriplePatternOp triple) {
+   if (auto var = mlir::dyn_cast<gpm::VariableTermAttr>(term))
+      return var.hasBinding() ? var.getBindingReference().getName() : var.getProducedBinding().getName();
+   if (auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(term)) {
+      auto scope = triple.getBNodeScope();
+      if (!scope) return std::nullopt;
+      auto entry = scope.get(bnode.getLocalId().getValue());
+      if (!entry) return std::nullopt;
+      return mlir::cast<tuples::ColumnRefAttr>(entry).getName();
+   }
+   return std::nullopt;
+}
+template<typename IdentMappingT>
+inline static bool isBound(mlir::Attribute term, gpm::TriplePatternOp triple, const IdentMappingT& identMapping) {
    if (mlir::isa<gpm::IdentifierTermAttr>(term)) return true;
    if (auto var = mlir::dyn_cast<gpm::VariableTermAttr>(term))
       return var.hasBinding();
-   if (auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(term))
-      return seenBNodes.count(bnode.getLocalId()) > 0;
+   if (mlir::isa<gpm::BNodeTermAttr>(term)) {
+      auto name = resolveBindingName(term, triple);
+      return name && identMapping.count(*name) > 0;
+   }
    return false;
 }
-template<typename BNodeSet>
-static bool reusesExistingBinding(mlir::Attribute term, const BNodeSet& seenBNodes) {
+template<typename IdentMappingT>
+static bool reusesExistingBinding(mlir::Attribute term, gpm::TriplePatternOp triple, const IdentMappingT& identMapping) {
    if (auto var = mlir::dyn_cast<gpm::VariableTermAttr>(term))
       return var.hasBinding();
-   if (auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(term))
-      return seenBNodes.count(bnode.getLocalId()) > 0;
+   if (mlir::isa<gpm::BNodeTermAttr>(term)) {
+      auto name = resolveBindingName(term, triple);
+      return name && identMapping.count(*name) > 0;
+   }
    return false;
 }
-template<typename BNodeSet>
-static bool reusesHashBinding(mlir::Attribute term, const std::string& joinStrategy, const BNodeSet& seenBNodes) {
+template<typename IdentMappingT>
+static bool reusesHashBinding(mlir::Attribute term, gpm::TriplePatternOp triple, const std::string& joinStrategy, const IdentMappingT& identMapping) {
    if (joinStrategy != "hash") return false;
-   return reusesExistingBinding(term, seenBNodes);
+   return reusesExistingBinding(term, triple, identMapping);
 }
-template<typename BNodeSet>
-static bool needsProbeRestart(const gpm::TripleData& triple, bool anchorIsSubject, bool anchorIsObject, const BNodeSet& seenBNodes) {
-   if (reusesHashBinding(triple.p, triple.joinStrategy, seenBNodes)) return true;
-   if (anchorIsSubject) return reusesHashBinding(triple.o, triple.joinStrategy, seenBNodes);
-   if (anchorIsObject) return reusesHashBinding(triple.s, triple.joinStrategy, seenBNodes);
-   return reusesHashBinding(triple.s, triple.joinStrategy, seenBNodes) || reusesHashBinding(triple.o, triple.joinStrategy, seenBNodes);
+template<typename IdentMappingT>
+static bool needsProbeRestart(gpm::TriplePatternOp triple, bool anchorIsSubject, bool anchorIsObject, const IdentMappingT& identMapping) {
+   auto joinStrategy = triple.getJoinStrategy();
+   if (reusesHashBinding(triple.getP(), triple, joinStrategy, identMapping)) return true;
+   if (anchorIsSubject) return reusesHashBinding(triple.getO(), triple, joinStrategy, identMapping);
+   if (anchorIsObject) return reusesHashBinding(triple.getS(), triple, joinStrategy, identMapping);
+   return reusesHashBinding(triple.getS(), triple, joinStrategy, identMapping) || reusesHashBinding(triple.getO(), triple, joinStrategy, identMapping);
 }
-template<typename BNodeSet>
-static AnchorSelection selectAnchor(const gpm::TripleData& triple, const BNodeSet& seenBNodes) {
-   bool anchorIsSubject = isBound(triple.s, seenBNodes);
-   bool anchorIsObject = !anchorIsSubject && isBound(triple.o, seenBNodes);
-   bool restart = needsProbeRestart(triple, anchorIsSubject, anchorIsObject, seenBNodes);
+template<typename IdentMappingT>
+static AnchorSelection selectAnchor(gpm::TriplePatternOp triple, const IdentMappingT& identMapping) {
+   bool anchorIsSubject = isBound(triple.getS(), triple, identMapping);
+   bool anchorIsObject = !anchorIsSubject && isBound(triple.getO(), triple, identMapping);
+   bool restart = needsProbeRestart(triple, anchorIsSubject, anchorIsObject, identMapping);
    if (restart) {
-      anchorIsSubject = mlir::isa<gpm::IdentifierTermAttr>(triple.s);
-      anchorIsObject = !anchorIsSubject && mlir::isa<gpm::IdentifierTermAttr>(triple.o);
+      anchorIsSubject = mlir::isa<gpm::IdentifierTermAttr>(triple.getS());
+      anchorIsObject = !anchorIsSubject && mlir::isa<gpm::IdentifierTermAttr>(triple.getO());
    }
    return {anchorIsSubject, anchorIsObject, restart};
 }
-static void collectProbedNames(gpm::TripleList triples, llvm::DenseSet<mlir::SymbolRefAttr>& probedVars, llvm::DenseSet<mlir::StringRef>* probedBNodes) {
-   llvm::DenseSet<mlir::StringRef> seenBNodes;
-   auto markProbed = [&](mlir::Attribute term) {
-      if (!reusesExistingBinding(term, seenBNodes)) 
-         return;
-      if (auto var = mlir::dyn_cast<gpm::VariableTermAttr>(term)) {
-         probedVars.insert(var.getBindingReference().getName());
-      }
-      else if (auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(term)) {
-         if (probedBNodes) probedBNodes->insert(bnode.getLocalId());
-      }
-   };
-   for (auto& triple : *triples) {
-      auto sel = selectAnchor(triple, seenBNodes);
-      markProbed(triple.p);
+static void collectProbedNames(mlir::ModuleOp module, llvm::DenseSet<mlir::SymbolRefAttr>& probedNames) {
+   llvm::DenseSet<mlir::SymbolRefAttr> seen;
+   module.walk([&](gpm::TriplePatternOp triple) {
+      auto markProbed = [&](mlir::Attribute term) {
+         if (!reusesExistingBinding(term, triple, seen)) 
+            return;
+         if (auto name = resolveBindingName(term, triple)) 
+            probedNames.insert(*name);
+      };
+      auto sel = selectAnchor(triple, seen);
+      markProbed(triple.getP());
       if (sel.anchorIsSubject) {
-         markProbed(triple.o);
-      }
+         markProbed(triple.getO());
+      } 
       else if (sel.anchorIsObject) {
-         markProbed(triple.s);
-      }
+         markProbed(triple.getS());
+      } 
       else {
-         markProbed(triple.s);
-         markProbed(triple.o);
+         markProbed(triple.getS());
+         markProbed(triple.getO());
       }
-      for (mlir::Attribute term : {triple.s, triple.p, triple.o}) {
-         if (auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(term)) {
-            seenBNodes.insert(bnode.getLocalId());
-         }     
+      for (mlir::Attribute term : {triple.getS(), triple.getP(), triple.getO()}) {
+         if (mlir::isa<gpm::BNodeTermAttr>(term)) {
+            if (auto name = resolveBindingName(term, triple)) seen.insert(*name);
+         }
       }
-   }
+   });
 }
 template <typename BuildIdentFn>
 static mlir::Value generateTupleStream(ConversionPatternRewriter& rewriter, mlir::Location loc, tuples::ColumnDefAttr def, BuildIdentFn buildIdent) {
@@ -254,32 +259,19 @@ static mlir::Value generateTupleStream(ConversionPatternRewriter& rewriter, mlir
    rewriter.create<tuples::ReturnOp>(loc);
    return generateOp.getRes();
 }
-
-static Binding& resolveBinding(const BindingRef& ref, TripleEmitContext& emitCtxt) {
-   return ref.isVar ? emitCtxt.bindings[ref.varName] : emitCtxt.localIdents[ref.bnodeId];
-}
-static bool isProbed(const BindingRef& ref, const TripleEmitContext& emitCtxt) {
-   return ref.isVar ? emitCtxt.probedVariableNames.contains(ref.varName) : emitCtxt.probedBNodeIds.contains(ref.bnodeId);
-}
-static llvm::SmallVector<BindingRef, 3> collectOriginSiblings(const gpm::TripleData& triple, size_t index, gpm::TripleList triples, TripleEmitContext& emitCtxt) {
-   llvm::SmallVector<BindingRef, 3> result;
-   if (triple.joinStrategy != "hash") return result;
+static llvm::SmallVector<mlir::SymbolRefAttr, 3> collectOriginSiblings(gpm::TriplePatternOp triple, TripleEmitContext& emitCtxt) {
+   llvm::SmallVector<mlir::SymbolRefAttr, 3> result;
+   if (triple.getJoinStrategy() != "hash") return result;
    auto consider = [&](mlir::Attribute term) {
-      if (auto var = mlir::dyn_cast<gpm::VariableTermAttr>(term)) {
-         if (!var.hasBinding()) {
-            result.push_back({true, var.getProducedBinding().getName(), {}});
-         }
-      }
-      else if (auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(term)) {
-         auto it = emitCtxt.localIdents.find(bnode.getLocalId());
-         if (it != emitCtxt.localIdents.end() && it->second.triples == triples && it->second.originIndex == index) {
-            result.push_back({false, {}, bnode.getLocalId()});
-         }
-      }
+      auto name = resolveBindingName(term, triple);
+      if (!name) return;
+      auto it = emitCtxt.bindings.find(*name);
+      if (it != emitCtxt.bindings.end() && it->second.originTriple == triple.getOperation())
+         result.push_back(*name);
    };
-   consider(triple.p);
-   consider(triple.s);
-   consider(triple.o);
+   consider(triple.getP());
+   consider(triple.getS());
+   consider(triple.getO());
    return result;
 }
 struct GraphDataOverrideGuard {
@@ -355,15 +347,14 @@ class TriplePatternEmitter {
       : rewriter(rewriter), ctxt(rewriter.getContext()),
       columnManager(ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager()),
       memberManager(ctxt->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager()) {}
-   mlir::Value lowerTriple(mlir::Location loc, mlir::Value stream, gpm::TripleList triples, size_t index, TripleEmitContext& emitCtxt) const {
-      auto& triple = (*triples)[index];
-      auto sel = selectAnchor(triple, emitCtxt.localIdents);
+   mlir::Value lowerTriple(mlir::Location loc, mlir::Value stream, gpm::TriplePatternOp triple, TripleEmitContext& emitCtxt) const {
+      auto sel = selectAnchor(triple, emitCtxt.bindings);
       if (sel.anchorIsSubject)
-         stream = lowerSubjectFirst(loc, stream, triples, index, emitCtxt, sel.restart);
+         stream = lowerSubjectFirst(loc, stream, triple, emitCtxt, sel.restart);
       else if (sel.anchorIsObject)
-         stream = lowerObjectFirst(loc, stream, triples, index, emitCtxt, sel.restart);
+         stream = lowerObjectFirst(loc, stream, triple, emitCtxt, sel.restart);
       else
-         stream = lowerPredicateFirst(loc, stream, triples, index, emitCtxt, sel.restart);
+         stream = lowerPredicateFirst(loc, stream, triple, emitCtxt, sel.restart);
       return stream;
    }
    private:
@@ -386,7 +377,7 @@ class TriplePatternEmitter {
       stream = rewriter.create<subop::FilterOp>(loc, stream, subop::FilterSemantic::none_true, rewriter.getArrayAttr({isNullRef}));
       return {stream, valRef, innerType};
    }
-   mlir::Value resolveAnchorNode(mlir::Location loc, mlir::Value stream, mlir::Attribute term, tuples::ColumnRefAttr graphRefAttr, gsubop::NodeRefType& nodeRefType, tuples::ColumnRefAttr& nodeRef, TripleEmitContext& emitCtxt) const {
+   mlir::Value resolveAnchorNode(mlir::Location loc, mlir::Value stream, mlir::Attribute term, gpm::TriplePatternOp triple, tuples::ColumnRefAttr graphRefAttr, gsubop::NodeRefType& nodeRefType, tuples::ColumnRefAttr& nodeRef, TripleEmitContext& emitCtxt) const {
       auto graphRef = graphRefAttr.getName();
       auto [group, graph] = splitGraphRef(graphRefAttr);
       if (auto identTermAttr = mlir::dyn_cast_or_null<gpm::IdentifierTermAttr>(term)) {
@@ -419,8 +410,9 @@ class TriplePatternEmitter {
          nodeRefType = mlir::cast<gsubop::NodeRefType>(unwrapped.type);
          return unwrapped.stream;
       }
-      if (auto bnodeTermAttr = mlir::dyn_cast_or_null<gpm::BNodeTermAttr>(term)) {
-         auto bindingDef = emitCtxt.localIdents[bnodeTermAttr.getLocalId()].def;
+      if (mlir::isa_and_nonnull<gpm::BNodeTermAttr>(term)) {
+         auto name = resolveBindingName(term, triple);
+         auto bindingDef = emitCtxt.bindings[*name].def;
          nodeRef = columnManager.createRef(bindingDef.getColumnPtr().get());
          nodeRefType = mlir::cast<gsubop::NodeRefType>(bindingDef.getColumn().type);
          return stream;
@@ -454,11 +446,11 @@ class TriplePatternEmitter {
       rewriter.create<tuples::ReturnOp>(loc, cmp);
       return block;
    }
-   void ensureJointHashIndex(mlir::Location loc, mlir::Value stream, const gpm::TripleData& triple, size_t index, gpm::TripleList triples, TripleEmitContext& emitCtxt) const {
-      auto siblings = collectOriginSiblings(triple, index, triples, emitCtxt);
+   void ensureJointHashIndex(mlir::Location loc, mlir::Value stream, gpm::TriplePatternOp triple, TripleEmitContext& emitCtxt) const {
+      auto siblings = collectOriginSiblings(triple, emitCtxt);
       size_t keyIdx = siblings.size();
       for (size_t i = 0; i < siblings.size(); ++i) {
-         if (isProbed(siblings[i], emitCtxt)) {
+         if (emitCtxt.probedNames.contains(siblings[i])) {
             keyIdx = i;
             break;
          }
@@ -466,8 +458,8 @@ class TriplePatternEmitter {
       if (keyIdx == siblings.size()) return;
       llvm::SmallVector<std::pair<tuples::ColumnDefAttr, tuples::ColumnRefAttr>> idCols;
       mlir::Type idType;
-      for (auto& sib : siblings) {
-         Binding& binding = resolveBinding(sib, emitCtxt);
+      for (auto& name : siblings) {
+         Binding& binding = emitCtxt.bindings[name];
          auto nodeRefType = mlir::cast<gsubop::NodeRefType>(binding.def.getColumn().type);
          auto idMember = nodeRefType.getNodeMembers().getMembers()[0];
          idType = memberManager.getType(idMember);
@@ -492,8 +484,8 @@ class TriplePatternEmitter {
       auto insertOp = rewriter.create<subop::InsertOp>(loc, stream, multiMap, createColumnRefMemberMappingAttr(ctxt, insertMapping));
       insertOp.getEqFn().push_back(buildEqBlock(loc, idType));
       auto hj = std::make_shared<HashJoinBuild>(HashJoinBuild{multiMap, multiMapType, keyMember, valueMembers, idType});
-      for (auto& sib : siblings) {
-         resolveBinding(sib, emitCtxt).hashJoinBuild = hj;
+      for (auto& name : siblings) {
+         emitCtxt.bindings[name].hashJoinBuild = hj;
       }
    }
    mlir::Value probeHashJoin(mlir::Location loc, mlir::Value stream, tuples::ColumnRefAttr candidateIdRef, HashJoinBuild& hj, tuples::ColumnRefAttr vxRef, mlir::Type vxType) const {
@@ -566,8 +558,6 @@ class TriplePatternEmitter {
       {
          mlir::OpBuilder::InsertionGuard guard(rewriter);
          rewriter.setInsertionPointToStart(mapBlock);
-         // auto leftI32 = rewriter.create<UnrealizedConversionCastOp>(loc, rewriter.getI32Type(), left).getResult(0);
-         // auto rightI32 = rewriter.create<UnrealizedConversionCastOp>(loc, rewriter.getI32Type(), right).getResult(0);
          mlir::Value val = rewriter.create<arith::CmpIOp>(loc, rewriter.getI1Type(), mlir::arith::CmpIPredicate::eq, left, right);
          rewriter.create<tuples::ReturnOp>(loc, val);
       }
@@ -582,9 +572,8 @@ class TriplePatternEmitter {
          return probeHashJoin(loc, stream, candidateIdRef, hj, vxRef, vxType);
       return filterAgainstReconstructed(loc, stream, candidateIdRef, target);
    }
-   mlir::Value lowerSubjectFirst(mlir::Location loc, mlir::Value stream, gpm::TripleList triples, size_t index, TripleEmitContext& emitCtxt, bool restart) const {
-      auto& triple = (*triples)[index];
-      auto graphRefAttr = triple.graphRef;
+   mlir::Value lowerSubjectFirst(mlir::Location loc, mlir::Value stream, gpm::TriplePatternOp triple, TripleEmitContext& emitCtxt, bool restart) const {
+      auto graphRefAttr = triple.getGraphRef();
       auto [group, graph] = splitGraphRef(graphRefAttr);
       GraphDataOverrideGuard graphGuard(emitCtxt.graphs, graphRefAttr.getName());
       if (restart) {
@@ -594,7 +583,7 @@ class TriplePatternEmitter {
       }
       gsubop::NodeRefType nodeRefType;
       tuples::ColumnRefAttr nodeRef;
-      stream = resolveAnchorNode(loc, stream, triple.s, graphRefAttr, nodeRefType, nodeRef, emitCtxt);
+      stream = resolveAnchorNode(loc, stream, triple.getS(), triple, graphRefAttr, nodeRefType, nodeRef, emitCtxt);
       auto edgeSetType = memberManager.getType(nodeRefType.getOutgoingMembers().getMembers()[0]);
       auto [edgesDef, edgesRef] = createColumn(edgeSetType, "edges", "outgoing");
       stream = rewriter.create<subop::GatherOp>(loc, stream, nodeRef, createColumnDefMemberMappingAttr(ctxt, {{nodeRefType.getOutgoingMembers().getMembers()[0], edgesDef}}));
@@ -602,14 +591,13 @@ class TriplePatternEmitter {
       tuples::ColumnRefAttr edgeRefColumnRef;
       stream = scanEdges(loc, stream, edgesRef, edgeSetType, group, graph, edgeRefType, edgeRefColumnRef);
       llvm::DenseSet<mlir::Value> joinedMultiMaps;
-      stream = lowerPredicate(loc, stream, graphRefAttr, triple.p, edgeRefColumnRef, columnManager, emitCtxt, triples, index, joinedMultiMaps);
-      stream = lowerTerm(loc, stream, triple.o, edgeRefType.getToMembers().getMembers()[0], edgeRefColumnRef, graph, emitCtxt, triples, index, joinedMultiMaps);
-      ensureJointHashIndex(loc, stream, triple, index, triples, emitCtxt);
+      stream = lowerPredicate(loc, stream, graphRefAttr, triple.getP(), edgeRefColumnRef, columnManager, triple, emitCtxt, joinedMultiMaps);
+      stream = lowerTerm(loc, stream, triple.getO(), edgeRefType.getToMembers().getMembers()[0], edgeRefColumnRef, graph, triple, emitCtxt, joinedMultiMaps);
+      ensureJointHashIndex(loc, stream, triple, emitCtxt);
       return stream;
    }
-   mlir::Value lowerObjectFirst(mlir::Location loc, mlir::Value stream, gpm::TripleList triples, size_t index, TripleEmitContext& emitCtxt, bool restart) const {
-      auto& triple = (*triples)[index];
-      auto graphRefAttr = triple.graphRef;
+   mlir::Value lowerObjectFirst(mlir::Location loc, mlir::Value stream, gpm::TriplePatternOp triple, TripleEmitContext& emitCtxt, bool restart) const {
+      auto graphRefAttr = triple.getGraphRef();
       auto [group, graph] = splitGraphRef(graphRefAttr);
       GraphDataOverrideGuard graphGuard(emitCtxt.graphs, graphRefAttr.getName());
       if (restart) {
@@ -619,7 +607,7 @@ class TriplePatternEmitter {
       }
       gsubop::NodeRefType nodeRefType;
       tuples::ColumnRefAttr nodeRef;
-      stream = resolveAnchorNode(loc, stream, triple.o, graphRefAttr, nodeRefType, nodeRef, emitCtxt);
+      stream = resolveAnchorNode(loc, stream, triple.getO(), triple, graphRefAttr, nodeRefType, nodeRef, emitCtxt);
       auto edgeSetType = memberManager.getType(nodeRefType.getIncomingMembers().getMembers()[0]);
       auto [edgesDef, edgesRef] = createColumn(edgeSetType, "edges", "incoming");
       stream = rewriter.create<subop::GatherOp>(loc, stream, nodeRef, createColumnDefMemberMappingAttr(ctxt, {{nodeRefType.getIncomingMembers().getMembers()[0], edgesDef}}));
@@ -627,14 +615,13 @@ class TriplePatternEmitter {
       tuples::ColumnRefAttr edgeRefColumnRef;
       stream = scanEdges(loc, stream, edgesRef, edgeSetType, group, graph, edgeRefType, edgeRefColumnRef);
       llvm::DenseSet<mlir::Value> joinedMultiMaps;
-      stream = lowerPredicate(loc, stream, graphRefAttr, triple.p, edgeRefColumnRef, columnManager, emitCtxt, triples, index, joinedMultiMaps);
-      stream = lowerTerm(loc, stream, triple.s, edgeRefType.getFromMembers().getMembers()[0], edgeRefColumnRef, graph, emitCtxt, triples, index, joinedMultiMaps);
-      ensureJointHashIndex(loc, stream, triple, index, triples, emitCtxt);
+      stream = lowerPredicate(loc, stream, graphRefAttr, triple.getP(), edgeRefColumnRef, columnManager, triple, emitCtxt, joinedMultiMaps);
+      stream = lowerTerm(loc, stream, triple.getS(), edgeRefType.getFromMembers().getMembers()[0], edgeRefColumnRef, graph, triple, emitCtxt, joinedMultiMaps);
+      ensureJointHashIndex(loc, stream, triple, emitCtxt);
       return stream;
    }
-   mlir::Value lowerPredicateFirst(mlir::Location loc, mlir::Value stream, gpm::TripleList triples, size_t index, TripleEmitContext& emitCtxt, bool restart) const {
-      auto& triple = (*triples)[index];
-      auto graphRefAttr = triple.graphRef;
+   mlir::Value lowerPredicateFirst(mlir::Location loc, mlir::Value stream, gpm::TriplePatternOp triple, TripleEmitContext& emitCtxt, bool restart) const {
+      auto graphRefAttr = triple.getGraphRef();
       auto [group, graph] = splitGraphRef(graphRefAttr);
       GraphDataOverrideGuard graphGuard(emitCtxt.graphs, graphRefAttr.getName());
       if (restart) {
@@ -649,13 +636,13 @@ class TriplePatternEmitter {
       tuples::ColumnRefAttr edgeRefColumnRef;
       stream = scanEdges(loc, stream, edgesRef, edgeSetType, group, graph, edgeRefType, edgeRefColumnRef);
       llvm::DenseSet<mlir::Value> joinedMultiMaps;
-      stream = lowerPredicate(loc, stream, graphRefAttr, triple.p, edgeRefColumnRef, columnManager, emitCtxt, triples, index, joinedMultiMaps);
-      stream = lowerTerm(loc, stream, triple.s, edgeRefType.getFromMembers().getMembers()[0], edgeRefColumnRef, graph, emitCtxt, triples, index, joinedMultiMaps);
-      stream = lowerTerm(loc, stream, triple.o, edgeRefType.getToMembers().getMembers()[0], edgeRefColumnRef, graph, emitCtxt, triples, index, joinedMultiMaps);
-      ensureJointHashIndex(loc, stream, triple, index, triples, emitCtxt);
+      stream = lowerPredicate(loc, stream, graphRefAttr, triple.getP(), edgeRefColumnRef, columnManager, triple, emitCtxt, joinedMultiMaps);
+      stream = lowerTerm(loc, stream, triple.getS(), edgeRefType.getFromMembers().getMembers()[0], edgeRefColumnRef, graph, triple, emitCtxt, joinedMultiMaps);
+      stream = lowerTerm(loc, stream, triple.getO(), edgeRefType.getToMembers().getMembers()[0], edgeRefColumnRef, graph, triple, emitCtxt, joinedMultiMaps);
+      ensureJointHashIndex(loc, stream, triple, emitCtxt);
       return stream;
    }
-   mlir::Value lowerPredicate(mlir::Location loc, mlir::Value stream, tuples::ColumnRefAttr graphRefAttr, mlir::Attribute p, tuples::ColumnRefAttr edgeRef, tuples::ColumnManager& columnManager, TripleEmitContext& emitCtxt, gpm::TripleList triples, size_t index, llvm::DenseSet<mlir::Value>& joinedMultiMaps) const {
+   mlir::Value lowerPredicate(mlir::Location loc, mlir::Value stream, tuples::ColumnRefAttr graphRefAttr, mlir::Attribute p, tuples::ColumnRefAttr edgeRef, tuples::ColumnManager& columnManager, gpm::TriplePatternOp triple, TripleEmitContext& emitCtxt, llvm::DenseSet<mlir::Value>& joinedMultiMaps) const {
       auto graphRef = graphRefAttr.getName();
       auto [group, graph] = splitGraphRef(graphRefAttr);
       if (auto constPred = mlir::dyn_cast<gpm::IdentifierTermAttr>(p)) {
@@ -663,7 +650,7 @@ class TriplePatternEmitter {
          stream = rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, edgeRef, ident);
       }
       else if (auto varPred = mlir::dyn_cast<gpm::VariableTermAttr>(p)) {
-         if (varPred.hasBinding() && (*triples)[index].joinStrategy != "hash") {
+         if (varPred.hasBinding() && triple.getJoinStrategy() != "hash") {
             auto& target = emitCtxt.bindings[varPred.getBindingReference().getName()];
             auto unwrapped =  unwrapNullableBinding(loc, stream, target.def);
             return filterMatchingIdentifiers(loc, unwrapped.stream, unwrapped.ref, edgeRef, subop::FilterSemantic::all_true);
@@ -700,8 +687,7 @@ class TriplePatternEmitter {
                auto def = createDef(columnManager, ref.getName().getRootReference().str(), ref.getName().getLeafReference().str(), nodeRefType, false);
                auto& binding = emitCtxt.bindings[ref.getName()];
                binding.def = def;
-               binding.triples = triples;
-               binding.originIndex = index;
+               binding.originTriple = triple.getOperation();
                inner = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), inner, nodeSetArg, rewriter.getArrayAttr({scanIdentRef}), def);
             }
             rewriter.create<tuples::ReturnOp>(loc, inner);
@@ -714,10 +700,10 @@ class TriplePatternEmitter {
       }
       return stream;
    }
-   mlir::Value lowerTerm(mlir::Location loc, mlir::Value stream, mlir::Attribute term, Member nodeMember, tuples::ColumnRefAttr edgeRef, std::string graph, TripleEmitContext& emitCtxt, gpm::TripleList triples, size_t index, llvm::DenseSet<mlir::Value>& joinedMultiMaps) const {
+   mlir::Value lowerTerm(mlir::Location loc, mlir::Value stream, mlir::Attribute term, Member nodeMember, tuples::ColumnRefAttr edgeRef, std::string graph, gpm::TriplePatternOp triple, TripleEmitContext& emitCtxt, llvm::DenseSet<mlir::Value>& joinedMultiMaps) const {
       auto ctxt = rewriter.getContext();
       auto& memberManager = ctxt->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
-      const std::string& joinStrategy = (*triples)[index].joinStrategy;
+      auto joinStrategy = triple.getJoinStrategy();
       if (auto constTerm = mlir::dyn_cast<gpm::IdentifierTermAttr>(term)) {
          auto [def, ref] = createColumn(memberManager.getType(nodeMember), "nodes", "id");
          auto ident = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, constTerm.getIdent());
@@ -732,13 +718,13 @@ class TriplePatternEmitter {
             if (joinStrategy != "hash") {
                auto unwrapped = unwrapNullableBinding(loc, stream, target.def);
                stream = filterMatchingIdentifiers(loc, unwrapped.stream, unwrapped.ref, nodeRefColumnRef, subop::FilterSemantic::all_true);
-            } 
+            }
             else {
                auto candidateNodeRefType = mlir::cast<gsubop::NodeRefType>(memberManager.getType(nodeMember));
                auto idMember = candidateNodeRefType.getNodeMembers().getMembers()[0];
                auto [candidateIdDef, candidateIdRef] = createColumn(memberManager.getType(idMember), "hj", "candidate");
                stream = rewriter.create<subop::GatherOp>(loc, stream, nodeRefColumnRef, createColumnDefMemberMappingAttr(ctxt, {{idMember, candidateIdDef}}));
-               auto& graphData = emitCtxt.graphs[(*triples)[index].graphRef.getName()];
+               auto& graphData = emitCtxt.graphs[triple.getGraphRef().getName()];
                stream = probeOrFilter(loc, stream, candidateIdRef, target, columnManager.createRef(graphData.nodeSetColumn), graphData.nodeSetColumn->type, joinedMultiMaps);
             }
          }
@@ -747,35 +733,35 @@ class TriplePatternEmitter {
             auto def = createDef(columnManager, ref.getName().getRootReference().str(), ref.getName().getLeafReference().str(), memberManager.getType(nodeMember), false);
             auto& binding = emitCtxt.bindings[ref.getName()];
             binding.def = def;
-            binding.triples = triples;
-            binding.originIndex = index;
+            binding.originTriple = triple.getOperation();
             stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(ctxt, {{nodeMember, def}}));
          }
       }
       else if (auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(term)) {
-         if (emitCtxt.localIdents.count(bnode.getLocalId()) > 0) {
+         auto name = resolveBindingName(term, triple);
+         bool alreadyBound = name && emitCtxt.bindings.count(*name) > 0;
+         if (alreadyBound) {
             auto [nodeRefColumnDef, nodeRefColumnRef] = createColumn(memberManager.getType(nodeMember), "nodes", "ref");
             stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(ctxt, {{nodeMember, nodeRefColumnDef}}));
-            auto& target = emitCtxt.localIdents[bnode.getLocalId()];
+            auto& target = emitCtxt.bindings[*name];
             if (joinStrategy != "hash") {
                auto bindingRef = columnManager.createRef(target.def.getColumnPtr().get());
                stream = filterMatchingIdentifiers(loc, stream, bindingRef, nodeRefColumnRef, subop::FilterSemantic::all_true);
-            } 
+            }
             else {
                auto candidateNodeRefType = mlir::cast<gsubop::NodeRefType>(memberManager.getType(nodeMember));
                auto idMember = candidateNodeRefType.getNodeMembers().getMembers()[0];
                auto [candidateIdDef, candidateIdRef] = createColumn(memberManager.getType(idMember), "hj", "candidate");
                stream = rewriter.create<subop::GatherOp>(loc, stream, nodeRefColumnRef, createColumnDefMemberMappingAttr(ctxt, {{idMember, candidateIdDef}}));
-               auto& graphData = emitCtxt.graphs[(*triples)[index].graphRef.getName()];
+               auto& graphData = emitCtxt.graphs[triple.getGraphRef().getName()];
                stream = probeOrFilter(loc, stream, candidateIdRef, target, columnManager.createRef(graphData.nodeSetColumn), graphData.nodeSetColumn->type, joinedMultiMaps);
             }
          }
          else {
-            auto def = createDef(columnManager, "bnode", bnode.localId(), memberManager.getType(nodeMember), true);
-            auto& binding = emitCtxt.localIdents[bnode.getLocalId()];
+            auto def = createDef(columnManager, name->getRootReference().str(), name->getLeafReference().str(), memberManager.getType(nodeMember), false);
+            auto& binding = emitCtxt.bindings[*name];
             binding.def = def;
-            binding.triples = triples;
-            binding.originIndex = index;
+            binding.originTriple = triple.getOperation();
             stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(ctxt, {{nodeMember, def}}));
          }
       }
@@ -783,46 +769,19 @@ class TriplePatternEmitter {
    }
 };
 
-static mlir::FailureOr<mlir::Value> lowerBasicGraphPatternBody(gpm::BasicGraphPatternOp basicGraphPatternOp, mlir::Value stream, NamedGraphMapping& graphs, VariableBinding& bindings, const llvm::DenseSet<mlir::SymbolRefAttr>& probedVariableNames, TriplePatternEmitter& emitter) {
-   auto triples = basicGraphPatternOp.getTripleList();
-   llvm::DenseSet<mlir::SymbolRefAttr> unusedVars;
-   llvm::DenseSet<mlir::StringRef> probedBNodeIds;
-   collectProbedNames(triples, unusedVars, &probedBNodeIds);
-   TripleEmitContext emitCtxt{graphs, bindings, LocalIdentifierMapping(), probedVariableNames, std::move(probedBNodeIds)};
-   auto loc = basicGraphPatternOp->getLoc();
-   size_t tripleIndex = 0;
-   for (auto& op : basicGraphPatternOp.getPattern().front().without_terminator()) {
-      if (mlir::isa<gpm::TriplePatternOp>(op)) {
-         stream = emitter.lowerTriple(loc, stream, triples, tripleIndex++, emitCtxt);
-      } 
-      else if (auto subBgp = mlir::dyn_cast<gpm::BasicGraphPatternOp>(&op)) {
-         auto lowered = lowerBasicGraphPatternBody(subBgp, stream, graphs, bindings, probedVariableNames, emitter);
-         if (failed(lowered)) return failure();
-         stream = *lowered;
-      } 
-      else {
-         op.emitOpError("lowering of this graph-pattern operator nested inside a basic graph pattern is not supported");
-         return failure();
-      }
-   }
-   return stream;
-}
-
-class BasicGraphPatternLowering : public OpConversionPattern<gpm::BasicGraphPatternOp> {
+class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
    NamedGraphMapping& graphs;
    VariableBinding& bindings;
-   const llvm::DenseSet<mlir::SymbolRefAttr>& probedVariableNames;
+   const llvm::DenseSet<mlir::SymbolRefAttr>& probedNames;
    public:
-   BasicGraphPatternLowering(TypeConverter& typeConverter, MLIRContext* context, NamedGraphMapping& graphs, VariableBinding& bindings, const llvm::DenseSet<mlir::SymbolRefAttr>& probedVariableNames)
-      : OpConversionPattern<gpm::BasicGraphPatternOp>(typeConverter, context), graphs(graphs), bindings(bindings), probedVariableNames(probedVariableNames) {}
-   LogicalResult matchAndRewrite(gpm::BasicGraphPatternOp basicGraphPatternOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
-      if (mlir::isa_and_nonnull<gpm::BasicGraphPatternOp>(basicGraphPatternOp->getParentOp()))
-         return failure();
-      rewriter.setInsertionPoint(basicGraphPatternOp);
+   TriplePatternLowering(TypeConverter& typeConverter, MLIRContext* context, NamedGraphMapping& graphs, VariableBinding& bindings, const llvm::DenseSet<mlir::SymbolRefAttr>& probedNames)
+      : OpConversionPattern<gpm::TriplePatternOp>(typeConverter, context), graphs(graphs), bindings(bindings), probedNames(probedNames) {}
+   LogicalResult matchAndRewrite(gpm::TriplePatternOp triple, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      rewriter.setInsertionPoint(triple);
+      TripleEmitContext emitCtxt{graphs, bindings, probedNames};
       TriplePatternEmitter emitter(rewriter);
-      auto lowered = lowerBasicGraphPatternBody(basicGraphPatternOp, adaptor.getRel(), graphs, bindings, probedVariableNames, emitter);
-      if (failed(lowered)) return failure();
-      rewriter.replaceOp(basicGraphPatternOp, *lowered);
+      mlir::Value result = emitter.lowerTriple(triple->getLoc(), adaptor.getRel(), triple, emitCtxt);
+      rewriter.replaceOp(triple, result);
       return success();
    }
 };
@@ -861,13 +820,11 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    VariableBinding bindings;
    NamedGraphMapping graphs;
 
-   llvm::DenseSet<mlir::SymbolRefAttr> probedVariableNames;
-   module.walk([&](gpm::BasicGraphPatternOp basicGraphPatternOp) {
-      collectProbedNames(basicGraphPatternOp.getTripleList(), probedVariableNames, nullptr);
-   });
+   llvm::DenseSet<mlir::SymbolRefAttr> probedNames;
+   collectProbedNames(module, probedNames);
 
    patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs);
-   patterns.insert<BasicGraphPatternLowering>(typeConverter, ctxt, graphs, bindings, probedVariableNames);
+   patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs, bindings, probedNames);
 
    if (failed(applyFullConversion(module, target, std::move(patterns))))
       signalPassFailure();
