@@ -218,15 +218,15 @@ static AnchorSelection selectAnchor(gpm::TriplePatternOp triple, const IdentMapp
    return {anchorIsSubject, anchorIsObject, restart};
 }
 static void collectProbedNames(mlir::ModuleOp module, llvm::DenseSet<mlir::SymbolRefAttr>& probedNames) {
-   llvm::DenseSet<mlir::SymbolRefAttr> seen;
+   llvm::DenseSet<mlir::SymbolRefAttr> identMapping;
    module.walk([&](gpm::TriplePatternOp triple) {
       auto markProbed = [&](mlir::Attribute term) {
-         if (!reusesExistingBinding(term, triple, seen)) 
+         if (!reusesExistingBinding(term, triple, identMapping)) 
             return;
          if (auto name = resolveBindingName(term, triple)) 
             probedNames.insert(*name);
       };
-      auto sel = selectAnchor(triple, seen);
+      auto sel = selectAnchor(triple, identMapping);
       markProbed(triple.getP());
       if (sel.anchorIsSubject) {
          markProbed(triple.getO());
@@ -240,7 +240,7 @@ static void collectProbedNames(mlir::ModuleOp module, llvm::DenseSet<mlir::Symbo
       }
       for (mlir::Attribute term : {triple.getS(), triple.getP(), triple.getO()}) {
          if (mlir::isa<gpm::BNodeTermAttr>(term)) {
-            if (auto name = resolveBindingName(term, triple)) seen.insert(*name);
+            if (auto name = resolveBindingName(term, triple)) identMapping.insert(*name);
          }
       }
    });
