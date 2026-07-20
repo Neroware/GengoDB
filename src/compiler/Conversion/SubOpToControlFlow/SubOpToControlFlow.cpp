@@ -5361,6 +5361,60 @@ class GraphRefToStringOpLowering : public SubOpTupleStreamConsumerConversionPatt
    }
 };
 
+static bool isNullableGraphRefType(mlir::Type refType) {
+   auto nullable = mlir::dyn_cast<db::NullableType>(refType);
+   if (!nullable) return false;
+   auto inner = nullable.getType();
+   return mlir::isa<gsubop::NodeRefType>(inner) || mlir::isa<gsubop::EdgeRefType>(inner);
+}
+class WrapNullableRefOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::WrapNullableRefOp> {
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::WrapNullableRefOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::WrapNullableRefOp op) const override {
+      return isNullableGraphRefType(op.getNullableRef().getColumn().type) ? success() : failure();
+   }
+   void rewrite(gsubop::WrapNullableRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      mapping.define(op.getNullableRef(), mapping.resolve(op, op.getRef()));
+      rewriter.replaceTupleStream(op, mapping);
+   }
+};
+class NullRefOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::NullRefOp> {
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::NullRefOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::NullRefOp op) const override {
+      return isNullableGraphRefType(op.getNullableRef().getColumn().type) ? success() : failure();
+   }
+   void rewrite(gsubop::NullRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto loc = op.getLoc();
+      auto nullableType = mlir::cast<db::NullableType>(op.getNullableRef().getColumn().type);
+      auto convertedType = typeConverter->convertType(nullableType.getType());
+      mapping.define(op.getNullableRef(), rewriter.create<util::InvalidRefOp>(loc, convertedType));
+      rewriter.replaceTupleStream(op, mapping);
+   }
+};
+class IsNullRefOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::IsNullRefOp> {
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::IsNullRefOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::IsNullRefOp op) const override {
+      return isNullableGraphRefType(op.getRef().getColumn().type) ? success() : failure();
+   }
+   void rewrite(gsubop::IsNullRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto loc = op.getLoc();
+      auto ref = mapping.resolve(op, op.getRef());
+      mlir::Value valid = rewriter.create<util::IsRefValidOp>(loc, rewriter.getI1Type(), ref);
+      mlir::Value isNull = rewriter.create<mlir::arith::XOrIOp>(loc, valid, rewriter.create<mlir::arith::ConstantIntOp>(loc, 1, rewriter.getI1Type()));
+      mapping.define(op.getIsNull(), isNull);
+      rewriter.replaceTupleStream(op, mapping);
+   }
+};
+class UnwrapNullableRefOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::UnwrapNullableRefOp> {
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::UnwrapNullableRefOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::UnwrapNullableRefOp op) const override {
+      return isNullableGraphRefType(op.getRef().getColumn().type) ? success() : failure();
+   }
+   void rewrite(gsubop::UnwrapNullableRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      mapping.define(op.getUnwrapped(), mapping.resolve(op, op.getRef()));
+      rewriter.replaceTupleStream(op, mapping);
+   }
+};
+
 class TypedPropertyRefGatherOpLowering : public SubOpTupleStreamConsumerConversionPattern<subop::GatherOp, 2> {
    public:
    using SubOpTupleStreamConsumerConversionPattern<subop::GatherOp, 2>::SubOpTupleStreamConsumerConversionPattern;
@@ -5446,6 +5500,10 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    patterns.insertPattern<FilterByIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<CastPropertyRefLowering>(typeConverter, ctxt);
    patterns.insertPattern<GraphRefToStringOpLowering>(typeConverter, ctxt);
+   patterns.insertPattern<WrapNullableRefOpLowering>(typeConverter, ctxt);
+   patterns.insertPattern<NullRefOpLowering>(typeConverter, ctxt);
+   patterns.insertPattern<IsNullRefOpLowering>(typeConverter, ctxt);
+   patterns.insertPattern<UnwrapNullableRefOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<TypedPropertyRefGatherOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<TypedPropertyRefScatterOpLowering>(typeConverter, ctxt);
 

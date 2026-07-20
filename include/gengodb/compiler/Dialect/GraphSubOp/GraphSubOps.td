@@ -191,4 +191,48 @@ def GraphRefToStringOp : GraphSubOp_Op<"ref_to_str", [Pure,SubOperator]> {
     }];
 }
 
+//===----------------------------------------------------------------------===//
+// Nullable graph refs
+//===----------------------------------------------------------------------===//
+
+def WrapNullableRefOp : GraphSubOp_Op<"wrap_nullable_ref", [Pure,SubOperator]> {
+    let summary = "wrap a graph ref column as a non-null nullable value";
+    let arguments = (ins TupleStream : $stream, ColumnRefAttr : $ref, ColumnDefAttr : $nullableRef);
+    let results = (outs TupleStream : $res);
+    let assemblyFormat = [{  $stream custom<CustRef>($ref) `->` custom<CustDef>($nullableRef) attr-dict }];
+    let extraClassDeclaration = [{
+        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
+    }];
+}
+
+def NullRefOp : GraphSubOp_Op<"null_ref", [Pure,SubOperator]> {
+    let summary = "produce a null nullable-graph-ref column for every incoming row";
+    let arguments = (ins TupleStream : $stream, ColumnDefAttr : $nullableRef);
+    let results = (outs TupleStream : $res);
+    let assemblyFormat = [{  $stream `->` custom<CustDef>($nullableRef) attr-dict }];
+    let extraClassDeclaration = [{
+        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
+    }];
+}
+
+def IsNullRefOp : GraphSubOp_Op<"is_null_ref", [Pure,SubOperator]> {
+    let summary = "check whether a nullable graph ref column is null";
+    let arguments = (ins TupleStream : $stream, ColumnRefAttr : $ref, ColumnDefAttr : $isNull);
+    let results = (outs TupleStream : $res);
+    let assemblyFormat = [{  $stream custom<CustRef>($ref) `->` custom<CustDef>($isNull) attr-dict }];
+    let extraClassDeclaration = [{
+        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
+    }];
+}
+
+def UnwrapNullableRefOp : GraphSubOp_Op<"unwrap_nullable_ref", [Pure,SubOperator]> {
+    let summary = "unwrap a nullable graph ref column - undefined if the row is null";
+    let arguments = (ins TupleStream : $stream, ColumnRefAttr : $ref, ColumnDefAttr : $unwrapped);
+    let results = (outs TupleStream : $res);
+    let assemblyFormat = [{  $stream custom<CustRef>($ref) `->` custom<CustDef>($unwrapped) attr-dict }];
+    let extraClassDeclaration = [{
+        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
+    }];
+}
+
 #endif // GENGODB_DIALECT_GRAPHSUBOP_OPS
