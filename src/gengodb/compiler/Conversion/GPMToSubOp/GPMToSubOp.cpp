@@ -365,6 +365,25 @@ class TriplePatternEmitter {
       return stream;
    }
    private:
+   struct UnwrappedBinding {
+      mlir::Value stream;
+      tuples::ColumnRefAttr ref;
+      mlir::Type type;
+   };
+   private:
+   UnwrappedBinding unwrapNullableBinding(mlir::Location loc, mlir::Value stream, tuples::ColumnDefAttr bindingDef) const {
+      auto rawType = bindingDef.getColumn().type;
+      auto bindingRef = columnManager.createRef(bindingDef.getColumnPtr().get());
+      auto nullableType = mlir::dyn_cast<db::NullableType>(rawType);
+      if (!nullableType) return {stream, bindingRef, rawType};
+      auto innerType = nullableType.getType();
+      auto [isNullDef, isNullRef] = createColumn(rewriter.getI1Type(), "opt", "isnull");
+      stream = rewriter.create<gsubop::IsNullRefOp>(loc, stream, bindingRef, isNullDef);
+      auto [valDef, valRef] = createColumn(innerType, "opt", "val");
+      stream = rewriter.create<gsubop::UnwrapNullableRefOp>(loc, stream, bindingRef, valDef);
+      stream = rewriter.create<subop::FilterOp>(loc, stream, subop::FilterSemantic::none_true, rewriter.getArrayAttr({isNullRef}));
+      return {stream, valRef, innerType};
+   }
    mlir::Value resolveAnchorNode(mlir::Location loc, mlir::Value stream, mlir::Attribute term, tuples::ColumnRefAttr graphRefAttr, gsubop::NodeRefType& nodeRefType, tuples::ColumnRefAttr& nodeRef, TripleEmitContext& emitCtxt) const {
       auto graphRef = graphRefAttr.getName();
       auto [group, graph] = splitGraphRef(graphRefAttr);
@@ -392,9 +411,10 @@ class TriplePatternEmitter {
       }
       if (auto varTermAttr = mlir::dyn_cast_or_null<gpm::VariableTermAttr>(term)) {
          auto bindingDef = emitCtxt.bindings[varTermAttr.getBindingReference().getName()].def;
-         nodeRef = columnManager.createRef(bindingDef.getColumnPtr().get());
-         nodeRefType = mlir::cast<gsubop::NodeRefType>(bindingDef.getColumn().type);
-         return stream;
+         auto unwrapped = unwrapNullableBinding(loc, stream, bindingDef);
+         nodeRef = unwrapped.ref;
+         nodeRefType = mlir::cast<gsubop::NodeRefType>(unwrapped.type);
+         return unwrapped.stream;
       }
       if (auto bnodeTermAttr = mlir::dyn_cast_or_null<gpm::BNodeTermAttr>(term)) {
          auto bindingDef = emitCtxt.localIdents[bnodeTermAttr.getLocalId()].def;
@@ -642,8 +662,8 @@ class TriplePatternEmitter {
       else if (auto varPred = mlir::dyn_cast<gpm::VariableTermAttr>(p)) {
          if (varPred.hasBinding() && (*triples)[index].joinStrategy != "hash") {
             auto& target = emitCtxt.bindings[varPred.getBindingReference().getName()];
-            auto bindingRef = columnManager.createRef(target.def.getColumnPtr().get());
-            return filterMatchingIdentifiers(loc, stream, bindingRef, edgeRef, subop::FilterSemantic::all_true);
+            auto unwrapped =  unwrapNullableBinding(loc, stream, target.def);
+            return filterMatchingIdentifiers(loc, unwrapped.stream, unwrapped.ref, edgeRef, subop::FilterSemantic::all_true);
          }
          auto [identColumnDef, identColumnRef] = createColumn(gsubop::IdentifierType::get(ctxt), "ident", "map");
          stream = rewriter.create<gsubop::GetIdentifierOp>(loc, stream, edgeRef, identColumnDef);
@@ -705,8 +725,8 @@ class TriplePatternEmitter {
             stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(ctxt, {{nodeMember, nodeRefColumnDef}}));
             auto& target = emitCtxt.bindings[varTerm.getBindingReference().getName()];
             if (joinStrategy != "hash") {
-               auto bindingRef = columnManager.createRef(target.def.getColumnPtr().get());
-               stream = filterMatchingIdentifiers(loc, stream, bindingRef, nodeRefColumnRef, subop::FilterSemantic::all_true);
+               auto unwrapped = unwrapNullableBinding(loc, stream, target.def);
+               stream = filterMatchingIdentifiers(loc, unwrapped.stream, unwrapped.ref, nodeRefColumnRef, subop::FilterSemantic::all_true);
             } 
             else {
                auto candidateNodeRefType = mlir::cast<gsubop::NodeRefType>(memberManager.getType(nodeMember));
