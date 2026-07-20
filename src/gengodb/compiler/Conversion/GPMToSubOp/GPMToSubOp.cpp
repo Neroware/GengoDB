@@ -221,8 +221,7 @@ static AnchorSelection selectAnchor(const TripleData& triple, const BNodeSet& se
    }
    return {anchorIsSubject, anchorIsObject, restart};
 }
-static TripleList extractTriples(gpm::BasicGraphPatternOp basicGraphPatternOp) {
-   auto& block = basicGraphPatternOp.getPattern().front();
+static TripleList extractTriples(mlir::Block& block) {
    TripleList triples = std::make_shared<llvm::SmallVector<TripleData>>();
    for (auto& op : block.without_terminator()) {
       auto triple = mlir::dyn_cast<gpm::TriplePatternOp>(&op);
@@ -760,7 +759,7 @@ class TriplePatternEmitter {
 };
 
 static mlir::FailureOr<mlir::Value> lowerBasicGraphPatternBody(gpm::BasicGraphPatternOp basicGraphPatternOp, mlir::Value stream, NamedGraphMapping& graphs, VariableBinding& bindings, const llvm::DenseSet<mlir::SymbolRefAttr>& probedVariableNames, TriplePatternEmitter& emitter) {
-   TripleList triples = extractTriples(basicGraphPatternOp);
+   TripleList triples = extractTriples(basicGraphPatternOp.getPattern().front());
    llvm::DenseSet<mlir::SymbolRefAttr> unusedVars;
    llvm::DenseSet<mlir::StringRef> probedBNodeIds;
    collectProbedNames(triples, unusedVars, &probedBNodeIds);
@@ -839,7 +838,7 @@ void GPMToSubOpLoweringPass::runOnOperation() {
 
    llvm::DenseSet<mlir::SymbolRefAttr> probedVariableNames;
    module.walk([&](gpm::BasicGraphPatternOp basicGraphPatternOp) {
-      collectProbedNames(extractTriples(basicGraphPatternOp), probedVariableNames, nullptr);
+      collectProbedNames(extractTriples(basicGraphPatternOp.getPattern().front()), probedVariableNames, nullptr);
    });
 
    patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs);
