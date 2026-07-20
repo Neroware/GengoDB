@@ -1401,7 +1401,11 @@ class GenerateLowering : public SubOpConversionPattern<subop::GenerateOp> {
          mlir::OpBuilder::InsertionGuard guard(rewriter);
          rewriter.setInsertionPointAfter(emitOp);
          ColumnMapping mapping;
-         mapping.define(generateOp.getGeneratedColumns(), emitOp.getValues());
+         llvm::SmallVector<mlir::Value> mappedValues;
+         for (auto v : emitOp.getValues()) {
+            mappedValues.push_back(rewriter.getMapped(v));
+         }
+         mapping.define(generateOp.getGeneratedColumns(), mappedValues);
          mlir::Value newInFlight = rewriter.createInFlight(mapping);
          streams.push_back(newInFlight);
          rewriter.eraseOp(emitOp);
@@ -1444,7 +1448,8 @@ class InFlightLowering : public SubOpConversionPattern<subop::InFlightOp> {
    using SubOpConversionPattern<subop::InFlightOp>::SubOpConversionPattern;
 
    LogicalResult matchAndRewrite(subop::InFlightOp inFlightOp, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
-      ColumnMapping mapping(inFlightOp);
+      ColumnMapping mapping;
+      mapping.define(inFlightOp.getColumns(), adaptor.getValues());
       rewriter.replaceTupleStream(inFlightOp, mapping);
       return success();
    }
@@ -5209,17 +5214,6 @@ class CreateIdentifierLowering : public SubOpConversionPattern<gsubop::CreateIde
    }
 };
 
-class ScanIdentifierLowering : public SubOpConversionPattern<gsubop::ScanIdentifierOp> {
-   using SubOpConversionPattern<gsubop::ScanIdentifierOp>::SubOpConversionPattern;
-   LogicalResult matchAndRewrite(gsubop::ScanIdentifierOp scanOp, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
-      if (!mlir::isa<gsubop::IdentifierType>(scanOp.getIdent().getType())) return failure();
-      ColumnMapping mapping;
-      mapping.define(scanOp.getRef(), adaptor.getIdent());
-      rewriter.replaceTupleStream(scanOp, mapping);
-      return success();
-   }
-};
-
 class FilterByIdentifierLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::FilterByIdentifierOp> {
    using SubOpTupleStreamConsumerConversionPattern<gsubop::FilterByIdentifierOp>::SubOpTupleStreamConsumerConversionPattern;
    LogicalResult match(gsubop::FilterByIdentifierOp filterOp) const override {
@@ -5495,7 +5489,6 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    //PropertyGraph
    patterns.insertPattern<ScanPropertySetLowering>(typeConverter, ctxt);
    patterns.insertPattern<CreateIdentifierLowering>(typeConverter, ctxt);
-   patterns.insertPattern<ScanIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<GetIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<FilterByIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<CastPropertyRefLowering>(typeConverter, ctxt);

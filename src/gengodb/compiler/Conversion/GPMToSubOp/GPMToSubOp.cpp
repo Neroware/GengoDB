@@ -262,6 +262,34 @@ static void collectProbedNames(TripleList triples, llvm::DenseSet<mlir::SymbolRe
       }
    }
 }
+template <typename BuildIdentFn>
+static mlir::Value generateTupleStream(ConversionPatternRewriter& rewriter, mlir::Location loc, tuples::ColumnDefAttr def, BuildIdentFn buildIdent) {
+   auto ctxt = rewriter.getContext();
+   auto generateOp = rewriter.create<subop::GenerateOp>(loc, std::vector<mlir::Type>{
+      tuples::TupleStreamType::get(ctxt), tuples::TupleStreamType::get(ctxt)}, rewriter.getArrayAttr({def}));
+   auto* generateBlock = new Block;
+   mlir::OpBuilder::InsertionGuard guard(rewriter);
+   generateOp.getRegion().push_back(generateBlock);
+   rewriter.setInsertionPointToStart(generateBlock);
+   mlir::Value identValue = buildIdent(rewriter);
+   rewriter.create<subop::GenerateEmitOp>(loc, mlir::ValueRange{identValue});
+   rewriter.create<tuples::ReturnOp>(loc);
+   return generateOp.getRes();
+}
+// static mlir::Value wrapTupleAsStream(ConversionPatternRewriter& rewriter, mlir::Location loc, mlir::Value tuple) {
+//    auto ctxt = rewriter.getContext();
+//    auto streamType = tuples::TupleStreamType::get(ctxt);
+//    auto generateOp = rewriter.create<subop::GenerateOp>(loc, mlir::TypeRange{streamType, streamType}, rewriter.getArrayAttr({}));
+//    Block* genBlock = new Block();
+//    generateOp.getRegion().push_back(genBlock);
+//    {
+//       mlir::OpBuilder::InsertionGuard guard(rewriter);
+//       rewriter.setInsertionPointToStart(genBlock);
+//       rewriter.create<subop::GenerateEmitOp>(loc, mlir::ValueRange{});
+//       rewriter.create<tuples::ReturnOp>(loc);
+//    }
+//    return rewriter.create<subop::CombineTupleOp>(loc, generateOp.getRes(), tuple);
+// }
 
 struct BindingRef {
    bool isVar;
@@ -390,7 +418,6 @@ class TriplePatternEmitter {
       if (auto identTermAttr = mlir::dyn_cast_or_null<gpm::IdentifierTermAttr>(term)) {
          auto& graphData = emitCtxt.graphs[graphRef];
          auto nodesRef = columnManager.createRef(graphData.nodeSetColumn);
-         auto identState = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, identTermAttr.getIdent());
          auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({nodesRef}));
          auto* b = new Block();
          b->addArgument(tuples::TupleType::get(ctxt), loc);
@@ -400,7 +427,9 @@ class TriplePatternEmitter {
             mlir::OpBuilder::InsertionGuard guard(rewriter);
             rewriter.setInsertionPointToStart(b);
             auto [identDef, identRef] = createColumn(gsubop::IdentifierType::get(ctxt), "idents", "lookup");
-            auto scan = rewriter.create<gsubop::ScanIdentifierOp>(loc, identState, identDef);
+            auto scan = generateTupleStream(rewriter, loc, identDef, [&](mlir::OpBuilder& b) -> mlir::Value {
+               return b.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, identTermAttr.getIdent());
+            });
             nodeRefType = createNodeRefType(ctxt, group, graph);
             auto [nodeDef, resolvedRef] = createColumn(nodeRefType, "nodes", "ref");
             mlir::Value lookup = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), scan, nodeSetArg, rewriter.getArrayAttr({identRef}), nodeDef);
@@ -563,9 +592,9 @@ class TriplePatternEmitter {
       {
          mlir::OpBuilder::InsertionGuard guard(rewriter);
          rewriter.setInsertionPointToStart(mapBlock);
-         auto leftI32 = rewriter.create<UnrealizedConversionCastOp>(loc, rewriter.getI32Type(), left).getResult(0);
-         auto rightI32 = rewriter.create<UnrealizedConversionCastOp>(loc, rewriter.getI32Type(), right).getResult(0);
-         mlir::Value val = rewriter.create<arith::CmpIOp>(loc, rewriter.getI1Type(), mlir::arith::CmpIPredicate::eq, leftI32, rightI32);
+         // auto leftI32 = rewriter.create<UnrealizedConversionCastOp>(loc, rewriter.getI32Type(), left).getResult(0);
+         // auto rightI32 = rewriter.create<UnrealizedConversionCastOp>(loc, rewriter.getI32Type(), right).getResult(0);
+         mlir::Value val = rewriter.create<arith::CmpIOp>(loc, rewriter.getI1Type(), mlir::arith::CmpIPredicate::eq, left, right);
          rewriter.create<tuples::ReturnOp>(loc, val);
       }
       stream = mapOp.getResult();
@@ -681,7 +710,9 @@ class TriplePatternEmitter {
             mlir::OpBuilder::InsertionGuard guard(rewriter);
             rewriter.setInsertionPointToStart(b);
             auto [scanIdentDef, scanIdentRef] = createColumn(gsubop::IdentifierType::get(ctxt), "ident", "scan");
-            mlir::Value inner = rewriter.create<gsubop::ScanIdentifierOp>(loc, identArg, scanIdentDef);
+            mlir::Value inner = generateTupleStream(rewriter, loc, scanIdentDef, [&](mlir::OpBuilder&) -> mlir::Value {
+               return identArg;
+            });
             if (varPred.hasBinding()) {
                auto [predNodeDef, predNodeRefLocal] = createColumn(nodeRefType, "hj", "prednode");
                inner = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), inner, nodeSetArg, rewriter.getArrayAttr({scanIdentRef}), predNodeDef);

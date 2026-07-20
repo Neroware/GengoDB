@@ -155,18 +155,6 @@ def GetIdentifierOp : GraphSubOp_Op<"get_identifier", [Pure,SubOperator,Referenc
     }];
 }
 
-def ScanIdentifierOp : GraphSubOp_Op<"scan_identifier", [Pure,SubOperator,ReferenceProducer]> {
-    let summary = "scan identifier";
-    let arguments = (ins AnyType : $ident, ColumnDefAttr: $ref);
-    let results = (outs TupleStream : $res);
-    let assemblyFormat = [{ $ident `:` type($ident) custom<CustDef>($ref) attr-dict }];
-    let extraClassDeclaration = [{
-        lingodb::compiler::dialect::tuples::ColumnDefAttr getProducedReference(){ return getRef(); }
-        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
-        StateMembersAttr getMembers();
-    }];
-}
-
 //===----------------------------------------------------------------------===//
 // Property ref and output string creation
 //===----------------------------------------------------------------------===//
@@ -206,7 +194,7 @@ def WrapNullableRefOp : GraphSubOp_Op<"wrap_nullable_ref", [Pure,SubOperator]> {
 }
 
 def NullRefOp : GraphSubOp_Op<"null_ref", [Pure,SubOperator]> {
-    let summary = "produce a null nullable-graph-ref column for every incoming row";
+    let summary = "produce a null nullable-graph-ref column";
     let arguments = (ins TupleStream : $stream, ColumnDefAttr : $nullableRef);
     let results = (outs TupleStream : $res);
     let assemblyFormat = [{  $stream `->` custom<CustDef>($nullableRef) attr-dict }];
@@ -226,7 +214,7 @@ def IsNullRefOp : GraphSubOp_Op<"is_null_ref", [Pure,SubOperator]> {
 }
 
 def UnwrapNullableRefOp : GraphSubOp_Op<"unwrap_nullable_ref", [Pure,SubOperator]> {
-    let summary = "unwrap a nullable graph ref column - undefined if the row is null";
+    let summary = "unwrap a nullable graph ref column";
     let arguments = (ins TupleStream : $stream, ColumnRefAttr : $ref, ColumnDefAttr : $unwrapped);
     let results = (outs TupleStream : $res);
     let assemblyFormat = [{  $stream custom<CustRef>($ref) `->` custom<CustDef>($unwrapped) attr-dict }];
