@@ -102,6 +102,17 @@ mlir::LogicalResult verifyGraphPatternBody(mlir::Operation* op) {
    return mlir::success();
 }
 
+TripleList getTripleList(mlir::Operation* op) {
+    auto patternOp = mlir::cast<GraphPatternOp>(op);
+    TripleList triples = std::make_shared<llvm::SmallVector<TripleData>>();
+    for (auto& op : patternOp.getPattern().front().without_terminator()) {
+        auto triple = mlir::dyn_cast<gpm::TriplePatternOp>(&op);
+        if (!triple) continue;
+        triples->push_back(TripleData{triple.getGraphRef(), triple.getS(), triple.getP(), triple.getO(), triple.getJoinStrategy()});
+    }
+    return triples;
+}
+
 } // namespace gengodb::compiler::dialect::gpm::detail
 
 namespace gengodb::compiler::dialect {

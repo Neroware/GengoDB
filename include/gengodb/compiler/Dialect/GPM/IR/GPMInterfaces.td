@@ -51,6 +51,12 @@ InterfaceMethod<
     return gengodb::compiler::dialect::gpm::detail::getPatternTriples(this->getOperation());
 }]
 >,
+InterfaceMethod<
+    "return a list containing the semantic data of all triple patterns directly nested in the pattern",
+    "gengodb::compiler::dialect::gpm::TripleList", "getTripleList",(ins ),"", /*defaultImplementation=*/[{
+    return gengodb::compiler::dialect::gpm::detail::getTripleList(this->getOperation());
+}]
+>,
 ];
 }
 
