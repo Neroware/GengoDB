@@ -17,7 +17,7 @@
 set -u
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." >/dev/null 2>&1 && pwd)"
 
 SNIPPETS_DIR="${1:-$REPO_ROOT/test/gengodb/gpm/snippets/bgp}"
 TTL_DIR="${2:-$REPO_ROOT/resources/ttl}"
