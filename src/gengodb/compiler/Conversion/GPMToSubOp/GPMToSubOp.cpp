@@ -521,7 +521,7 @@ void gpm::createLowerGPMToSubOpPipeline(mlir::OpPassManager& pm) {
    pm.addPass(gpm::createUnnestGraphPatternsPass());
    pm.addPass(gpm::createCreateRelAlgInFlightsPass());
    pm.addPass(gpm::createLowerToSubOpPass());
-   //pm.addPass(gpm::createPrepareRelAlgLoweringPass());
+   pm.addPass(gpm::createPrepareRelAlgLoweringPass());
 }
 void gpm::registerGPMToSubOpConversionPasses() {
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {

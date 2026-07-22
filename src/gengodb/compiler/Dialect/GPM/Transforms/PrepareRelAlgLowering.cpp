@@ -23,80 +23,75 @@ static subop::ColumnDefMemberMappingAttr createColumnDefMemberMappingAttr(mlir::
    return subop::ColumnDefMemberMappingAttr::get(context, pairs);
 }
 
-class PrepareHashJoins : public mlir::RewritePattern {
+class PrepareHashJoins : public mlir::OpRewritePattern<relalg::InnerJoinOp> {
     public:
-    PrepareHashJoins(mlir::MLIRContext* context)
-        : RewritePattern(relalg::InFlightOp::getOperationName(), 1, context) {}
-    mlir::LogicalResult matchAndRewrite(mlir::Operation* op, mlir::PatternRewriter& rewriter) const override {
-        auto userOp = *(op->getResult(0).getUsers().begin());
-        if (!mlir::isa<relalg::InnerJoinOp>(userOp)) 
-            return mlir::failure();
-        auto joinOp = mlir::cast<relalg::InnerJoinOp>(userOp);
+    using mlir::OpRewritePattern<relalg::InnerJoinOp>::OpRewritePattern;
+
+    static bool needsReduction(mlir::ArrayAttr hashAttr) {
+        if (!hashAttr) return false;
+        return llvm::any_of(hashAttr, [](mlir::Attribute attr) {
+            auto columnRef = mlir::dyn_cast_or_null<tuples::ColumnRefAttr>(attr);
+            return columnRef && mlir::isa<gsubop::NodeRefType>(columnRef.getColumn().type);
+        });
+    }
+    mlir::LogicalResult matchAndRewrite(relalg::InnerJoinOp joinOp, mlir::PatternRewriter& rewriter) const override {
         auto implAttr = joinOp->getAttrOfType<mlir::StringAttr>("impl");
         if (!implAttr || implAttr.getValue() != "hash") return mlir::failure();
-        bool leftSide = op->getResult(0) == joinOp.getLeft();
-        bool rightSide = !leftSide;
-        auto pred = [](const mlir::Attribute& attr) { 
-            if (auto columnRef = mlir::dyn_cast_or_null<tuples::ColumnRefAttr>(attr)) {
-                return !mlir::isa<gsubop::NodeRefType>(columnRef.getColumn().type);
-            }
-            return true;
-        };
-        if (leftSide) {
-            if (auto leftHashAttr = joinOp->getAttrOfType<mlir::ArrayAttr>("leftHash")) {
-                if (std::all_of(leftHashAttr.begin(), leftHashAttr.end(), pred))
-                    return mlir::failure();
-            }
-        }
-       else if (rightSide) {
-            if (auto rightHashAttr = joinOp->getAttrOfType<mlir::ArrayAttr>("rightHash")) {
-                if (std::all_of(rightHashAttr.begin(), rightHashAttr.end(), pred))
-                    return mlir::failure();
-            }
-        }
+        auto leftHashAttr = joinOp->getAttrOfType<mlir::ArrayAttr>("leftHash");
+        auto rightHashAttr = joinOp->getAttrOfType<mlir::ArrayAttr>("rightHash");
+        bool leftNeeds = needsReduction(leftHashAttr);
+        bool rightNeeds = needsReduction(rightHashAttr);
+        if (!leftNeeds && !rightNeeds) return mlir::failure();
+
         auto ctxt = rewriter.getContext();
-        auto loc = op->getLoc();
+        auto loc = joinOp->getLoc();
         auto& colManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-        auto mapHashInputs = [&](mlir::Value stream, const mlir::ArrayAttr& hashSide, std::vector<mlir::Attribute>& refs) -> mlir::Value {
+        rewriter.setInsertionPoint(joinOp);
+        auto reduceHashInputs = [&](mlir::Value operand, mlir::ArrayAttr hashSide, std::vector<mlir::Attribute>& refs) -> mlir::Value {
+            mlir::Value stream = operand;
+            relalg::ColumnSet availableColumns;
+            if (auto originalOperator = mlir::dyn_cast_or_null<Operator>(operand.getDefiningOp())) {
+                relalg::AvailabilityCache cache;
+                availableColumns.insert(originalOperator.getAvailableColumns(cache));
+            }
+            bool reducedAny = false;
             for (const auto& attr : hashSide) {
-                if (!mlir::isa<tuples::ColumnRefAttr>(attr))
+                auto columnRef = mlir::dyn_cast_or_null<tuples::ColumnRefAttr>(attr);
+                auto nodeRefType = columnRef ? mlir::dyn_cast_or_null<gsubop::NodeRefType>(columnRef.getColumn().type) : nullptr;
+                if (!nodeRefType) {
+                    refs.push_back(attr);
                     continue;
-                auto columnRef = mlir::cast<tuples::ColumnRefAttr>(attr);
-                if (!mlir::isa<gsubop::NodeRefType>(columnRef.getColumn().type))
-                    continue;
-                auto nodeRefType = mlir::dyn_cast_or_null<gsubop::NodeRefType>(columnRef.getColumn().type);
+                }
+                reducedAny = true;
                 auto nodeIdValDefAttr = colManager.createDef(colManager.getUniqueScope("hashjoin"), "var");
                 nodeIdValDefAttr.getColumn().type = mlir::IntegerType::get(ctxt, 32);
-                stream = rewriter.create<subop::GatherOp>(loc, stream, columnRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{nodeRefType.getNodeMembers().getMembers()[0], nodeIdValDefAttr}}));
-                refs.push_back(colManager.createRef(nodeIdValDefAttr.getColumnPtr().get()));
+                stream = rewriter.create<subop::GatherOp>(loc, stream, columnRef, createColumnDefMemberMappingAttr(ctxt, {{nodeRefType.getNodeMembers().getMembers()[0], nodeIdValDefAttr}}));
+                auto newRef = colManager.createRef(nodeIdValDefAttr.getColumnPtr().get());
+                refs.push_back(newRef);
+                availableColumns.insert(&newRef.getColumn());
+            }
+            if (reducedAny) {
+                stream = rewriter.create<relalg::InFlightOp>(loc, stream, availableColumns.asRefArrayAttr(ctxt));
             }
             return stream;
         };
-        mlir::IRMapping mapper, joinMapper;
-        std::vector<mlir::Attribute> refs;
-        mlir::Operation* newOp;
-        if (leftSide) {
-            auto leftHashAttr = joinOp->getAttrOfType<mlir::ArrayAttr>("leftHash");
-            mapper.map(op->getOperand(0), mapHashInputs(op->getOperand(0), leftHashAttr, refs));
-            newOp = rewriter.clone(*op, mapper);
-            joinMapper.map(op->getResult(0), newOp->getResult(0));
-        }
-        if (rightSide) {
-            auto rightHasAttr = joinOp->getAttrOfType<mlir::ArrayAttr>("rightHash");
-            mapper.map(op->getOperand(0), mapHashInputs(op->getOperand(0), rightHasAttr, refs));
-            newOp = rewriter.clone(*op, mapper);
-            joinMapper.map(op->getResult(0), newOp->getResult(0));
-        }
-        rewriter.setInsertionPoint(joinOp);
-        auto* newJoinOp = rewriter.clone(*joinOp, joinMapper);
-        if (leftSide) {
-            newJoinOp->setAttr("leftHash", mlir::ArrayAttr::get(ctxt, refs));
-        }
-        if (rightSide) {
-            newJoinOp->setAttr("rightHash", mlir::ArrayAttr::get(ctxt, refs));
-        }
-        rewriter.replaceOp(joinOp, newJoinOp);
-        rewriter.replaceOp(op, newOp);
+
+        mlir::Value newLeft = joinOp.getLeft();
+        mlir::Value newRight = joinOp.getRight();
+        std::vector<mlir::Attribute> newLeftHash, newRightHash;
+        if (leftNeeds) newLeft = reduceHashInputs(joinOp.getLeft(), leftHashAttr, newLeftHash);
+        if (rightNeeds) newRight = reduceHashInputs(joinOp.getRight(), rightHashAttr, newRightHash);
+
+        rewriter.modifyOpInPlace(joinOp, [&]() {
+            if (leftNeeds) {
+                joinOp.getLeftMutable().assign(newLeft);
+                joinOp->setAttr("leftHash", mlir::ArrayAttr::get(ctxt, newLeftHash));
+            }
+            if (rightNeeds) {
+                joinOp.getRightMutable().assign(newRight);
+                joinOp->setAttr("rightHash", mlir::ArrayAttr::get(ctxt, newRightHash));
+            }
+        });
         return mlir::success();
     }
 };
