@@ -383,7 +383,7 @@ class TriplePatternEmitter {
             auto [identColumnDef, identColumnRef] = createColumn(gsubop::IdentifierType::get(ctxt), "ident", "map");
             stream = rewriter.create<gsubop::GetIdentifierOp>(loc, stream, edgeRef, identColumnDef);
             auto nodeRefType = createNodeRefType(ctxt, group, graph);
-            auto nodesRef = createRef(columnManager, group, graph + "_vx");
+            auto nodesRef = columnManager.createRef(emitCtxt.graphs[graphRef].nodeSetColumn);
             auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({nodesRef, identColumnRef}));
             auto* b = new Block();
             b->addArgument(tuples::TupleType::get(ctxt), loc);
