@@ -6,6 +6,7 @@ ex:bob ex:drinks ex:coffee .
 ex:bob ex:drinks "Coffee"^^xsd:string .
 ex:bob ex:drinks _:drink1 .
 ex:bob ex:drinks _:drink2 .
+ex:coffee ex:asksForMore ex:coffee
 
 # --- inlined literal types: <=4 bytes, stored directly in the property value ---
 ex:bob ex:age "30"^^xsd:int .
