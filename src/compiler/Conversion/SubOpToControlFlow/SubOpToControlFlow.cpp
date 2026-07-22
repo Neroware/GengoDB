@@ -1401,7 +1401,11 @@ class GenerateLowering : public SubOpConversionPattern<subop::GenerateOp> {
          mlir::OpBuilder::InsertionGuard guard(rewriter);
          rewriter.setInsertionPointAfter(emitOp);
          ColumnMapping mapping;
-         mapping.define(generateOp.getGeneratedColumns(), emitOp.getValues());
+         llvm::SmallVector<mlir::Value> mappedValues;
+         for (auto v : emitOp.getValues()) {
+            mappedValues.push_back(rewriter.getMapped(v));
+         }
+         mapping.define(generateOp.getGeneratedColumns(), mappedValues);
          mlir::Value newInFlight = rewriter.createInFlight(mapping);
          streams.push_back(newInFlight);
          rewriter.eraseOp(emitOp);
@@ -1444,7 +1448,8 @@ class InFlightLowering : public SubOpConversionPattern<subop::InFlightOp> {
    using SubOpConversionPattern<subop::InFlightOp>::SubOpConversionPattern;
 
    LogicalResult matchAndRewrite(subop::InFlightOp inFlightOp, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
-      ColumnMapping mapping(inFlightOp);
+      ColumnMapping mapping;
+      mapping.define(inFlightOp.getColumns(), adaptor.getValues());
       rewriter.replaceTupleStream(inFlightOp, mapping);
       return success();
    }
@@ -4356,17 +4361,17 @@ class CreateBuiltinGraphLowering : public SubOpConversionPattern<gsubop::CreateB
    }
 };
 
-class GetIdentifierLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::GetIdentifierOp>{
+class GatherIdentifierLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::GatherIdentifierOp>{
    public:
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::GetIdentifierOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::GetIdentifierOp op) const override {
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::GatherIdentifierOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::GatherIdentifierOp op) const override {
       auto type = op.getRef().getColumn().type;
       if (mlir::isa<gsubop::NodeRefType>(type) || mlir::isa<gsubop::EdgeRefType>(type) 
          || mlir::isa<gsubop::PropertyRefType>(type))
             return success();
       return failure();
    }
-   void rewrite(gsubop::GetIdentifierOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+   void rewrite(gsubop::GatherIdentifierOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
       auto loc = op->getLoc();
       auto type = op.getRef().getColumn().type;
       auto ref = mapping.resolve(op, op.getRef());
@@ -4384,6 +4389,45 @@ class GetIdentifierLowering : public SubOpTupleStreamConsumerConversionPattern<g
       }
       mapping.define(op.getIdentDef(), key);
       rewriter.replaceTupleStream(op, mapping);
+   }
+};
+
+class IdentifiersEqualLowering : public SubOpConversionPattern<gsubop::IdentifiersEqualOp> {
+   public:
+   using SubOpConversionPattern<gsubop::IdentifiersEqualOp>::SubOpConversionPattern;
+   mlir::Value extractIdentifier(mlir::Location loc, mlir::Type origType, mlir::Value resolved, SubOpRewriter& rewriter) const {
+      if (mlir::isa<gsubop::NodeRefType>(origType)) {
+         return rt::GraphStorage::nodeId(rewriter, loc)(resolved)[0];
+      }
+      return rewriter.create<util::LoadElementOp>(loc, rewriter.getI32Type(), resolved, gsubop::RELATIONSHIP_ENTRY_RELATIONSHIP_TYPE_PTR);
+   }
+   LogicalResult matchAndRewrite(gsubop::IdentifiersEqualOp op, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
+      auto loc = op->getLoc();
+      auto lhs = extractIdentifier(loc, op.getLhs().getType(), adaptor.getLhs(), rewriter);
+      auto rhs = extractIdentifier(loc, op.getRhs().getType(), adaptor.getRhs(), rewriter);
+      rewriter.replaceOp(op, rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lhs, rhs).getResult());
+      return mlir::success();
+   }
+};
+
+class GetIdentifierLowering : public SubOpConversionPattern<gsubop::GetIdentifierOp> {
+   public:
+   using SubOpConversionPattern<gsubop::GetIdentifierOp>::SubOpConversionPattern;
+   LogicalResult matchAndRewrite(gsubop::GetIdentifierOp op, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
+      auto loc = op->getLoc();
+      auto refType = op.getRef().getType();
+      mlir::Value ident;
+      if (mlir::isa<gsubop::NodeRefType>(refType)) {
+         ident = rt::GraphStorage::nodeId(rewriter, loc)(adaptor.getRef())[0];
+      } else if (mlir::isa<gsubop::EdgeRefType>(refType)) {
+         ident = rewriter.create<util::LoadElementOp>(loc, rewriter.getI32Type(), adaptor.getRef(), gsubop::RELATIONSHIP_ENTRY_RELATIONSHIP_TYPE_PTR);
+      } else if (mlir::isa<gsubop::PropertyRefType>(refType)) {
+         ident = rewriter.create<util::LoadElementOp>(loc, rewriter.getI32Type(), adaptor.getRef(), gsubop::PROPERTY_ENTRY_PROPERTY_KEY_PTR);
+      } else {
+         return failure();
+      }
+      rewriter.replaceOp(op, ident);
+      return mlir::success();
    }
 };
 
@@ -5209,17 +5253,6 @@ class CreateIdentifierLowering : public SubOpConversionPattern<gsubop::CreateIde
    }
 };
 
-class ScanIdentifierLowering : public SubOpConversionPattern<gsubop::ScanIdentifierOp> {
-   using SubOpConversionPattern<gsubop::ScanIdentifierOp>::SubOpConversionPattern;
-   LogicalResult matchAndRewrite(gsubop::ScanIdentifierOp scanOp, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
-      if (!mlir::isa<gsubop::IdentifierType>(scanOp.getIdent().getType())) return failure();
-      ColumnMapping mapping;
-      mapping.define(scanOp.getRef(), adaptor.getIdent());
-      rewriter.replaceTupleStream(scanOp, mapping);
-      return success();
-   }
-};
-
 class FilterByIdentifierLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::FilterByIdentifierOp> {
    using SubOpTupleStreamConsumerConversionPattern<gsubop::FilterByIdentifierOp>::SubOpTupleStreamConsumerConversionPattern;
    LogicalResult match(gsubop::FilterByIdentifierOp filterOp) const override {
@@ -5361,6 +5394,60 @@ class GraphRefToStringOpLowering : public SubOpTupleStreamConsumerConversionPatt
    }
 };
 
+static bool isNullableGraphRefType(mlir::Type refType) {
+   auto nullable = mlir::dyn_cast<db::NullableType>(refType);
+   if (!nullable) return false;
+   auto inner = nullable.getType();
+   return mlir::isa<gsubop::NodeRefType>(inner) || mlir::isa<gsubop::EdgeRefType>(inner);
+}
+class WrapNullableRefOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::WrapNullableRefOp> {
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::WrapNullableRefOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::WrapNullableRefOp op) const override {
+      return isNullableGraphRefType(op.getNullableRef().getColumn().type) ? success() : failure();
+   }
+   void rewrite(gsubop::WrapNullableRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      mapping.define(op.getNullableRef(), mapping.resolve(op, op.getRef()));
+      rewriter.replaceTupleStream(op, mapping);
+   }
+};
+class NullRefOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::NullRefOp> {
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::NullRefOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::NullRefOp op) const override {
+      return isNullableGraphRefType(op.getNullableRef().getColumn().type) ? success() : failure();
+   }
+   void rewrite(gsubop::NullRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto loc = op.getLoc();
+      auto nullableType = mlir::cast<db::NullableType>(op.getNullableRef().getColumn().type);
+      auto convertedType = typeConverter->convertType(nullableType.getType());
+      mapping.define(op.getNullableRef(), rewriter.create<util::InvalidRefOp>(loc, convertedType));
+      rewriter.replaceTupleStream(op, mapping);
+   }
+};
+class IsNullRefOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::IsNullRefOp> {
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::IsNullRefOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::IsNullRefOp op) const override {
+      return isNullableGraphRefType(op.getRef().getColumn().type) ? success() : failure();
+   }
+   void rewrite(gsubop::IsNullRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto loc = op.getLoc();
+      auto ref = mapping.resolve(op, op.getRef());
+      mlir::Value valid = rewriter.create<util::IsRefValidOp>(loc, rewriter.getI1Type(), ref);
+      mlir::Value isNull = rewriter.create<mlir::arith::XOrIOp>(loc, valid, rewriter.create<mlir::arith::ConstantIntOp>(loc, 1, rewriter.getI1Type()));
+      mapping.define(op.getIsNull(), isNull);
+      rewriter.replaceTupleStream(op, mapping);
+   }
+};
+class UnwrapNullableRefOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::UnwrapNullableRefOp> {
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::UnwrapNullableRefOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::UnwrapNullableRefOp op) const override {
+      return isNullableGraphRefType(op.getRef().getColumn().type) ? success() : failure();
+   }
+   void rewrite(gsubop::UnwrapNullableRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      mapping.define(op.getUnwrapped(), mapping.resolve(op, op.getRef()));
+      rewriter.replaceTupleStream(op, mapping);
+   }
+};
+
 class TypedPropertyRefGatherOpLowering : public SubOpTupleStreamConsumerConversionPattern<subop::GatherOp, 2> {
    public:
    using SubOpTupleStreamConsumerConversionPattern<subop::GatherOp, 2>::SubOpTupleStreamConsumerConversionPattern;
@@ -5441,11 +5528,16 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    //PropertyGraph
    patterns.insertPattern<ScanPropertySetLowering>(typeConverter, ctxt);
    patterns.insertPattern<CreateIdentifierLowering>(typeConverter, ctxt);
-   patterns.insertPattern<ScanIdentifierLowering>(typeConverter, ctxt);
+   patterns.insertPattern<GatherIdentifierLowering>(typeConverter, ctxt);
+   patterns.insertPattern<IdentifiersEqualLowering>(typeConverter, ctxt);
    patterns.insertPattern<GetIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<FilterByIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<CastPropertyRefLowering>(typeConverter, ctxt);
    patterns.insertPattern<GraphRefToStringOpLowering>(typeConverter, ctxt);
+   patterns.insertPattern<WrapNullableRefOpLowering>(typeConverter, ctxt);
+   patterns.insertPattern<NullRefOpLowering>(typeConverter, ctxt);
+   patterns.insertPattern<IsNullRefOpLowering>(typeConverter, ctxt);
+   patterns.insertPattern<UnwrapNullableRefOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<TypedPropertyRefGatherOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<TypedPropertyRefScatterOpLowering>(typeConverter, ctxt);
 

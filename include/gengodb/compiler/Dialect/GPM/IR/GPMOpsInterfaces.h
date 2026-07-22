@@ -19,6 +19,8 @@ ColumnSet getBoundVariables(mlir::Operation* op);
 ColumnSet getUsedVariables(mlir::Operation* op);
 ColumnSet getAvailableVariables(mlir::Operation* op);
 void moveSubTreeBefore(mlir::Operation* op, mlir::Operation* before);
+llvm::SmallVector<std::tuple<mlir::Attribute, mlir::Attribute, mlir::Attribute>, 16> getPatternTriples(mlir::Operation* op);
+mlir::LogicalResult verifyGraphPatternBody(mlir::Operation* op);
 } // namespace gengodb::compiler::dialect::gpm::detail
 class GPMOperator;
 #define GET_OP_CLASSES

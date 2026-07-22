@@ -164,6 +164,21 @@ inline static bool isBound(mlir::Attribute term, const LocalIdentifierMapping& l
    return false;
 }
 
+template <typename BuildIdentFn>
+static mlir::Value generateTupleStream(ConversionPatternRewriter& rewriter, mlir::Location loc, tuples::ColumnDefAttr def, BuildIdentFn buildIdent) {
+   auto ctxt = rewriter.getContext();
+   auto generateOp = rewriter.create<subop::GenerateOp>(loc, std::vector<mlir::Type>{
+      tuples::TupleStreamType::get(ctxt), tuples::TupleStreamType::get(ctxt)}, rewriter.getArrayAttr({def}));
+   auto* generateBlock = new Block;
+   mlir::OpBuilder::InsertionGuard guard(rewriter);
+   generateOp.getRegion().push_back(generateBlock);
+   rewriter.setInsertionPointToStart(generateBlock);
+   mlir::Value identValue = buildIdent(rewriter);
+   rewriter.create<subop::GenerateEmitOp>(loc, mlir::ValueRange{identValue});
+   rewriter.create<tuples::ReturnOp>(loc);
+   return generateOp.getRes();
+}
+
 template<typename ColumnAttrT>
 static mlir::Value scanNamedGraph(ConversionPatternRewriter& rewriter, mlir::Location loc, ColumnAttrT graphAttr, NamedGraphMapping& graphs, bool uniqueScope = false) {
    auto ctxt = rewriter.getContext();
@@ -247,7 +262,6 @@ class TriplePatternEmitter {
       if (auto identTermAttr = mlir::dyn_cast_or_null<gpm::IdentifierTermAttr>(term)) {
          auto& graphData = emitCtxt.graphs[graphRef];
          auto nodesRef = columnManager.createRef(graphData.nodeSetColumn);
-         auto identState = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, identTermAttr.getIdent());
          auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({nodesRef}));
          auto* b = new Block();
          b->addArgument(tuples::TupleType::get(ctxt), loc);
@@ -257,7 +271,9 @@ class TriplePatternEmitter {
             mlir::OpBuilder::InsertionGuard guard(rewriter);
             rewriter.setInsertionPointToStart(b);
             auto [identDef, identRef] = createColumn(gsubop::IdentifierType::get(ctxt), "idents", "lookup");
-            auto scan = rewriter.create<gsubop::ScanIdentifierOp>(loc, identState, identDef);
+            auto scan = generateTupleStream(rewriter, loc, identDef, [&](mlir::OpBuilder& b) -> mlir::Value {
+               return b.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, identTermAttr.getIdent());
+            });
             nodeRefType = createNodeRefType(ctxt, group, graph);
             auto [nodeDef, resolvedRef] = createColumn(nodeRefType, "nodes", "ref");
             mlir::Value lookup = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), scan, nodeSetArg, rewriter.getArrayAttr({identRef}), nodeDef);
@@ -301,8 +317,8 @@ class TriplePatternEmitter {
       auto [leftDef, leftRef] = createColumn(gsubop::IdentifierType::get(ctxt), "idents", "get");
       auto [rightDef, rightRef] = createColumn(gsubop::IdentifierType::get(ctxt), "idents", "get");
       auto [filterDef, filterRef] = createColumn(rewriter.getI1Type(), "map", "ident");
-      stream = rewriter.create<gsubop::GetIdentifierOp>(loc, stream, leftSource, leftDef);
-      stream = rewriter.create<gsubop::GetIdentifierOp>(loc, stream, rightSource, rightDef);
+      stream = rewriter.create<gsubop::GatherIdentifierOp>(loc, stream, leftSource, leftDef);
+      stream = rewriter.create<gsubop::GatherIdentifierOp>(loc, stream, rightSource, rightDef);
       auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({filterDef}), rewriter.getArrayAttr({leftRef, rightRef}));
       Block* mapBlock = new Block;
       auto left = mapBlock->addArgument(rewriter.getI32Type(), loc);
@@ -381,7 +397,7 @@ class TriplePatternEmitter {
          }
          else {
             auto [identColumnDef, identColumnRef] = createColumn(gsubop::IdentifierType::get(ctxt), "ident", "map");
-            stream = rewriter.create<gsubop::GetIdentifierOp>(loc, stream, edgeRef, identColumnDef);
+            stream = rewriter.create<gsubop::GatherIdentifierOp>(loc, stream, edgeRef, identColumnDef);
             auto nodeRefType = createNodeRefType(ctxt, group, graph);
             auto nodesRef = columnManager.createRef(emitCtxt.graphs[graphRef].nodeSetColumn);
             auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({nodesRef, identColumnRef}));
@@ -394,7 +410,9 @@ class TriplePatternEmitter {
                mlir::OpBuilder::InsertionGuard guard(rewriter);
                rewriter.setInsertionPointToStart(b);
                auto [scanIdentDef, scanIdentRef] = createColumn(gsubop::IdentifierType::get(ctxt), "ident", "scan");
-               mlir::Value inner = rewriter.create<gsubop::ScanIdentifierOp>(loc, identArg, scanIdentDef);
+               mlir::Value inner = generateTupleStream(rewriter, loc, scanIdentDef, [&](mlir::OpBuilder&) -> mlir::Value {
+                  return identArg;
+               });
                auto ref = varPred.getProducedBinding();
                auto def = createDef(columnManager, ref.getName().getRootReference().str(), ref.getName().getLeafReference().str(), nodeRefType, false);
                emitCtxt.bindings[ref.getName()].def = def;

@@ -230,16 +230,10 @@ void printCustRegion(OpAsmPrinter& p, Operation* op, Region& r) {
     return mlir::success();
 }
 ::mlir::LogicalResult gpm::BasicGraphPatternOp::verify() {
-    return std::all_of(getPattern().getOps().begin(), getPattern().getOps().end(), [](const Operation& op){
-        return mlir::isa<gpm::TriplePatternOp, tuples::ReturnOp>(op);
-    }) ? mlir::success() : emitOpError("A basic graph pattern must only contain triples.");
+    return gpm::detail::verifyGraphPatternBody(getOperation());
 }
-llvm::SmallVector<std::tuple<Attribute, Attribute, Attribute>, 16> gpm::BasicGraphPatternOp::getTriples() {
-    llvm::SmallVector<std::tuple<Attribute, Attribute, Attribute>, 16> result;
-    getPattern().walk([&](gpm::TriplePatternOp triple){
-        result.push_back(std::make_tuple(triple.getS(), triple.getP(), triple.getO()));
-    });
-    return result;
+::mlir::LogicalResult gpm::OptionalGraphPatternOp::verify() {
+    return gpm::detail::verifyGraphPatternBody(getOperation());
 }
 
 #define GET_OP_CLASSES

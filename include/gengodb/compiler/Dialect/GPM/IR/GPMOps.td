@@ -48,14 +48,14 @@ def NamedGraphOp : GPM_Op<"named_graph", [Pure,GPMOperator,Operator]> {
   }];
 }
 
-def BasicGraphPatternOp : GPM_Op<"basic_graph_pattern", [Pure,GPMOperator,Operator,UnaryOperator]> {
+def BasicGraphPatternOp : GPM_Op<"basic_graph_pattern", [Pure,GPMOperator,GraphPatternOp,Operator,UnaryOperator]> {
   let summary = "basic graph pattern";
   let arguments = (ins TupleStream:$rel);
   let results = (outs TupleStream:$res);
   let regions = (region SizedRegion<1>:$pattern);
   let assemblyFormat = [{  $rel custom<CustRegion>($pattern) attr-dict  }];
   let extraClassDeclaration = [{
-    llvm::SmallVector<std::tuple<mlir::Attribute, mlir::Attribute, mlir::Attribute>, 16> getTriples();
+    gengodb::compiler::dialect::gpm::PatternKind getPatternKind() { return gengodb::compiler::dialect::gpm::PatternKind::basic; }
     lingodb::compiler::dialect::relalg::ColumnSet getBoundVariables() { return getUsedVariables(); }
     lingodb::compiler::dialect::relalg::ColumnSet getCreatedVariables();
     lingodb::compiler::dialect::relalg::ColumnSet getUsedVariables();
@@ -65,6 +65,32 @@ def BasicGraphPatternOp : GPM_Op<"basic_graph_pattern", [Pure,GPMOperator,Operat
     bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
   }];
   let hasVerifier = 1;
+}
+
+def OptionalGraphPatternOp : GPM_Op<"optional_graph_pattern", [Pure,GPMOperator,GraphPatternOp,Operator,UnaryOperator]> {
+  let summary = "optional graph pattern (SPARQL OPTIONAL)";
+  let arguments = (ins TupleStream:$rel);
+  let results = (outs TupleStream:$res);
+  let regions = (region SizedRegion<1>:$pattern);
+  let assemblyFormat = [{  $rel custom<CustRegion>($pattern) attr-dict  }];
+  let extraClassDeclaration = [{
+    gengodb::compiler::dialect::gpm::PatternKind getPatternKind() { return gengodb::compiler::dialect::gpm::PatternKind::optional; }
+    lingodb::compiler::dialect::relalg::ColumnSet getBoundVariables() { return getUsedVariables(); }
+    lingodb::compiler::dialect::relalg::ColumnSet getCreatedVariables();
+    lingodb::compiler::dialect::relalg::ColumnSet getUsedVariables();
+    lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
+    bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
+  }];
+  let hasVerifier = 1;
+}
+
+def IdentifiersEqualOp : GPM_Op<"identifiers_equal", [Pure]> {
+  let summary = "identifier equality check";
+  let arguments = (ins TupleStream_Tuple:$tuple, ColumnRefAttr:$lhs, ColumnRefAttr:$rhs);
+  let results = (outs I1:$result);
+  let assemblyFormat = [{ $tuple custom<CustRef>($lhs) `,` custom<CustRef>($rhs) attr-dict }];
 }
 
 #endif // GENGODB_DIALECT_GPM_IR_GPMOPS

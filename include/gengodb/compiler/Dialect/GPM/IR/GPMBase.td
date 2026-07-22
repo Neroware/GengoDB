@@ -43,6 +43,15 @@ def GPM_TermType : I64EnumAttr<"TermType", "term type",
     let cppNamespace = "::gengodb::compiler::dialect::gpm";
 }
 
+def GPM_PatternKind_BASIC    : I64EnumAttrCase<"basic", 0>;
+def GPM_PatternKind_OPTIONAL : I64EnumAttrCase<"optional", 1>;
+def GPM_PatternKind_MINUS    : I64EnumAttrCase<"minus", 2>;
+
+def GPM_PatternKind : I64EnumAttr<"PatternKind", "graph pattern construct (SPARQL BGP / OPTIONAL / MINUS)",
+        [GPM_PatternKind_BASIC,GPM_PatternKind_OPTIONAL,GPM_PatternKind_MINUS]> {
+    let cppNamespace = "::gengodb::compiler::dialect::gpm";
+}
+
 //===----------------------------------------------------------------------===//
 // Types
 //===----------------------------------------------------------------------===//
