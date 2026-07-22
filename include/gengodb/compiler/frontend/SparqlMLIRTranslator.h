@@ -400,9 +400,9 @@ class Translator {
       graphCount++;
 
       auto graphDef = colMgr.createDef("graphs", alias);
-      graphDef.getColumn().type = gpm::GraphReferenceType::get(ctxt);
+      graphDef.getColumn().type = gpm::GraphReferenceType::get(ctxt, mlir::StringAttr::get(ctxt, alias), mlir::StringAttr::get(ctxt, uri));
       auto loc = builder.getUnknownLoc();
-      mlir::Value stream = builder.create<gpm::NamedGraphOp>(loc, uri, graphDef);
+      mlir::Value stream = builder.create<gpm::NamedGraphOp>(loc, graphDef);
       graphInfo[uri] = {alias, stream};
       return {alias, stream};
    }

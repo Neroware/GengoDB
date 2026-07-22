@@ -184,15 +184,68 @@ mlir::Operation* gsubop::GraphRefToStringOp::cloneSubOp(mlir::OpBuilder& builder
    return newOp;
 }
 
-mlir::Operation* gsubop::GetIdentifierOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
-   auto newOp = builder.create<GetIdentifierOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getRef(), getIdentDef());
+mlir::Operation* gsubop::WrapNullableRefOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
+   auto newOp = builder.create<WrapNullableRefOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getRef(), getNullableRef());
    mapResults(mapping, this->getOperation(), newOp.getOperation());
 
    return newOp;
 }
 
-mlir::Operation* gsubop::ScanIdentifierOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
-   auto newOp = builder.create<ScanIdentifierOp>(this->getLoc(), mapping.lookupOrDefault(getIdent()), columnMapping.clone(getRef()));
+mlir::Operation* gsubop::NullRefOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
+   auto newOp = builder.create<NullRefOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getNullableRef());
+   mapResults(mapping, this->getOperation(), newOp.getOperation());
+
+   return newOp;
+}
+
+mlir::Operation* gsubop::IsNullRefOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
+   auto newOp = builder.create<IsNullRefOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getRef(), getIsNull());
+   mapResults(mapping, this->getOperation(), newOp.getOperation());
+
+   return newOp;
+}
+
+mlir::Operation* gsubop::UnwrapNullableRefOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
+   auto newOp = builder.create<UnwrapNullableRefOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getRef(), getUnwrapped());
+   mapResults(mapping, this->getOperation(), newOp.getOperation());
+
+   return newOp;
+}
+
+mlir::Operation* gsubop::GatherIdentifierOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
+   auto newOp = builder.create<GatherIdentifierOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getRef(), getIdentDef());
+   mapResults(mapping, this->getOperation(), newOp.getOperation());
+
+   return newOp;
+}
+
+void gsubop::NodeCountOp::updateStateType(subop::SubOpStateUsageTransformer& transformer, mlir::Value state, mlir::Type newType) {
+   if (state == getGraph() && newType != state.getType()) {
+      auto newRefType = transformer.getNewRefType(this->getOperation(), getRef().getColumn().type);
+      setRefAttr(transformer.createReplacementColumn(getRefAttr(), newRefType));
+   }
+}
+void gsubop::NodeCountOp::replaceColumns(subop::SubOpStateUsageTransformer& transformer, tuples::Column* oldColumn, tuples::Column* newColumn) {
+   assert(false && "should not happen");
+}
+mlir::Operation* gsubop::NodeCountOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
+   auto newOp = builder.create<NodeCountOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getGraph(), getRef());
+   mapResults(mapping, this->getOperation(), newOp.getOperation());
+
+   return newOp;
+}
+
+void gsubop::EdgeCountOp::updateStateType(subop::SubOpStateUsageTransformer& transformer, mlir::Value state, mlir::Type newType) {
+   if (state == getGraph() && newType != state.getType()) {
+      auto newRefType = transformer.getNewRefType(this->getOperation(), getRef().getColumn().type);
+      setRefAttr(transformer.createReplacementColumn(getRefAttr(), newRefType));
+   }
+}
+void gsubop::EdgeCountOp::replaceColumns(subop::SubOpStateUsageTransformer& transformer, tuples::Column* oldColumn, tuples::Column* newColumn) {
+   assert(false && "should not happen");
+}
+mlir::Operation* gsubop::EdgeCountOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
+   auto newOp = builder.create<EdgeCountOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getGraph(), getRef());
    mapResults(mapping, this->getOperation(), newOp.getOperation());
 
    return newOp;

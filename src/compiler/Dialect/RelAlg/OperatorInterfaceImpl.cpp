@@ -215,6 +215,9 @@ relalg::detail::UnaryOperatorType relalg::detail::getUnaryOperatorType(mlir::Ope
 ColumnSet MapOp::getCreatedColumns() {
    return ColumnSet::fromArrayAttr(getComputedCols());
 }
+ColumnSet InFlightOp::getCreatedColumns() {
+   return ColumnSet::fromArrayAttr(getColumns());
+}
 ColumnSet AggregationOp::getCreatedColumns() {
    return ColumnSet::fromArrayAttr(getComputedCols());
 }

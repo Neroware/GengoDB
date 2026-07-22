@@ -23,3 +23,6 @@ operations.parquet
 mlir_venv
 venv
 db.lingodb
+db.neo4j.*
+CLAUDE.md
+.claude/

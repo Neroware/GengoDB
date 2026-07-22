@@ -9,6 +9,7 @@ include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.td"
+include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgInterfaces.td"
 
 //===----------------------------------------------------------------------===//
 // Ops
@@ -66,11 +67,36 @@ def ScanNodeSetOp : GraphSubOp_Op<"scan_node_set", [Pure,SubOperator,ReferencePr
         mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
     }];
 }
+
 def ScanEdgeSetOp : GraphSubOp_Op<"scan_edge_set", [Pure,SubOperator,ReferenceProducer,DeclareOpInterfaceMethods<StateUsingSubOperator>]> {
     let summary = "scan state (sequentially)";
     let arguments = (ins AnyType : $edge_set, ColumnDefAttr: $ref);
     let results = (outs TupleStream : $res);
     let assemblyFormat = [{ $edge_set `:` type($edge_set) custom<CustDef>($ref) attr-dict }];
+    let extraClassDeclaration = [{
+        lingodb::compiler::dialect::tuples::ColumnDefAttr getProducedReference(){ return getRef(); }
+        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
+    }];
+}
+
+def NodeCountOp : GraphSubOp_Op<"node_count", [Pure,SubOperator,ReferenceProducer,DeclareOpInterfaceMethods<StateUsingSubOperator>]> {
+    let summary = "graph node count";
+
+    let arguments = (ins TupleStream : $stream, Graph : $graph, ColumnDefAttr:$ref);
+    let results = (outs TupleStream : $res);
+    let assemblyFormat = [{  $stream `,` $graph `->` custom<CustDef>($ref) `:` type($graph) attr-dict }];
+    let extraClassDeclaration = [{
+        lingodb::compiler::dialect::tuples::ColumnDefAttr getProducedReference(){ return getRef(); }
+        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
+    }];
+}
+
+def EdgeCountOp : GraphSubOp_Op<"edge_count", [Pure,SubOperator,ReferenceProducer,DeclareOpInterfaceMethods<StateUsingSubOperator>]> {
+    let summary = "graph edge count";
+
+    let arguments = (ins TupleStream : $stream, Graph : $graph, ColumnDefAttr:$ref);
+    let results = (outs TupleStream : $res);
+    let assemblyFormat = [{  $stream `,` $graph `->` custom<CustDef>($ref) `:` type($graph) attr-dict }];
     let extraClassDeclaration = [{
         lingodb::compiler::dialect::tuples::ColumnDefAttr getProducedReference(){ return getRef(); }
         mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
@@ -118,8 +144,8 @@ def FilterByIdentifierOp : GraphSubOp_Op<"filter_by_identifier", [Pure,SubOperat
     }];
 }
 
-def GetIdentifierOp : GraphSubOp_Op<"get_identifier", [Pure,SubOperator,ReferenceProducer]> {
-    let summary = "get identifier from graph ref";
+def GatherIdentifierOp : GraphSubOp_Op<"gather_identifier", [Pure,SubOperator,ReferenceProducer]> {
+    let summary = "gather identifier from graph ref (DEPRICATED)";
     let arguments = (ins TupleStream : $stream, ColumnRefAttr:$ref, ColumnDefAttr:$identDef);
     let results = (outs TupleStream : $res);
     let assemblyFormat = [{ $stream custom<CustRef>($ref) `->` custom<CustDef>($identDef) attr-dict }];
@@ -129,16 +155,18 @@ def GetIdentifierOp : GraphSubOp_Op<"get_identifier", [Pure,SubOperator,Referenc
     }];
 }
 
-def ScanIdentifierOp : GraphSubOp_Op<"scan_identifier", [Pure,SubOperator,ReferenceProducer]> {
-    let summary = "scan identifier";
-    let arguments = (ins AnyType : $ident, ColumnDefAttr: $ref);
-    let results = (outs TupleStream : $res);
-    let assemblyFormat = [{ $ident `:` type($ident) custom<CustDef>($ref) attr-dict }];
-    let extraClassDeclaration = [{
-        lingodb::compiler::dialect::tuples::ColumnDefAttr getProducedReference(){ return getRef(); }
-        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
-        StateMembersAttr getMembers();
-    }];
+def GetIdentifierOp : GraphSubOp_Op<"get_identifier", [Pure]> {
+    let summary = "get graph ref identifier";
+    let arguments = (ins AnyGraphRef : $ref);
+    let results = (outs Identifier : $ident);
+    let assemblyFormat = [{ $ref `:` type($ref) attr-dict }];
+}
+
+def IdentifiersEqualOp : GraphSubOp_Op<"identifiers_equal", [Pure]> {
+    let summary = "identifier equality check between two node or edge references";
+    let arguments = (ins AnyTypeOf<[NodeRef, EdgeRef]>:$lhs, AnyTypeOf<[NodeRef, EdgeRef]>:$rhs);
+    let results = (outs I1:$result);
+    let assemblyFormat = [{ $lhs `:` type($lhs) `,` $rhs `:` type($rhs) attr-dict }];
 }
 
 //===----------------------------------------------------------------------===//
@@ -160,6 +188,50 @@ def GraphRefToStringOp : GraphSubOp_Op<"ref_to_str", [Pure,SubOperator]> {
     let arguments = (ins TupleStream : $stream, ColumnRefAttr : $ref, ColumnDefAttr : $strRef);
     let results = (outs TupleStream : $res);
     let assemblyFormat = [{  $stream custom<CustRef>($ref) `->` custom<CustDef>($strRef) attr-dict }];
+    let extraClassDeclaration = [{
+        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
+    }];
+}
+
+//===----------------------------------------------------------------------===//
+// Nullable graph refs
+//===----------------------------------------------------------------------===//
+
+def WrapNullableRefOp : GraphSubOp_Op<"wrap_nullable_ref", [Pure,SubOperator]> {
+    let summary = "wrap a graph ref column as a non-null nullable value";
+    let arguments = (ins TupleStream : $stream, ColumnRefAttr : $ref, ColumnDefAttr : $nullableRef);
+    let results = (outs TupleStream : $res);
+    let assemblyFormat = [{  $stream custom<CustRef>($ref) `->` custom<CustDef>($nullableRef) attr-dict }];
+    let extraClassDeclaration = [{
+        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
+    }];
+}
+
+def NullRefOp : GraphSubOp_Op<"null_ref", [Pure,SubOperator]> {
+    let summary = "produce a null nullable-graph-ref column";
+    let arguments = (ins TupleStream : $stream, ColumnDefAttr : $nullableRef);
+    let results = (outs TupleStream : $res);
+    let assemblyFormat = [{  $stream `->` custom<CustDef>($nullableRef) attr-dict }];
+    let extraClassDeclaration = [{
+        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
+    }];
+}
+
+def IsNullRefOp : GraphSubOp_Op<"is_null_ref", [Pure,SubOperator]> {
+    let summary = "check whether a nullable graph ref column is null";
+    let arguments = (ins TupleStream : $stream, ColumnRefAttr : $ref, ColumnDefAttr : $isNull);
+    let results = (outs TupleStream : $res);
+    let assemblyFormat = [{  $stream custom<CustRef>($ref) `->` custom<CustDef>($isNull) attr-dict }];
+    let extraClassDeclaration = [{
+        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
+    }];
+}
+
+def UnwrapNullableRefOp : GraphSubOp_Op<"unwrap_nullable_ref", [Pure,SubOperator]> {
+    let summary = "unwrap a nullable graph ref column";
+    let arguments = (ins TupleStream : $stream, ColumnRefAttr : $ref, ColumnDefAttr : $unwrapped);
+    let results = (outs TupleStream : $res);
+    let assemblyFormat = [{  $stream custom<CustRef>($ref) `->` custom<CustDef>($unwrapped) attr-dict }];
     let extraClassDeclaration = [{
         mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
     }];

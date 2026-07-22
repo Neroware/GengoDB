@@ -21,17 +21,22 @@ IRI RDFGraphCatalogEntry::getIri() const {
     return impl->getIri();
 }
 Node RDFGraphCatalogEntry::getNode(int32_t node) const {
-    return impl->getNodes()->get_node(node);
+    switch(impl->getNodeType(node)) {
+        case RDFNodeType::IRI: return impl->getIri(node);
+        case RDFNodeType::BNode: return impl->getBNode(node);
+        case RDFNodeType::Literal: return impl->getLiteral(node);
+        default: return BlankNode{};
+    }
 }
-std::shared_ptr<gengodb::semantics::NodeDictionary> RDFGraphCatalogEntry::getNodes() const {
+const gengodb::semantics::NodeIdDict& RDFGraphCatalogEntry::getNodes() const {
     return impl->getNodes();
 }
 std::string_view RDFGraphCatalogEntry::getLocalId(int32_t node) const {
-    for (const auto& pair : impl->getBlankNodes()) {
-        if (pair.second == node) 
-            return pair.first.identifier().view();
+    switch(impl->getNodeType(node)) {
+        case RDFNodeType::IRI: return impl->getIri(node).identifier();
+        case RDFNodeType::BNode: return impl->getBNode(node).identifier();
+        default: return "";
     }
-    return "";
 }
 lingodb::runtime::PropertyGraph& RDFGraphCatalogEntry::getStorage() {
     return impl->getStorage().storage();

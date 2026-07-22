@@ -39,7 +39,7 @@ namespace gengodb::compiler::dialect::gpm::detail {
 using namespace lingodb::compiler::dialect::relalg;
 inline auto filterVariableTerms(mlir::Operation* op, bool isBound) {
     return llvm::make_filter_range(
-      op->getAttrs(), [&](mlir::NamedAttribute attr) {
+      op->getAttrs(), [isBound](mlir::NamedAttribute attr) {
         auto v = mlir::dyn_cast<VariableTermAttr>(attr.getValue());
         return v && (v.hasBinding() == isBound);
       });
@@ -82,6 +82,26 @@ void moveSubTreeBefore(mlir::Operation* op, mlir::Operation* before) {
    }
 }
 
+llvm::SmallVector<std::tuple<mlir::Attribute, mlir::Attribute, mlir::Attribute>, 16> getPatternTriples(mlir::Operation* op) {
+   llvm::SmallVector<std::tuple<mlir::Attribute, mlir::Attribute, mlir::Attribute>, 16> result;
+   auto patternOp = mlir::cast<GraphPatternOp>(op);
+   patternOp.getPattern().walk([&](gengodb::compiler::dialect::gpm::TriplePatternOp triple) {
+      result.push_back(std::make_tuple(triple.getS(), triple.getP(), triple.getO()));
+   });
+   return result;
+}
+
+mlir::LogicalResult verifyGraphPatternBody(mlir::Operation* op) {
+   auto patternOp = mlir::cast<GraphPatternOp>(op);
+   bool valid = std::all_of(patternOp.getPattern().getOps().begin(), patternOp.getPattern().getOps().end(), [](const mlir::Operation& nested) {
+      return mlir::isa<gengodb::compiler::dialect::gpm::TriplePatternOp, gengodb::compiler::dialect::gpm::BasicGraphPatternOp, gengodb::compiler::dialect::gpm::OptionalGraphPatternOp, tuples::ReturnOp>(nested);
+   });
+   if (!valid) {
+      return op->emitOpError("A graph pattern must only contain triples or nested graph patterns.");
+   }
+   return mlir::success();
+}
+
 } // namespace gengodb::compiler::dialect::gpm::detail
 
 namespace gengodb::compiler::dialect {
@@ -99,6 +119,116 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::BasicGraphPatternOp::getUsedV
         res.insert(triple.getUsedVariables());
     });
     return res;
+}
+
+lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getBindingColumns() {
+    ColumnSet columns;
+    if (auto bindings = (*this)->getAttrOfType<mlir::DictionaryAttr>("bindings")) {
+        for (auto key : {"s", "p", "o"}) {
+            if (auto def = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(bindings.get(key))) {
+                columns.insert(def.getColumnPtr().get());
+            }
+        }
+    }
+    if (auto bnodeScope = (*this)->getAttrOfType<mlir::ArrayAttr>("bnodeScop")) {
+        for (auto attr : bnodeScope) {
+            if (auto ref = mlir::dyn_cast_or_null<tuples::ColumnRefAttr>(attr)) {
+                columns.insert(ref.getColumnPtr().get());
+            }
+        }
+    }
+    return columns;
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getCreatedColumns() {
+    auto created = getCreatedVariables();
+    auto bindings = getBindingColumns();
+    created.insert(bindings);
+    return created;
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getUsedColumns() {
+    return getBoundVariables();
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache) {
+    lingodb::compiler::dialect::relalg::ColumnSet available;
+    if (auto child = mlir::dyn_cast_or_null<Operator>(getRel().getDefiningOp())) {
+        available.insert(cache.getAvailableColumnsFor(child));
+    }
+    available.insert(getCreatedColumns());
+    return available;
+}
+bool gpm::TriplePatternOp::canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column) {
+    return lingodb::compiler::dialect::relalg::detail::canColumnReach(getOperation(), source, target, column);
+}
+
+lingodb::compiler::dialect::relalg::ColumnSet gpm::NamedGraphOp::getCreatedColumns() {
+    return lingodb::compiler::dialect::relalg::ColumnSet();
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::NamedGraphOp::getUsedColumns() {
+    return lingodb::compiler::dialect::relalg::ColumnSet();
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::NamedGraphOp::getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache&) {
+    return getCreatedColumns();
+}
+bool gpm::NamedGraphOp::canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column) {
+    return lingodb::compiler::dialect::relalg::detail::canColumnReach(getOperation(), source, target, column);
+}
+
+lingodb::compiler::dialect::relalg::ColumnSet gpm::BasicGraphPatternOp::getCreatedColumns() {
+    return getCreatedVariables();
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::BasicGraphPatternOp::getUsedColumns() {
+    lingodb::compiler::dialect::relalg::ColumnSet used;
+    getPattern().walk([&](TriplePatternOp triple){
+        used.insert(triple.getBoundVariables());
+    });
+    return used;
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::BasicGraphPatternOp::getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache) {
+    lingodb::compiler::dialect::relalg::ColumnSet available;
+    if (auto child = mlir::dyn_cast_or_null<Operator>(getRel().getDefiningOp())) {
+        available.insert(cache.getAvailableColumnsFor(child));
+    }
+    available.insert(getCreatedColumns());
+    return available;
+}
+bool gpm::BasicGraphPatternOp::canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column) {
+    return lingodb::compiler::dialect::relalg::detail::canColumnReach(getOperation(), source, target, column);
+}
+
+lingodb::compiler::dialect::relalg::ColumnSet gpm::OptionalGraphPatternOp::getCreatedVariables() {
+    lingodb::compiler::dialect::relalg::ColumnSet res;
+    getPattern().walk([&](TriplePatternOp triple){
+        res.insert(triple.getCreatedVariables());
+    });
+    return res;
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::OptionalGraphPatternOp::getUsedVariables() {
+    lingodb::compiler::dialect::relalg::ColumnSet res;
+    getPattern().walk([&](TriplePatternOp triple){
+        res.insert(triple.getUsedVariables());
+    });
+    return res;
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::OptionalGraphPatternOp::getCreatedColumns() {
+    return getCreatedVariables();
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::OptionalGraphPatternOp::getUsedColumns() {
+    lingodb::compiler::dialect::relalg::ColumnSet used;
+    getPattern().walk([&](TriplePatternOp triple){
+        used.insert(triple.getBoundVariables());
+    });
+    return used;
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::OptionalGraphPatternOp::getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache) {
+    lingodb::compiler::dialect::relalg::ColumnSet available;
+    if (auto child = mlir::dyn_cast_or_null<Operator>(getRel().getDefiningOp())) {
+        available.insert(cache.getAvailableColumnsFor(child));
+    }
+    available.insert(getCreatedColumns());
+    return available;
+}
+bool gpm::OptionalGraphPatternOp::canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column) {
+    return lingodb::compiler::dialect::relalg::detail::canColumnReach(getOperation(), source, target, column);
 }
 
 } // namespace gengodb::compiler::dialect

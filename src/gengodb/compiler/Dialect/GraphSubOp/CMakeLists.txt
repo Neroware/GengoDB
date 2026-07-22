@@ -5,6 +5,9 @@ add_mlir_dialect_library(MLIRGraphSubOp
         GraphSubOpTypes.cpp
         GraphSubOpAttributes.cpp
         NamedGraphManager.cpp
+        Transforms/StringifyMaterializedGraphRefs.cpp
+        Transforms/ReduceHashKeys.cpp
+        Transforms/Passes.cpp
         ADDITIONAL_HEADER_DIRS
         ../../../../../include/gengodb/compiler/Dialect/GraphSubOp
 

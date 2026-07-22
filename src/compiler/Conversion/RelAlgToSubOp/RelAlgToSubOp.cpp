@@ -9,6 +9,7 @@
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorDialect.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorOps.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
 #include "lingodb/compiler/Dialect/SubOperator/Utils.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
 #include "lingodb/compiler/Dialect/util/FunctionHelper.h"
@@ -3042,6 +3043,15 @@ class QueryReturnOpLowering : public OpConversionPattern<relalg::QueryReturnOp> 
       return mlir::success();
    }
 };
+class InFlightOpLowering : public OpConversionPattern<relalg::InFlightOp>{
+   public:
+   using OpConversionPattern<relalg::InFlightOp>::OpConversionPattern;
+
+   LogicalResult matchAndRewrite(relalg::InFlightOp inFlightOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      rewriter.replaceOp(inFlightOp, adaptor.getOperands()[0]);
+      return mlir::success();
+   }
+};
 
 void RelalgToSubOpLoweringPass::runOnOperation() {
    auto module = getOperation();
@@ -3110,6 +3120,7 @@ void RelalgToSubOpLoweringPass::runOnOperation() {
    patterns.insert<TrackTuplesLowering>(ctxt);
    patterns.insert<QueryOpLowering>(ctxt);
    patterns.insert<QueryReturnOpLowering>(ctxt);
+   patterns.insert<InFlightOpLowering>(ctxt);
 
    if (failed(applyFullConversion(module, target, std::move(patterns))))
       signalPassFailure();
@@ -3121,6 +3132,7 @@ relalg::createLowerToSubOpPass() {
 }
 void relalg::createLowerRelAlgToSubOpPipeline(mlir::OpPassManager& pm) {
    pm.addPass(relalg::createLowerToSubOpPass());
+   pm.addPass(gsubop::createReduceHashKeysPass());
 }
 void relalg::registerRelAlgToSubOpConversionPasses() {
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {

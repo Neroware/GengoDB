@@ -186,7 +186,11 @@ PropertyGraph* GraphData::getGraph(lingodb::runtime::VarLen32 name, lingodb::run
             throw std::runtime_error("Found graph record but IRIs do not match!");
         }
         auto& pgraph = graph->getStorage();
-        pgraph.registerGraph();
+        static std::set<PropertyGraph*> pgraphs;
+        if (pgraphs.find(&pgraph) == pgraphs.end()) {
+            pgraph.registerGraph();
+            pgraphs.insert(&pgraph);
+        }
         return &pgraph;
     } else {
         // TODO Load local file (file://) or download graph from the semantic web (http://)
