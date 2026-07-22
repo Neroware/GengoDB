@@ -121,8 +121,29 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::BasicGraphPatternOp::getUsedV
     return res;
 }
 
+lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getBindingColumns() {
+    ColumnSet columns;
+    if (auto bindings = (*this)->getAttrOfType<mlir::DictionaryAttr>("bindings")) {
+        for (auto key : {"s", "p", "o"}) {
+            if (auto def = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(bindings.get(key))) {
+                columns.insert(def.getColumnPtr().get());
+            }
+        }
+    }
+    if (auto bnodeScope = (*this)->getAttrOfType<mlir::ArrayAttr>("bnodeScop")) {
+        for (auto attr : bnodeScope) {
+            if (auto ref = mlir::dyn_cast_or_null<tuples::ColumnRefAttr>(attr)) {
+                columns.insert(ref.getColumnPtr().get());
+            }
+        }
+    }
+    return columns;
+}
 lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getCreatedColumns() {
-    return getCreatedVariables();
+    auto created = getCreatedVariables();
+    auto bindings = getBindingColumns();
+    created.insert(bindings);
+    return created;
 }
 lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getUsedColumns() {
     return getBoundVariables();
