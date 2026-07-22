@@ -5,4 +5,7 @@ void gsubop::registerGraphSubOpTransformations() {
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
       return gsubop::createStringifyMaterializedGraphRefsPass();
    });
+   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
+      return gsubop::createReduceHashKeysPass();
+   });
 }

@@ -9,6 +9,7 @@
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorDialect.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorOps.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
 #include "lingodb/compiler/Dialect/SubOperator/Utils.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
 #include "lingodb/compiler/Dialect/util/FunctionHelper.h"
@@ -3131,6 +3132,7 @@ relalg::createLowerToSubOpPass() {
 }
 void relalg::createLowerRelAlgToSubOpPipeline(mlir::OpPassManager& pm) {
    pm.addPass(relalg::createLowerToSubOpPass());
+   pm.addPass(gsubop::createReduceHashKeysPass());
 }
 void relalg::registerRelAlgToSubOpConversionPasses() {
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
