@@ -32,9 +32,8 @@ class PrepareHashJoins : public mlir::RewritePattern {
         if (!mlir::isa<relalg::InnerJoinOp>(userOp)) 
             return mlir::failure();
         auto joinOp = mlir::cast<relalg::InnerJoinOp>(userOp);
-        if (auto implAttr = joinOp->getAttrOfType<mlir::StringAttr>("impl")) {
-            if (implAttr.getValue() != "hash") return mlir::failure();
-        }
+        auto implAttr = joinOp->getAttrOfType<mlir::StringAttr>("impl");
+        if (!implAttr || implAttr.getValue() != "hash") return mlir::failure();
         bool leftSide = op->getResult(0) == joinOp.getLeft();
         bool rightSide = !leftSide;
         auto pred = [](const mlir::Attribute& attr) { 
