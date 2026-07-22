@@ -28,26 +28,10 @@ def TriplePatternOp : GPM_Op<"triple_pattern", [Pure,GPMOperator,Operator,UnaryO
   let assemblyFormat = [{  $rel custom<CustRef>($graphRef) `(` custom<Term>($s) `,` custom<Term>($p) `,` custom<Term>($o) `)` attr-dict }];
   let hasVerifier = 1;
   let extraClassDeclaration = [{
-    static const std::string DEFAULT_JOIN_STRATEGY;
     lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
     lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
     lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
     bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
-    const std::string getSJoinStrategy() const {
-      if (auto joinStrategyAttr = (*this)->getAttrOfType<mlir::StringAttr>("sJoinStrategy"))
-        return joinStrategyAttr.str();
-      return DEFAULT_JOIN_STRATEGY;
-    }
-    const std::string getPJoinStrategy() const {
-      if (auto joinStrategyAttr = (*this)->getAttrOfType<mlir::StringAttr>("pJoinStrategy"))
-        return joinStrategyAttr.str();
-      return DEFAULT_JOIN_STRATEGY;
-    }
-    const std::string getOJoinStrategy() const {
-      if (auto joinStrategyAttr = (*this)->getAttrOfType<mlir::StringAttr>("oJoinStrategy"))
-        return joinStrategyAttr.str();
-      return DEFAULT_JOIN_STRATEGY;
-    }
   }];
 }
 
