@@ -5400,51 +5400,47 @@ static bool isNullableGraphRefType(mlir::Type refType) {
    auto inner = nullable.getType();
    return mlir::isa<gsubop::NodeRefType>(inner) || mlir::isa<gsubop::EdgeRefType>(inner);
 }
-class WrapNullableRefOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::WrapNullableRefOp> {
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::WrapNullableRefOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::WrapNullableRefOp op) const override {
-      return isNullableGraphRefType(op.getNullableRef().getColumn().type) ? success() : failure();
-   }
-   void rewrite(gsubop::WrapNullableRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
-      mapping.define(op.getNullableRef(), mapping.resolve(op, op.getRef()));
-      rewriter.replaceTupleStream(op, mapping);
+class WrapNullableRefOpLowering : public SubOpConversionPattern<gsubop::WrapNullableRefOp> {
+   using SubOpConversionPattern<gsubop::WrapNullableRefOp>::SubOpConversionPattern;
+   LogicalResult matchAndRewrite(gsubop::WrapNullableRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
+      if (!isNullableGraphRefType(op.getType()))
+         return failure();
+      rewriter.replaceOp(op, adaptor.getRef());
+      return success();
    }
 };
-class NullRefOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::NullRefOp> {
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::NullRefOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::NullRefOp op) const override {
-      return isNullableGraphRefType(op.getNullableRef().getColumn().type) ? success() : failure();
-   }
-   void rewrite(gsubop::NullRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+class NullRefOpLowering : public SubOpConversionPattern<gsubop::NullRefOp> {
+   using SubOpConversionPattern<gsubop::NullRefOp>::SubOpConversionPattern;
+   LogicalResult matchAndRewrite(gsubop::NullRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
+      if (!isNullableGraphRefType(op.getResult().getType()))
+         return failure();
       auto loc = op.getLoc();
-      auto nullableType = mlir::cast<db::NullableType>(op.getNullableRef().getColumn().type);
+      auto nullableType = mlir::cast<db::NullableType>(op.getType());
       auto convertedType = typeConverter->convertType(nullableType.getType());
-      mapping.define(op.getNullableRef(), rewriter.create<util::InvalidRefOp>(loc, convertedType));
-      rewriter.replaceTupleStream(op, mapping);
+      mlir::Value result = rewriter.create<util::InvalidRefOp>(loc, convertedType);
+      rewriter.replaceOp(op, result);
+      return success();
    }
 };
-class IsNullRefOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::IsNullRefOp> {
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::IsNullRefOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::IsNullRefOp op) const override {
-      return isNullableGraphRefType(op.getRef().getColumn().type) ? success() : failure();
-   }
-   void rewrite(gsubop::IsNullRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+class IsNullRefOpLowering : public SubOpConversionPattern<gsubop::IsNullRefOp> {
+   using SubOpConversionPattern<gsubop::IsNullRefOp>::SubOpConversionPattern;
+   LogicalResult matchAndRewrite(gsubop::IsNullRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
+      if (!isNullableGraphRefType(op.getRef().getType()))
+         return failure();
       auto loc = op.getLoc();
-      auto ref = mapping.resolve(op, op.getRef());
-      mlir::Value valid = rewriter.create<util::IsRefValidOp>(loc, rewriter.getI1Type(), ref);
+      mlir::Value valid = rewriter.create<util::IsRefValidOp>(loc, rewriter.getI1Type(), adaptor.getRef());
       mlir::Value isNull = rewriter.create<mlir::arith::XOrIOp>(loc, valid, rewriter.create<mlir::arith::ConstantIntOp>(loc, 1, rewriter.getI1Type()));
-      mapping.define(op.getIsNull(), isNull);
-      rewriter.replaceTupleStream(op, mapping);
+      rewriter.replaceOp(op, isNull);
+      return success();
    }
 };
-class UnwrapNullableRefOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::UnwrapNullableRefOp> {
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::UnwrapNullableRefOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::UnwrapNullableRefOp op) const override {
-      return isNullableGraphRefType(op.getRef().getColumn().type) ? success() : failure();
-   }
-   void rewrite(gsubop::UnwrapNullableRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
-      mapping.define(op.getUnwrapped(), mapping.resolve(op, op.getRef()));
-      rewriter.replaceTupleStream(op, mapping);
+class UnwrapNullableRefOpLowering : public SubOpConversionPattern<gsubop::UnwrapNullableRefOp> {
+   using SubOpConversionPattern<gsubop::UnwrapNullableRefOp>::SubOpConversionPattern;
+   LogicalResult matchAndRewrite(gsubop::UnwrapNullableRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
+      if (!isNullableGraphRefType(op.getRef().getType()))
+         return failure();
+      rewriter.replaceOp(op, adaptor.getRef());
+      return success();
    }
 };
 

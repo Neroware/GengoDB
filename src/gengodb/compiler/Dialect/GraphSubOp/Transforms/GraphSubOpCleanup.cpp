@@ -23,6 +23,12 @@ using MemberMapper = llvm::DenseMap<subop::Member, subop::Member>;
 static bool isGraphRefType(mlir::Type t) {
    return mlir::isa<gsubop::NodeRefType>(t) || mlir::isa<gsubop::EdgeRefType>(t);
 }
+static bool isNullableGraphRefType(mlir::Type refType) {
+   auto nullable = mlir::dyn_cast<db::NullableType>(refType);
+   if (!nullable) return false;
+   auto inner = nullable.getType();
+   return mlir::isa<gsubop::NodeRefType>(inner) || mlir::isa<gsubop::EdgeRefType>(inner);
+}
 static subop::Member idMemberOf(mlir::Type graphRefType) {
    if (auto nodeRef = mlir::dyn_cast<gsubop::NodeRefType>(graphRefType))
       return nodeRef.getNodeMembers().getMembers()[0];
@@ -56,12 +62,22 @@ static mlir::Block* buildI32EqFn(mlir::OpBuilder& builder, mlir::Location loc, s
 class NullableGraphRefCleanup {
    mlir::MLIRContext* ctxt;
    mlir::Location loc;
+   public:
    NullableGraphRefCleanup(mlir::MLIRContext* ctxt, mlir::Location loc)
       : ctxt(ctxt), loc(loc) {}
-   void rewriteNull(mlir::OpBuilder& builder, db::NullOp nullOp) const {
-      // mlir::OpBuilder builder(ctxt);
-      // builder.setInsertionPoint(nullOp);
-      // builder.create<gsubop::NullRefOp>(loc, nullOp.getType())
+   void apply(db::NullOp nullOp) const {
+      mlir::OpBuilder builder(ctxt);
+      builder.setInsertionPoint(nullOp);
+      auto newOp = builder.create<gsubop::NullRefOp>(loc, nullOp.getType());
+      nullOp.replaceAllUsesWith(newOp.getResult());
+      nullOp.erase();
+   }
+   void apply(db::AsNullableOp asNullableOp) const {
+      mlir::OpBuilder builder(ctxt);
+      builder.setInsertionPoint(asNullableOp);
+      auto newOp = builder.create<gsubop::WrapNullableRefOp>(loc, asNullableOp.getResult().getType(), asNullableOp.getVal());
+      asNullableOp.replaceAllUsesWith(newOp.getResult());
+      asNullableOp.erase();
    }
 };
 
@@ -165,18 +181,35 @@ class GraphSubOpCleanupPass : public mlir::PassWrapper<GraphSubOpCleanupPass, ml
    llvm::StringRef getArgument() const override { return "gsubop-cleanup"; }
    void runOnOperation() override {
       auto& memberManager = getContext().getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
-      llvm::SmallVector<subop::GenericCreateOp> toProcess;
-      getOperation()->walk([&](subop::GenericCreateOp createOp) {
-         auto mmType = mlir::dyn_cast<subop::MultiMapType>(createOp.getRes().getType());
-         if (!mmType) return;
-         bool needsReduction = llvm::any_of(mmType.getKeyMembers().getMembers(), [&](subop::Member m) {
-            return isGraphRefType(memberManager.getType(m));
+      {
+         llvm::SmallVector<subop::GenericCreateOp> toProcess;
+         getOperation()->walk([&](subop::GenericCreateOp createOp) {
+            auto mmType = mlir::dyn_cast<subop::MultiMapType>(createOp.getRes().getType());
+            if (!mmType) return;
+            bool needsReduction = llvm::any_of(mmType.getKeyMembers().getMembers(), [&](subop::Member m) {
+               return isGraphRefType(memberManager.getType(m));
+            });
+            if (needsReduction) toProcess.push_back(createOp);
          });
-         if (needsReduction) toProcess.push_back(createOp);
-      });
-      for (auto createOp : toProcess) {
-         MultiMapCleanup(&getContext(), createOp->getLoc(), memberManager).apply(createOp);
+         MultiMapCleanup cleanup(&getContext(), getOperation().getLoc(), memberManager);
+         for (auto createOp : toProcess) {
+            cleanup.apply(createOp);
+         }
       }
+      auto processNullableOps = [&]<typename OpTy>() {
+         llvm::SmallVector<OpTy> toProcess;
+         getOperation()->walk([&](OpTy op) {
+            if (!isNullableGraphRefType(op.getResult().getType()))
+               return;
+            toProcess.push_back(op);
+         });
+         NullableGraphRefCleanup cleanup(&getContext(), getOperation().getLoc());
+         for (auto op : toProcess) {
+            cleanup.apply(op);
+         }
+      };
+      processNullableOps.template operator()<db::NullOp>();
+      processNullableOps.template operator()<db::AsNullableOp>();
    }
 };
 } // namespace
