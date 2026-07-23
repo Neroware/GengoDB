@@ -16,6 +16,7 @@
 #include "lingodb/compiler/runtime/ArrowTable.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
 #include "lingodb/compiler/runtime/Buffer.h"
 #include "lingodb/compiler/runtime/DataSourceIteration.h"
 #include "lingodb/compiler/runtime/EntryLock.h"
@@ -5880,6 +5881,7 @@ void subop::setCompressionEnabled(bool compressionEnabled) {
 }
 void subop::createLowerSubOpPipeline(mlir::OpPassManager& pm) {
    //pm.addPass(subop::createGlobalOptPass());
+   pm.addPass(gsubop::createStringifyMaterializedGraphRefsPass());
    pm.addPass(subop::createFoldColumnsPass());
    pm.addPass(subop::createReuseLocalPass());
    pm.addPass(subop::createSpecializeSubOpPass(true));

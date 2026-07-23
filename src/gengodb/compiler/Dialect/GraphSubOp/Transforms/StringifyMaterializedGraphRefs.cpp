@@ -1,5 +1,6 @@
 #include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
 
+#include "lingodb/compiler/Dialect/DB/IR/DBOps.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorDialect.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorOps.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorOpsTypes.h"
@@ -33,18 +34,23 @@ static std::pair<tuples::ColumnDefAttr, tuples::ColumnRefAttr> createColumn(mlir
 static bool isGraphRefType(mlir::Type type) {
    return mlir::isa<gsubop::NodeRefType>(type) || mlir::isa<gsubop::EdgeRefType>(type) || mlir::isa<gsubop::PropertyRefType>(type);
 }
+static bool isNullableGraphRefType(mlir::Type type) {
+   auto nullable = mlir::dyn_cast<db::NullableType>(type);
+   return nullable && (mlir::isa<gsubop::NodeRefType>(nullable.getType()) || mlir::isa<gsubop::EdgeRefType>(nullable.getType()));
+}
+static bool isGraphRefTypeOrNullableGraphRefType(mlir::Type type) {
+   return isGraphRefType(type) || isNullableGraphRefType(type);
+}
 
 class StringifyMaterializedGraphRefs : public mlir::OpRewritePattern<subop::MaterializeOp> {
     public:
     using mlir::OpRewritePattern<subop::MaterializeOp>::OpRewritePattern;
     mlir::LogicalResult matchAndRewrite(subop::MaterializeOp op, mlir::PatternRewriter& rewriter) const override {
-        auto& memberManager = rewriter.getContext()->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
         if (!mlir::isa<subop::ResultTableType>(op.getState().getType()))
             return mlir::failure();
         auto mapping = op.getMapping();
-        if (llvm::none_of(mapping.getMapping(), [](const subop::RefMappingPairT& pair) { return isGraphRefType(pair.second.getColumn().type); }))
+        if (llvm::none_of(mapping.getMapping(), [](const subop::RefMappingPairT& pair) { return isGraphRefTypeOrNullableGraphRefType(pair.second.getColumn().type); }))
             return mlir::failure();
-
         auto loc = op->getLoc();
         auto ctxt = rewriter.getContext();
         mlir::OpBuilder::InsertionGuard guard(rewriter);
@@ -53,11 +59,13 @@ class StringifyMaterializedGraphRefs : public mlir::OpRewritePattern<subop::Mate
         llvm::SmallVector<subop::RefMappingPairT> newMapping;
         for (auto& pair : mapping.getMapping()) {
             auto colRef = pair.second;
-            if (!isGraphRefType(colRef.getColumn().type)) {
+            auto colType = colRef.getColumn().type;
+            if (!isGraphRefTypeOrNullableGraphRefType(colType)) {
                 newMapping.push_back(pair);
                 continue;
             }
-            auto [newColDef, newColRef] = createColumn(memberManager.getType(pair.first), "vars", "str");
+            auto strType = db::StringType::get(ctxt);
+            auto [newColDef, newColRef] = createColumn(strType, "vars", "str");
             stream = rewriter.create<gsubop::GraphRefToStringOp>(loc, stream, colRef, newColDef);
             newMapping.push_back({pair.first, newColRef});
         }
