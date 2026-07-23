@@ -3132,7 +3132,7 @@ relalg::createLowerToSubOpPass() {
 }
 void relalg::createLowerRelAlgToSubOpPipeline(mlir::OpPassManager& pm) {
    pm.addPass(relalg::createLowerToSubOpPass());
-   pm.addPass(gsubop::createReduceHashKeysPass());
+   pm.addPass(gsubop::createGraphSubOpCleanupPass());
 }
 void relalg::registerRelAlgToSubOpConversionPasses() {
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {

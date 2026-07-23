@@ -13,7 +13,6 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
-// Resolves gsubop graph ref hash keys.
 namespace {
 using namespace gengodb::compiler::dialect;
 using namespace lingodb::compiler::dialect;
@@ -52,30 +51,15 @@ static mlir::Block* buildI32EqFn(mlir::OpBuilder& builder, mlir::Location loc, s
    return block;
 }
 
-class ReduceHashKeysPass : public mlir::PassWrapper<ReduceHashKeysPass, mlir::OperationPass<mlir::ModuleOp>> {
+class MultiMapCleanup {
+   mlir::MLIRContext* ctxt;
+   mlir::Location loc;
+   subop::MemberManager& memberManager;
    public:
-   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ReduceHashKeysPass)
-   llvm::StringRef getArgument() const override { return "gsubop-reduce-hash-keys"; }
-   void runOnOperation() override {
-      auto& memberManager = getContext().getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
-      llvm::SmallVector<subop::GenericCreateOp> toProcess;
-      getOperation()->walk([&](subop::GenericCreateOp createOp) {
-         auto mmType = mlir::dyn_cast<subop::MultiMapType>(createOp.getRes().getType());
-         if (!mmType) return;
-         bool needsReduction = llvm::any_of(mmType.getKeyMembers().getMembers(), [&](subop::Member m) {
-            return isGraphRefType(memberManager.getType(m));
-         });
-         if (needsReduction) toProcess.push_back(createOp);
-      });
-      for (auto createOp : toProcess) {
-         rewriteMultiMap(createOp, memberManager);
-      }
-   }
-   private:
-   void rewriteMultiMap(subop::GenericCreateOp createOp, subop::MemberManager& memberManager) {
-      auto* ctxt = &getContext();
+   MultiMapCleanup(mlir::MLIRContext* ctxt, mlir::Location loc, subop::MemberManager& memberManager)
+      : ctxt(ctxt), loc(loc), memberManager(memberManager) {}
+   void apply(subop::GenericCreateOp createOp) {
       mlir::OpBuilder builder(ctxt);
-      auto loc = createOp->getLoc();
       auto mmType = mlir::cast<subop::MultiMapType>(createOp.getRes().getType());
       auto oldKeyMembers = mmType.getKeyMembers().getMembers();
       auto oldValueMembers = mmType.getValueMembers().getMembers();
@@ -109,10 +93,8 @@ class ReduceHashKeysPass : public mlir::PassWrapper<ReduceHashKeysPass, mlir::Op
       rewriteLookup(builder, lookupOp, newCreateOp.getRes(), newMultiMapType, reducedKeyToId, oldKeyMembers.size());
       createOp->erase();
    }
+   private:
    void rewriteInsert(mlir::OpBuilder& builder, subop::InsertOp insertOp, mlir::Value newState, llvm::DenseMap<subop::Member, subop::Member>& reducedKeyToId, size_t numKeyMembers) {
-      auto* ctxt = &getContext();
-      auto loc = insertOp->getLoc();
-      auto& memberManager = ctxt->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
       RefMappingCollector newMapping;
       builder.setInsertionPoint(insertOp);
       mlir::Value stream = insertOp.getStream();
@@ -133,7 +115,6 @@ class ReduceHashKeysPass : public mlir::PassWrapper<ReduceHashKeysPass, mlir::Op
       insertOp.getEqFn().push_back(buildI32EqFn(builder, loc, numKeyMembers));
    }
    void rewriteLookup(mlir::OpBuilder& builder, subop::LookupOp lookupOp, mlir::Value newState, subop::MultiMapType newMultiMapType, llvm::DenseMap<subop::Member, subop::Member>& reducedKeyToId, size_t numKeyMembers) {
-      auto* ctxt = &getContext();
       auto loc = lookupOp->getLoc();
       auto oldKeys = lookupOp.getKeys();
       llvm::SmallVector<mlir::Attribute> newKeys;
@@ -162,6 +143,27 @@ class ReduceHashKeysPass : public mlir::PassWrapper<ReduceHashKeysPass, mlir::Op
       lookupOp.getRef().getColumn().type = newListType;
    }
 };
+
+class GraphSubOpCleanupPass : public mlir::PassWrapper<GraphSubOpCleanupPass, mlir::OperationPass<mlir::ModuleOp>> {
+   public:
+   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(GraphSubOpCleanupPass)
+   llvm::StringRef getArgument() const override { return "gsubop-cleanup"; }
+   void runOnOperation() override {
+      auto& memberManager = getContext().getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
+      llvm::SmallVector<subop::GenericCreateOp> toProcess;
+      getOperation()->walk([&](subop::GenericCreateOp createOp) {
+         auto mmType = mlir::dyn_cast<subop::MultiMapType>(createOp.getRes().getType());
+         if (!mmType) return;
+         bool needsReduction = llvm::any_of(mmType.getKeyMembers().getMembers(), [&](subop::Member m) {
+            return isGraphRefType(memberManager.getType(m));
+         });
+         if (needsReduction) toProcess.push_back(createOp);
+      });
+      for (auto createOp : toProcess) {
+         MultiMapCleanup(&getContext(), createOp->getLoc(), memberManager).apply(createOp);
+      }
+   }
+};
 } // namespace
 
-std::unique_ptr<mlir::Pass> gsubop::createReduceHashKeysPass() { return std::make_unique<ReduceHashKeysPass>(); }
+std::unique_ptr<mlir::Pass> gsubop::createGraphSubOpCleanupPass() { return std::make_unique<GraphSubOpCleanupPass>(); }

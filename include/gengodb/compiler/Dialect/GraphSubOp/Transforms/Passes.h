@@ -5,7 +5,7 @@
 namespace gengodb::compiler::dialect {
 namespace gsubop {
 std::unique_ptr<mlir::Pass> createStringifyMaterializedGraphRefsPass();
-std::unique_ptr<mlir::Pass> createReduceHashKeysPass();
+std::unique_ptr<mlir::Pass> createGraphSubOpCleanupPass();
 void registerGraphSubOpTransformations();
 } // end namespace gsubop
 } // end namespace gengodb::compiler::dialect
