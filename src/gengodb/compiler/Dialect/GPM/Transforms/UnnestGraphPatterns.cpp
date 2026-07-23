@@ -16,6 +16,7 @@
 namespace {
 using namespace gengodb::compiler::dialect;
 using namespace lingodb::compiler::dialect;
+using ColumnMapper = llvm::DenseMap<const tuples::Column*, const tuples::Column*>;
 
 class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass, mlir::OperationPass<mlir::ModuleOp>> {
    virtual llvm::StringRef getArgument() const override { return "gpm-unnest-patterns"; }
@@ -133,11 +134,13 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       builder.setInsertionPoint(insertBefore);
       auto streamType = tuples::TupleStreamType::get(builder.getContext());
       if (elementKind == gpm::PatternKind::optional) {
-         auto mapping = buildNullableMapping(builder, elementCreatedVars);
+         ColumnMapper nullableColMap;
+         auto mapping = buildNullableMapping(builder, elementCreatedVars, nullableColMap);
          auto join = builder.create<relalg::OuterJoinOp>(loc, streamType, stream, elementStream, mapping);
          join.initPredicate();
          addSharedVariablePredicate(join, stream, elementStream, loc);
          stream = join.getResult();
+         remapColumnsEverywhere(join.getOperation(), nullableColMap);
       }
       else if (elementKind == gpm::PatternKind::minus) {
          auto join = builder.create<relalg::AntiSemiJoinOp>(loc, streamType, stream, elementStream);
@@ -235,7 +238,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       llvm::SmallVector<mlir::Attribute> nullsEqual(leftHash.size(), mlir::IntegerAttr::get(mlir::IntegerType::get(ctxt, 8), 0));
       join->setAttr("nullsEqual", mlir::ArrayAttr::get(ctxt, nullsEqual));
    }
-   mlir::ArrayAttr buildNullableMapping(mlir::OpBuilder& builder, const relalg::ColumnSet& createdVars) {
+   mlir::ArrayAttr buildNullableMapping(mlir::OpBuilder& builder, const relalg::ColumnSet& createdVars, ColumnMapper& colMap) {
       auto* ctxt = builder.getContext();
       auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
       auto scope = columnManager.getUniqueScope("outerjoin");
@@ -250,8 +253,61 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          }
          newDef.getColumn().type = newType;
          mappingEntries.push_back(newDef);
+         colMap[column] = &newDef.getColumn();
       }
       return mlir::ArrayAttr::get(ctxt, mappingEntries);
+   }
+   mlir::Attribute remapColumnAttr(mlir::Attribute attr, const llvm::DenseMap<const tuples::Column*, const tuples::Column*>& colMap, tuples::ColumnManager& columnManager) {
+      if (!attr) return attr;
+      if (auto colRef = mlir::dyn_cast<tuples::ColumnRefAttr>(attr)) {
+         auto it = colMap.find(&colRef.getColumn());
+         if (it != colMap.end()) return columnManager.createRef(it->second);
+         return attr;
+      }
+      if (auto colDef = mlir::dyn_cast<tuples::ColumnDefAttr>(attr)) {
+         auto fromExisting = colDef.getFromExisting();
+         if (!fromExisting) return attr;
+         auto newFromExisting = remapColumnAttr(fromExisting, colMap, columnManager);
+         if (newFromExisting == fromExisting) return attr;
+         return columnManager.createDef(&colDef.getColumn(), newFromExisting);
+      }
+      if (auto arr = mlir::dyn_cast<mlir::ArrayAttr>(attr)) {
+         bool changed = false;
+         llvm::SmallVector<mlir::Attribute> newElems;
+         newElems.reserve(arr.size());
+         for (auto e : arr) {
+            auto ne = remapColumnAttr(e, colMap, columnManager);
+            changed |= ne != e;
+            newElems.push_back(ne);
+         }
+         return changed ? mlir::ArrayAttr::get(arr.getContext(), newElems) : attr;
+      }
+      if (auto dict = mlir::dyn_cast<mlir::DictionaryAttr>(attr)) {
+         bool changed = false;
+         llvm::SmallVector<mlir::NamedAttribute> newElems;
+         for (auto na : dict) {
+            auto ne = remapColumnAttr(na.getValue(), colMap, columnManager);
+            changed |= ne != na.getValue();
+            newElems.emplace_back(na.getName(), ne);
+         }
+         return changed ? mlir::DictionaryAttr::get(dict.getContext(), newElems) : attr;
+      }
+      return attr;
+   }
+   void remapColumnsEverywhere(mlir::Operation* skip, const ColumnMapper& colMap) {
+      if (colMap.empty()) return;
+      auto& columnManager = skip->getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      getOperation()->walk([&](mlir::Operation* op) {
+         if (op == skip) return;
+         bool changed = false;
+         llvm::SmallVector<mlir::NamedAttribute> newAttrs;
+         for (auto namedAttr : op->getAttrDictionary()) {
+            auto remapped = remapColumnAttr(namedAttr.getValue(), colMap, columnManager);
+            changed |= remapped != namedAttr.getValue();
+            newAttrs.emplace_back(namedAttr.getName(), remapped);
+         }
+         if (changed) op->setAttrs(mlir::DictionaryAttr::get(op->getContext(), newAttrs));
+      });
    }
    void annotateBNodeScope(gpm::TriplePatternOp triple, llvm::StringMap<tuples::ColumnRefAttr>& scope) {
       auto* ctxt = triple.getContext();

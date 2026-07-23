@@ -56,7 +56,6 @@ class ReduceHashKeysPass : public mlir::PassWrapper<ReduceHashKeysPass, mlir::Op
    public:
    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ReduceHashKeysPass)
    llvm::StringRef getArgument() const override { return "gsubop-reduce-hash-keys"; }
-
    void runOnOperation() override {
       auto& memberManager = getContext().getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
       llvm::SmallVector<subop::GenericCreateOp> toProcess;
@@ -72,7 +71,6 @@ class ReduceHashKeysPass : public mlir::PassWrapper<ReduceHashKeysPass, mlir::Op
          rewriteMultiMap(createOp, memberManager);
       }
    }
-
    private:
    void rewriteMultiMap(subop::GenericCreateOp createOp, subop::MemberManager& memberManager) {
       auto* ctxt = &getContext();
@@ -95,10 +93,9 @@ class ReduceHashKeysPass : public mlir::PassWrapper<ReduceHashKeysPass, mlir::Op
             newKeyMembers.push_back(m);
          }
       }
-      if (reducedKeyToId.empty()) return;
-
+      if (reducedKeyToId.empty()) 
+         return;
       auto newMultiMapType = subop::MultiMapType::get(ctxt, subop::StateMembersAttr::get(ctxt, newKeyMembers), subop::StateMembersAttr::get(ctxt, newValueMembers));
-
       subop::InsertOp insertOp;
       subop::LookupOp lookupOp;
       for (auto* user : createOp.getRes().getUsers()) {
@@ -106,16 +103,12 @@ class ReduceHashKeysPass : public mlir::PassWrapper<ReduceHashKeysPass, mlir::Op
          if (auto lk = mlir::dyn_cast<subop::LookupOp>(user)) lookupOp = lk;
       }
       assert(insertOp && lookupOp && "expected exactly one insert and one lookup consuming this multimap (translateHJ's own invariant)");
-
       builder.setInsertionPoint(createOp);
       auto newCreateOp = builder.create<subop::GenericCreateOp>(loc, newMultiMapType);
-
       rewriteInsert(builder, insertOp, newCreateOp.getRes(), reducedKeyToId, oldKeyMembers.size());
       rewriteLookup(builder, lookupOp, newCreateOp.getRes(), newMultiMapType, reducedKeyToId, oldKeyMembers.size());
-
       createOp->erase();
    }
-
    void rewriteInsert(mlir::OpBuilder& builder, subop::InsertOp insertOp, mlir::Value newState, llvm::DenseMap<subop::Member, subop::Member>& reducedKeyToId, size_t numKeyMembers) {
       auto* ctxt = &getContext();
       auto loc = insertOp->getLoc();
@@ -139,7 +132,6 @@ class ReduceHashKeysPass : public mlir::PassWrapper<ReduceHashKeysPass, mlir::Op
       insertOp.getEqFn().front().erase();
       insertOp.getEqFn().push_back(buildI32EqFn(builder, loc, numKeyMembers));
    }
-
    void rewriteLookup(mlir::OpBuilder& builder, subop::LookupOp lookupOp, mlir::Value newState, subop::MultiMapType newMultiMapType, llvm::DenseMap<subop::Member, subop::Member>& reducedKeyToId, size_t numKeyMembers) {
       auto* ctxt = &getContext();
       auto loc = lookupOp->getLoc();
@@ -160,13 +152,11 @@ class ReduceHashKeysPass : public mlir::PassWrapper<ReduceHashKeysPass, mlir::Op
             newKeys.push_back(keyAttr);
          }
       }
-
       lookupOp.getStreamMutable().assign(stream);
       lookupOp.getStateMutable().assign(newState);
       lookupOp->setAttr("keys", mlir::ArrayAttr::get(ctxt, newKeys));
       lookupOp.getEqFn().front().erase();
       lookupOp.getEqFn().push_back(buildI32EqFn(builder, loc, numKeyMembers));
-
       auto newEntryRefType = subop::MultiMapEntryRefType::get(ctxt, newMultiMapType);
       auto newListType = subop::ListType::get(ctxt, newEntryRefType);
       lookupOp.getRef().getColumn().type = newListType;

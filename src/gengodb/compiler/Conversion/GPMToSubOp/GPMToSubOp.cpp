@@ -471,6 +471,18 @@ class GpmIdentifiersEqualLowering : public OpConversionPattern<gpm::IdentifiersE
    }
 };
 
+static void refreshNullableTypes(ModuleOp module) {
+   module.walk([&](relalg::OuterJoinOp outerJoinOp) {
+      for (mlir::Attribute attr : outerJoinOp.getMapping()) {
+         auto defAttr = mlir::cast<tuples::ColumnDefAttr>(attr);
+         auto fromExisting = mlir::cast<mlir::ArrayAttr>(defAttr.getFromExisting());
+         auto sourceRef = mlir::cast<tuples::ColumnRefAttr>(fromExisting[0]);
+         mlir::Type innerType = sourceRef.getColumn().type;
+         defAttr.getColumn().type = db::NullableType::get(module->getContext(), innerType);
+      }
+   });
+}
+
 void GPMToSubOpLoweringPass::runOnOperation() {
    auto module = getOperation();
    getContext().getLoadedDialect<util::UtilDialect>()->getFunctionHelper().setParentModule(module);
@@ -509,8 +521,11 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs);
    patterns.insert<GpmIdentifiersEqualLowering>(typeConverter, ctxt);
 
-   if (failed(applyFullConversion(module, target, std::move(patterns))))
+   if (failed(applyFullConversion(module, target, std::move(patterns)))) {
       signalPassFailure();
+      return;
+   }
+   refreshNullableTypes(module);
 }
 } // namespace
 std::unique_ptr<mlir::Pass>
