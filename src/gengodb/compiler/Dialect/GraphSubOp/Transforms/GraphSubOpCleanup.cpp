@@ -18,6 +18,7 @@ using namespace gengodb::compiler::dialect;
 using namespace lingodb::compiler::dialect;
 using DefMappingCollector = llvm::SmallVector<subop::DefMappingPairT>;
 using RefMappingCollector = llvm::SmallVector<subop::RefMappingPairT>;
+using MemberMapper = llvm::DenseMap<subop::Member, subop::Member>;
 
 static bool isGraphRefType(mlir::Type t) {
    return mlir::isa<gsubop::NodeRefType>(t) || mlir::isa<gsubop::EdgeRefType>(t);
@@ -51,6 +52,20 @@ static mlir::Block* buildI32EqFn(mlir::OpBuilder& builder, mlir::Location loc, s
    return block;
 }
 
+// Replace db ops on !db.nullable<GraphRefType> with GSubOp ops
+class NullableGraphRefCleanup {
+   mlir::MLIRContext* ctxt;
+   mlir::Location loc;
+   NullableGraphRefCleanup(mlir::MLIRContext* ctxt, mlir::Location loc)
+      : ctxt(ctxt), loc(loc) {}
+   void rewriteNull(mlir::OpBuilder& builder, db::NullOp nullOp) const {
+      // mlir::OpBuilder builder(ctxt);
+      // builder.setInsertionPoint(nullOp);
+      // builder.create<gsubop::NullRefOp>(loc, nullOp.getType())
+   }
+};
+
+// Node refs as multimap keys -> i32 keys
 class MultiMapCleanup {
    mlir::MLIRContext* ctxt;
    mlir::Location loc;
@@ -58,14 +73,14 @@ class MultiMapCleanup {
    public:
    MultiMapCleanup(mlir::MLIRContext* ctxt, mlir::Location loc, subop::MemberManager& memberManager)
       : ctxt(ctxt), loc(loc), memberManager(memberManager) {}
-   void apply(subop::GenericCreateOp createOp) {
+   void apply(subop::GenericCreateOp createOp) const {
       mlir::OpBuilder builder(ctxt);
       auto mmType = mlir::cast<subop::MultiMapType>(createOp.getRes().getType());
       auto oldKeyMembers = mmType.getKeyMembers().getMembers();
       auto oldValueMembers = mmType.getValueMembers().getMembers();
       llvm::SmallVector<subop::Member> newKeyMembers;
       llvm::SmallVector<subop::Member> newValueMembers(oldValueMembers.begin(), oldValueMembers.end());
-      llvm::DenseMap<subop::Member, subop::Member> reducedKeyToId;
+      MemberMapper reducedKeyToId;
       for (auto m : oldKeyMembers) {
          if (isGraphRefType(memberManager.getType(m))) {
             auto idMember = memberManager.createMember("hashkey", builder.getI32Type());
@@ -94,7 +109,7 @@ class MultiMapCleanup {
       createOp->erase();
    }
    private:
-   void rewriteInsert(mlir::OpBuilder& builder, subop::InsertOp insertOp, mlir::Value newState, llvm::DenseMap<subop::Member, subop::Member>& reducedKeyToId, size_t numKeyMembers) {
+   void rewriteInsert(mlir::OpBuilder& builder, subop::InsertOp insertOp, mlir::Value newState, MemberMapper& reducedKeyToId, size_t numKeyMembers) const {
       RefMappingCollector newMapping;
       builder.setInsertionPoint(insertOp);
       mlir::Value stream = insertOp.getStream();
@@ -114,7 +129,7 @@ class MultiMapCleanup {
       insertOp.getEqFn().front().erase();
       insertOp.getEqFn().push_back(buildI32EqFn(builder, loc, numKeyMembers));
    }
-   void rewriteLookup(mlir::OpBuilder& builder, subop::LookupOp lookupOp, mlir::Value newState, subop::MultiMapType newMultiMapType, llvm::DenseMap<subop::Member, subop::Member>& reducedKeyToId, size_t numKeyMembers) {
+   void rewriteLookup(mlir::OpBuilder& builder, subop::LookupOp lookupOp, mlir::Value newState, subop::MultiMapType newMultiMapType, MemberMapper& reducedKeyToId, size_t numKeyMembers) const {
       auto loc = lookupOp->getLoc();
       auto oldKeys = lookupOp.getKeys();
       llvm::SmallVector<mlir::Attribute> newKeys;

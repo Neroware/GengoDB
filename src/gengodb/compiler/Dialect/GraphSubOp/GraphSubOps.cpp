@@ -184,34 +184,6 @@ mlir::Operation* gsubop::GraphRefToStringOp::cloneSubOp(mlir::OpBuilder& builder
    return newOp;
 }
 
-mlir::Operation* gsubop::WrapNullableRefOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
-   auto newOp = builder.create<WrapNullableRefOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getRef(), getNullableRef());
-   mapResults(mapping, this->getOperation(), newOp.getOperation());
-
-   return newOp;
-}
-
-mlir::Operation* gsubop::NullRefOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
-   auto newOp = builder.create<NullRefOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getNullableRef());
-   mapResults(mapping, this->getOperation(), newOp.getOperation());
-
-   return newOp;
-}
-
-mlir::Operation* gsubop::IsNullRefOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
-   auto newOp = builder.create<IsNullRefOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getRef(), getIsNull());
-   mapResults(mapping, this->getOperation(), newOp.getOperation());
-
-   return newOp;
-}
-
-mlir::Operation* gsubop::UnwrapNullableRefOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
-   auto newOp = builder.create<UnwrapNullableRefOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getRef(), getUnwrapped());
-   mapResults(mapping, this->getOperation(), newOp.getOperation());
-
-   return newOp;
-}
-
 mlir::Operation* gsubop::GatherIdentifierOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
    auto newOp = builder.create<GatherIdentifierOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getRef(), getIdentDef());
    mapResults(mapping, this->getOperation(), newOp.getOperation());
