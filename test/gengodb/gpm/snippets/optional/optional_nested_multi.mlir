@@ -6,8 +6,8 @@ module  {
                 %1 = gpm.triple_pattern %arg @graphs::@ref(?{@vars::@who({type = !gpm.variable_binding})}, id{"http://example.org/eats"}, ?{@vars::@what({type = !gpm.variable_binding})})
                 %opt = gpm.optional_graph_pattern %1 (%arg1 : !tuples.tuplestream){
                     %2 = gpm.triple_pattern %arg1 @graphs::@ref(?{@vars::@who}, id{"http://example.org/age"}, ?{@vars::@age({type = !gpm.variable_binding})})
-                    %3 = gpm.triple_pattern %2 @graphs::@ref(?{@vars::@who}, id{"http://example.org/eats"}, id{"http://example.org/sushi"})
-                    tuples.return %2 : !tuples.tuplestream
+                    %3 = gpm.triple_pattern %2 @graphs::@ref(?{@vars::@who}, id{"http://example.org/eats"}, id{"http://example.org/foo"})
+                    tuples.return %3 : !tuples.tuplestream
                 }
                 tuples.return %opt : !tuples.tuplestream
             }
