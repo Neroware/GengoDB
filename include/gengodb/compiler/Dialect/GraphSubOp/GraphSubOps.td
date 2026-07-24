@@ -164,7 +164,7 @@ def GetIdentifierOp : GraphSubOp_Op<"get_identifier", [Pure]> {
 
 def IdentifiersEqualOp : GraphSubOp_Op<"identifiers_equal", [Pure]> {
     let summary = "identifier equality check between two node or edge references";
-    let arguments = (ins AnyTypeOf<[NodeRef, EdgeRef]>:$lhs, AnyTypeOf<[NodeRef, EdgeRef]>:$rhs);
+    let arguments = (ins AnyType:$lhs, AnyType:$rhs);
     let results = (outs I1:$result);
     let assemblyFormat = [{ $lhs `:` type($lhs) `,` $rhs `:` type($rhs) attr-dict }];
 }
