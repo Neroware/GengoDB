@@ -53,9 +53,15 @@ struct NamedGraphData {
    tuples::Column* edgeSetColumn;
    mlir::Value externalGraph;
 };
-using NamedGraphMapper = llvm::DenseMap<mlir::SymbolRefAttr, NamedGraphData>;
+struct ExternalGraphData {
+   gsubop::GraphType graphType;
+   gsubop::NodeSetType nodeSetType;
+   gsubop::EdgeSetType edgeSetType;
+   mlir::Value externalGraph;
+};
 using GraphIdentity = std::pair<mlir::StringAttr, mlir::StringAttr>;
-using ExternalGraphMapping = llvm::DenseMap<GraphIdentity, NamedGraphData>;
+using NamedGraphMapper = llvm::DenseMap<mlir::SymbolRefAttr, NamedGraphData>;
+using ExternalGraphMapper = llvm::DenseMap<GraphIdentity, ExternalGraphData>;
 struct GPMToSubOpLoweringPass
    : public PassWrapper<GPMToSubOpLoweringPass, OperationPass<ModuleOp>> {
    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(GPMToSubOpLoweringPass)
@@ -150,7 +156,7 @@ static mlir::Value generateTupleStream(ConversionPatternRewriter& rewriter, mlir
 }
 
 template<typename ColumnAttrT>
-static mlir::Value scanNamedGraph(ConversionPatternRewriter& rewriter, mlir::Location loc, ColumnAttrT graphAttr, NamedGraphMapper& graphs, ExternalGraphMapping& externalGraphs, bool uniqueScope = false) {
+static mlir::Value scanNamedGraph(ConversionPatternRewriter& rewriter, mlir::Location loc, ColumnAttrT graphAttr, NamedGraphMapper& graphs, ExternalGraphMapper& externalGraphs, bool uniqueScope = false) {
    auto ctxt = rewriter.getContext();
    auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
    auto graphRef = graphAttr.getName();
@@ -165,17 +171,15 @@ static mlir::Value scanNamedGraph(ConversionPatternRewriter& rewriter, mlir::Loc
       auto nodeSetMember = createMember(ctxt, memberName(graphName, graphGroup, "vx"), nodeSetType);
       auto edgeSetMember = createMember(ctxt, memberName(graphName, graphGroup, "ex"), edgeSetType);
       auto graphType = gsubop::GraphType::get(ctxt, createStateMembersAttr(ctxt, {nodeSetMember}), createStateMembersAttr(ctxt, {edgeSetMember}));
-      auto nodeSetDef = createDef(columnManager, graphGroup, graphName + "_vx", nodeSetType, uniqueScope);
-      auto edgeSetDef = createDef(columnManager, graphGroup, graphName + "_ex", edgeSetType, uniqueScope);
       mlir::OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(rewriter.getInsertionBlock());
       auto externalGraph = rewriter.create<gsubop::GetExternalGraphOp>(loc, graphType, graphNameAttr, graphRefType.getGlobalId());
-      idIt = externalGraphs.insert({identity, NamedGraphData{graphType, &nodeSetDef.getColumn(), &edgeSetDef.getColumn(), externalGraph}}).first;
+      idIt = externalGraphs.insert({identity, ExternalGraphData{graphType, nodeSetType, edgeSetType, externalGraph}}).first;
    }
    auto& data = idIt->second;
-   auto nodeSetDef = columnManager.createDef(data.nodeSetColumn);
-   auto edgeSetDef = columnManager.createDef(data.edgeSetColumn);
-   graphs.insert({graphRef, data});
+   auto nodeSetDef = createDef(columnManager, graphGroup, graphName + "_vx", data.nodeSetType, uniqueScope);
+   auto edgeSetDef = createDef(columnManager, graphGroup, graphName + "_ex", data.edgeSetType, uniqueScope);
+   graphs.insert({graphRef, NamedGraphData{data.graphType, &nodeSetDef.getColumn(), &edgeSetDef.getColumn(), data.externalGraph}});
    return rewriter.create<gsubop::ScanGraphOp>(loc, data.externalGraph, nodeSetDef, edgeSetDef);
 }
 
@@ -445,9 +449,9 @@ class TripleEmitter {
 
 class NamedGraphLowering : public OpConversionPattern<gpm::NamedGraphOp> {
    NamedGraphMapper& graphs;
-   ExternalGraphMapping& externalGraphs;
+   ExternalGraphMapper& externalGraphs;
    public:
-   NamedGraphLowering(TypeConverter& typeConverter, MLIRContext* context, NamedGraphMapper& graphs, ExternalGraphMapping& externalGraphs)
+   NamedGraphLowering(TypeConverter& typeConverter, MLIRContext* context, NamedGraphMapper& graphs, ExternalGraphMapper& externalGraphs)
       : OpConversionPattern<gpm::NamedGraphOp>(typeConverter, context), graphs(graphs), externalGraphs(externalGraphs) {}
    LogicalResult matchAndRewrite(gpm::NamedGraphOp namedGraphOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
       rewriter.replaceOp(namedGraphOp, scanNamedGraph(rewriter, namedGraphOp->getLoc(), namedGraphOp.getDef(), graphs, externalGraphs, true));
@@ -528,7 +532,7 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    RewritePatternSet patterns(ctxt);
 
    NamedGraphMapper graphs;
-   ExternalGraphMapping externalGraphs;
+   ExternalGraphMapper externalGraphs;
 
    patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs, externalGraphs);
    patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs);
