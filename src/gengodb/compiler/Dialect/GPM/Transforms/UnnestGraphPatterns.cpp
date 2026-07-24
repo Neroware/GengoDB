@@ -194,14 +194,18 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
 
       llvm::SmallVector<mlir::Attribute> leftHash, rightHash;
       for (auto triple : rightTriples) {
+         auto existingBindings = triple->getAttrOfType<mlir::DictionaryAttr>("bindings");
          llvm::SmallVector<mlir::NamedAttribute> bindings;
+         if (existingBindings) {
+            for (auto namedAttr : existingBindings) bindings.push_back(namedAttr);
+         }
          auto bnodeScope = triple->getAttrOfType<mlir::DictionaryAttr>("bnodeScope");
          for (auto [position, term] : {std::pair{"s", triple.getS()}, std::pair{"p", triple.getP()}, std::pair{"o", triple.getO()}}) {
             tuples::ColumnRefAttr leftRef;
             if (auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term)) {
                if (!varTerm.hasBinding()) continue;
                leftRef = varTerm.getBindingReference();
-            } 
+            }
             else if (auto bnodeTerm = mlir::dyn_cast<gpm::BNodeTermAttr>(term)) {
                if (!bnodeScope) continue;
                auto entry = bnodeScope.get(bnodeTerm.getLocalId().getValue());
@@ -214,12 +218,22 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
             const auto* column = &leftRef.getColumn();
             if (!leftVars.contains(column)) continue;
 
-            auto fromExisting = mlir::ArrayAttr::get(ctxt, {leftRef});
-            auto newDef = columnManager.createDef(columnManager.getUniqueScope("bindings"), position, fromExisting);
-            newDef.getColumn().type = column->type;
-            auto newRef = columnManager.createRef(newDef.getColumnPtr().get());
+            tuples::ColumnRefAttr newRef;
+            if (existingBindings) {
+               if (auto existingDef = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(existingBindings.get(position))) {
+                  newRef = columnManager.createRef(existingDef.getColumnPtr().get());
+               }
+            }
+            if (!newRef) {
+               auto fromExisting = mlir::ArrayAttr::get(ctxt, {leftRef});
+               auto newDef = columnManager.createDef(columnManager.getUniqueScope("bindings"), position, fromExisting);
+               newDef.getColumn().type = column->type;
+               newRef = columnManager.createRef(newDef.getColumnPtr().get());
+               bindings.emplace_back(mlir::StringAttr::get(ctxt, position), newDef);
+               llvm::SmallPtrSet<mlir::Operation*, 16> visitedStale;
+               fixStaleTripleColumnReferences(right, triple.getRes(), column, newRef, visitedStale);
+            }
 
-            bindings.emplace_back(mlir::StringAttr::get(ctxt, position), newDef);
             join.addPredicate([&](mlir::Value tuple, mlir::OpBuilder& builder) -> mlir::Value {
                mlir::Value lhsVal = builder.create<tuples::GetColumnOp>(loc, leftRef.getColumn().type, leftRef, tuple);
                mlir::Value rhsVal = builder.create<tuples::GetColumnOp>(loc, newRef.getColumn().type, newRef, tuple);
@@ -239,6 +253,35 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       join->setAttr("useHashJoin", mlir::UnitAttr::get(ctxt));
       llvm::SmallVector<mlir::Attribute> nullsEqual(leftHash.size(), mlir::IntegerAttr::get(mlir::IntegerType::get(ctxt, 8), 0));
       join->setAttr("nullsEqual", mlir::ArrayAttr::get(ctxt, nullsEqual));
+   }
+   void fixStaleTripleColumnReferences(mlir::Value subtreeRoot, mlir::Value tripleResult, const tuples::Column* oldColumn, tuples::ColumnRefAttr newRef, llvm::SmallPtrSetImpl<mlir::Operation*>& visited) {
+      auto* op = subtreeRoot.getDefiningOp();
+      if (!op || !visited.insert(op).second) return;
+      if (llvm::is_contained(op->getOperands(), tripleResult)) {
+         for (llvm::StringRef attrName : {"leftHash", "rightHash"}) {
+            if (auto arr = op->getAttrOfType<mlir::ArrayAttr>(attrName)) {
+               bool changed = false;
+               llvm::SmallVector<mlir::Attribute> newElems;
+               for (auto e : arr) {
+                  if (auto ref = mlir::dyn_cast<tuples::ColumnRefAttr>(e); ref && &ref.getColumn() == oldColumn) {
+                     newElems.push_back(newRef);
+                     changed = true;
+                  } else {
+                     newElems.push_back(e);
+                  }
+               }
+               if (changed) op->setAttr(attrName, mlir::ArrayAttr::get(op->getContext(), newElems));
+            }
+         }
+         op->walk([&](tuples::GetColumnOp getColumnOp) {
+            if (&getColumnOp.getAttr().getColumn() == oldColumn) {
+               getColumnOp.setAttrAttr(newRef);
+            }
+         });
+      }
+      for (auto operand : op->getOperands()) {
+         fixStaleTripleColumnReferences(operand, tripleResult, oldColumn, newRef, visited);
+      }
    }
    mlir::ArrayAttr buildNullableMapping(mlir::OpBuilder& builder, const relalg::ColumnSet& createdVars, ColumnMapper& colMap) {
       auto* ctxt = builder.getContext();
