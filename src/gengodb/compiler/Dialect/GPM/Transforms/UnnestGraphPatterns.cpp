@@ -221,7 +221,9 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
 
             bindings.emplace_back(mlir::StringAttr::get(ctxt, position), newDef);
             join.addPredicate([&](mlir::Value tuple, mlir::OpBuilder& builder) -> mlir::Value {
-               return builder.create<gpm::IdentifiersEqualOp>(loc, builder.getI1Type(), tuple, leftRef, newRef);
+               mlir::Value lhsVal = builder.create<tuples::GetColumnOp>(loc, leftRef.getColumn().type, leftRef, tuple);
+               mlir::Value rhsVal = builder.create<tuples::GetColumnOp>(loc, newRef.getColumn().type, newRef, tuple);
+               return builder.create<gpm::IdentifiersEqualOp>(loc, builder.getI1Type(), lhsVal, rhsVal);
             });
             leftHash.push_back(leftRef);
             rightHash.push_back(newRef);

@@ -4401,16 +4401,17 @@ class IdentifiersEqualLowering : public SubOpConversionPattern<gsubop::Identifie
    public:
    using SubOpConversionPattern<gsubop::IdentifiersEqualOp>::SubOpConversionPattern;
    mlir::Value extractIdentifier(mlir::Location loc, mlir::Type origType, mlir::Value resolved, SubOpRewriter& rewriter) const {
-      if (mlir::isa<gsubop::NodeRefType>(origType)) {
-         return rt::GraphStorage::nodeId(rewriter, loc)(resolved)[0];
+      if (mlir::isa<gsubop::EdgeRefType>(origType)) {
+         return rewriter.create<util::LoadElementOp>(loc, rewriter.getI32Type(), resolved, gsubop::RELATIONSHIP_ENTRY_RELATIONSHIP_TYPE_PTR);
       }
-      return rewriter.create<util::LoadElementOp>(loc, rewriter.getI32Type(), resolved, gsubop::RELATIONSHIP_ENTRY_RELATIONSHIP_TYPE_PTR);
+      return rt::GraphStorage::nodeId(rewriter, loc)(resolved)[0];
    }
    LogicalResult matchAndRewrite(gsubop::IdentifiersEqualOp op, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
       auto loc = op->getLoc();
       auto lhs = extractIdentifier(loc, op.getLhs().getType(), adaptor.getLhs(), rewriter);
       auto rhs = extractIdentifier(loc, op.getRhs().getType(), adaptor.getRhs(), rewriter);
-      rewriter.replaceOp(op, rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lhs, rhs).getResult());
+      mlir::Value cmp = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lhs, rhs);
+      rewriter.replaceOp(op, cmp);
       return mlir::success();
    }
 };

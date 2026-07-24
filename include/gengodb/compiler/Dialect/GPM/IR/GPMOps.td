@@ -89,9 +89,9 @@ def OptionalGraphPatternOp : GPM_Op<"optional_graph_pattern", [Pure,GPMOperator,
 
 def IdentifiersEqualOp : GPM_Op<"identifiers_equal", [Pure]> {
   let summary = "identifier equality check";
-  let arguments = (ins TupleStream_Tuple:$tuple, ColumnRefAttr:$lhs, ColumnRefAttr:$rhs);
+  let arguments = (ins AnyType:$lhs, AnyType:$rhs);
   let results = (outs I1:$result);
-  let assemblyFormat = [{ $tuple custom<CustRef>($lhs) `,` custom<CustRef>($rhs) attr-dict }];
+  let assemblyFormat = [{ $lhs `:` type($lhs) `,` $rhs `:` type($rhs) attr-dict }];
 }
 
 #endif // GENGODB_DIALECT_GPM_IR_GPMOPS

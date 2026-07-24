@@ -461,12 +461,20 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       return success();
    }
 };
-// Decays into constant 'true' because hash attributes are set.
 class GpmIdentifiersEqualLowering : public OpConversionPattern<gpm::IdentifiersEqualOp> {
    public:
    using OpConversionPattern<gpm::IdentifiersEqualOp>::OpConversionPattern;
+   mlir::Value refreshIfStale(mlir::Value operand, ConversionPatternRewriter& rewriter) const {
+      auto getColOp = mlir::dyn_cast_or_null<tuples::GetColumnOp>(operand.getDefiningOp());
+      if (!getColOp) return operand;
+      mlir::Type liveType = getColOp.getAttr().getColumn().type;
+      if (liveType == operand.getType()) return operand;
+      return rewriter.create<tuples::GetColumnOp>(getColOp.getLoc(), liveType, getColOp.getAttr(), getColOp.getTuple());
+   }
    LogicalResult matchAndRewrite(gpm::IdentifiersEqualOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
-      rewriter.replaceOpWithNewOp<mlir::arith::ConstantOp>(op, rewriter.getBoolAttr(true));
+      mlir::Value lhs = refreshIfStale(adaptor.getLhs(), rewriter);
+      mlir::Value rhs = refreshIfStale(adaptor.getRhs(), rewriter);
+      rewriter.replaceOpWithNewOp<gsubop::IdentifiersEqualOp>(op, rewriter.getI1Type(), lhs, rhs);
       return success();
    }
 };
