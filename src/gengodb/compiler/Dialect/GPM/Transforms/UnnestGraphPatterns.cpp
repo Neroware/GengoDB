@@ -202,6 +202,8 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          for (auto mappingAttr : outerJoin.getMapping()) {
             result.insert(&mlir::cast<tuples::ColumnDefAttr>(mappingAttr).getColumn());
          }
+         result.insert(collectTripleVariables(outerJoin.getLeft(), visited));
+         return result;
       }
       for (auto operand : op->getOperands()) {
          result.insert(collectTripleVariables(operand, visited));
@@ -213,6 +215,10 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       if (!op || !visited.insert(op).second) return;
       if (auto triple = mlir::dyn_cast<gpm::TriplePatternOp>(op)) {
          result.push_back(triple);
+      }
+      if (auto outerJoin = mlir::dyn_cast<relalg::OuterJoinOp>(op)) {
+         collectTriples(outerJoin.getLeft(), visited, result);
+         return;
       }
       for (auto operand : op->getOperands()) {
          collectTriples(operand, visited, result);
