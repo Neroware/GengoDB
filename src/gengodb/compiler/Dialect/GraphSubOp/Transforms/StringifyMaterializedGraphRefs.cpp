@@ -64,7 +64,7 @@ class StringifyMaterializedGraphRefs : public mlir::OpRewritePattern<subop::Mate
                 newMapping.push_back(pair);
                 continue;
             }
-            auto strType = db::StringType::get(ctxt);
+            auto strType = isNullableGraphRefType(colType) ? db::NullableType::get(db::StringType::get(ctxt)) : mlir::Type(db::StringType::get(ctxt));
             auto [newColDef, newColRef] = createColumn(strType, "vars", "str");
             stream = rewriter.create<gsubop::GraphRefToStringOp>(loc, stream, colRef, newColDef);
             newMapping.push_back({pair.first, newColRef});
