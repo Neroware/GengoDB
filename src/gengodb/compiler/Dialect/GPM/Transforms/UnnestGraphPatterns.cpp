@@ -82,11 +82,41 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       mlir::Operation* rawOp = patternOp.getOperation();
       mlir::Value rel = patternOp.getRel();
       mlir::Value elementStream = unnestInto(patternOp, insertBefore);
-      foldIntoAccumulator(stream, first, elementStream, kind, createdVars, insertBefore, loc);
+      ColumnMapper nestedRemaps;
+      llvm::SmallPtrSet<mlir::Operation*, 16> visitedRemaps;
+      collectOuterJoinRemaps(elementStream, visitedRemaps, nestedRemaps);
+      relalg::ColumnSet liveCreatedVars;
+      for (const auto* column : createdVars) {
+         const tuples::Column* resolved = column;
+         for (auto it = nestedRemaps.find(resolved); it != nestedRemaps.end(); it = nestedRemaps.find(resolved)) {
+            resolved = it->second;
+         }
+         liveCreatedVars.insert(resolved);
+      }
+      foldIntoAccumulator(stream, first, elementStream, kind, liveCreatedVars, insertBefore, loc);
       rawOp->getResult(0).replaceAllUsesWith(stream);
       rawOp->erase();
       if (auto* relDefOp = rel.getDefiningOp()) {
          if (relDefOp->use_empty()) relDefOp->erase();
+      }
+   }
+   void collectOuterJoinRemaps(mlir::Value v, llvm::SmallPtrSet<mlir::Operation*, 16>& visited, ColumnMapper& remaps) {
+      auto* op = v.getDefiningOp();
+      if (!op || !visited.insert(op).second) return;
+      if (auto outerJoin = mlir::dyn_cast<relalg::OuterJoinOp>(op)) {
+         for (auto mappingAttr : outerJoin.getMapping()) {
+            auto colDef = mlir::cast<tuples::ColumnDefAttr>(mappingAttr);
+            if (auto fromExisting = mlir::dyn_cast_or_null<mlir::ArrayAttr>(colDef.getFromExisting())) {
+               if (fromExisting.size() == 1) {
+                  if (auto ref = mlir::dyn_cast<tuples::ColumnRefAttr>(fromExisting[0])) {
+                     remaps[&ref.getColumn()] = &colDef.getColumn();
+                  }
+               }
+            }
+         }
+      }
+      for (auto operand : op->getOperands()) {
+         collectOuterJoinRemaps(operand, visited, remaps);
       }
    }
    mlir::Value unnestInto(GraphPatternOp patternOp, mlir::Operation* insertBefore) {
@@ -166,6 +196,11 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
             for (auto entry : bnodeScope) {
                result.insert(&mlir::cast<tuples::ColumnRefAttr>(entry.getValue()).getColumn());
             }
+         }
+      }
+      if (auto outerJoin = mlir::dyn_cast<relalg::OuterJoinOp>(op)) {
+         for (auto mappingAttr : outerJoin.getMapping()) {
+            result.insert(&mlir::cast<tuples::ColumnDefAttr>(mappingAttr).getColumn());
          }
       }
       for (auto operand : op->getOperands()) {
@@ -304,6 +339,12 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
    }
    mlir::Attribute remapColumnAttr(mlir::Attribute attr, const llvm::DenseMap<const tuples::Column*, const tuples::Column*>& colMap, tuples::ColumnManager& columnManager) {
       if (!attr) return attr;
+      if (auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(attr)) {
+         auto binding = varTerm.getBinding();
+         auto newBinding = remapColumnAttr(binding, colMap, columnManager);
+         if (newBinding == binding) return attr;
+         return gpm::VariableTermAttr::get(attr.getContext(), newBinding);
+      }
       if (auto colRef = mlir::dyn_cast<tuples::ColumnRefAttr>(attr)) {
          auto it = colMap.find(&colRef.getColumn());
          if (it != colMap.end()) return columnManager.createRef(it->second);
