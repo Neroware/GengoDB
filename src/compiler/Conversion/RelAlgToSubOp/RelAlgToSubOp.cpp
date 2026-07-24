@@ -9,6 +9,7 @@
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorDialect.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorOps.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpsTypes.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
 #include "lingodb/compiler/Dialect/SubOperator/Utils.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
@@ -1096,7 +1097,31 @@ std::pair<mlir::Block*, mlir::ArrayAttr> createVerifyEqFnForTuple(mlir::Conversi
    return {helper.getMapBlock(), helper.getColRefs()};
 }
 
+// Unpack complex types to their key members
+static std::pair<mlir::Value, mlir::ArrayAttr> unpackHashKeyColumns(mlir::Value stream, mlir::ArrayAttr hashKeys, mlir::ConversionPatternRewriter& rewriter, mlir::Location loc) {
+   llvm::SmallVector<mlir::Attribute> newHashKeys;
+   for (auto attr : hashKeys) {
+      auto colRef = mlir::cast<tuples::ColumnRefAttr>(attr);
+      auto colType = colRef.getColumn().type;
+      Member idMember;
+      if (auto nodeRefType = mlir::dyn_cast<gsubop::NodeRefType>(colType)) {
+         idMember = nodeRefType.getNodeMembers().getMembers()[0];
+      } else if (auto edgeRefType = mlir::dyn_cast<gsubop::EdgeRefType>(colType)) {
+         idMember = edgeRefType.getEdgeMembers().getMembers()[0];
+      } else {
+         newHashKeys.push_back(attr);
+         continue;
+      }
+      auto [idDef, idRef] = createColumn(rewriter.getI32Type(), "hashkey", "id");
+      stream = rewriter.create<subop::GatherOp>(loc, stream, colRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{idMember, idDef}}));
+      newHashKeys.push_back(idRef);
+   }
+   return {stream, rewriter.getArrayAttr(newHashKeys)};
+}
+
 static mlir::Value translateHJ(mlir::Value left, mlir::Value right, mlir::ArrayAttr nullsEqual, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, relalg::ColumnSet columns, mlir::ConversionPatternRewriter& rewriter, mlir::Location loc, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn) {
+   std::tie(right, hashRight) = unpackHashKeyColumns(right, hashRight, rewriter, loc);
+   std::tie(left, hashLeft) = unpackHashKeyColumns(left, hashLeft, rewriter, loc);
    auto keyColumns = relalg::ColumnSet::fromArrayAttr(hashRight);
    MaterializationHelper keyHelper(hashRight, rewriter.getContext());
    auto valueColumns = columns;
