@@ -164,28 +164,28 @@ mlir::Operation* gsubop::ScanPropertySetOp::cloneSubOp(mlir::OpBuilder& builder,
 }
 
 mlir::Operation* gsubop::FilterByIdentifierOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
-   auto newOp = builder.create<FilterByIdentifierOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getRef(), getIdent());
+   auto newOp = builder.create<FilterByIdentifierOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), columnMapping.remap(getRef()), mapping.lookupOrDefault(getIdent()));
    mapResults(mapping, this->getOperation(), newOp.getOperation());
 
    return newOp;
 }
 
 mlir::Operation* gsubop::CastPropertyRefOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
-   auto newOp = builder.create<CastPropertyRefOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getRef(), getTypedRef());
+   auto newOp = builder.create<CastPropertyRefOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), columnMapping.remap(getRef()), columnMapping.clone(getTypedRef()));
    mapResults(mapping, this->getOperation(), newOp.getOperation());
 
    return newOp;
 }
 
 mlir::Operation* gsubop::GraphRefToStringOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
-   auto newOp = builder.create<GraphRefToStringOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getRef(), getStrRef());
+   auto newOp = builder.create<GraphRefToStringOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), columnMapping.remap(getRef()), columnMapping.clone(getStrRef()));
    mapResults(mapping, this->getOperation(), newOp.getOperation());
 
    return newOp;
 }
 
 mlir::Operation* gsubop::GatherIdentifierOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
-   auto newOp = builder.create<GatherIdentifierOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), getRef(), getIdentDef());
+   auto newOp = builder.create<GatherIdentifierOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), columnMapping.remap(getRef()), columnMapping.clone(getIdentDef()));
    mapResults(mapping, this->getOperation(), newOp.getOperation());
 
    return newOp;
