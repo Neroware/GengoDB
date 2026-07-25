@@ -27,35 +27,7 @@ static bool isNullableGraphRefType(mlir::Type refType) {
    auto nullable = mlir::dyn_cast<db::NullableType>(refType);
    if (!nullable) return false;
    auto inner = nullable.getType();
-   return mlir::isa<gsubop::NodeRefType>(inner) || mlir::isa<gsubop::EdgeRefType>(inner);
-}
-static subop::Member idMemberOf(mlir::Type graphRefType) {
-   if (auto nodeRef = mlir::dyn_cast<gsubop::NodeRefType>(graphRefType))
-      return nodeRef.getNodeMembers().getMembers()[0];
-   auto edgeRef = mlir::cast<gsubop::EdgeRefType>(graphRefType);
-   return edgeRef.getEdgeMembers().getMembers()[0];
-}
-static std::pair<tuples::ColumnDefAttr, tuples::ColumnRefAttr> createColumn(mlir::MLIRContext* ctxt, mlir::Type type, std::string scope, std::string name) {
-   auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-   auto def = columnManager.createDef(columnManager.getUniqueScope(scope), name);
-   def.getColumn().type = type;
-   auto ref = columnManager.createRef(def.getColumnPtr().get());
-   return {def, ref};
-}
-static mlir::Block* buildI32EqFn(mlir::OpBuilder& builder, mlir::Location loc, size_t count) {
-   auto* block = new mlir::Block;
-   mlir::OpBuilder::InsertionGuard guard(builder);
-   builder.setInsertionPointToStart(block);
-   llvm::SmallVector<mlir::Value> leftArgs, rightArgs;
-   for (size_t i = 0; i < count; i++) leftArgs.push_back(block->addArgument(builder.getI32Type(), loc));
-   for (size_t i = 0; i < count; i++) rightArgs.push_back(block->addArgument(builder.getI32Type(), loc));
-   llvm::SmallVector<mlir::Value> cmps;
-   for (size_t i = 0; i < count; i++) {
-      cmps.push_back(builder.create<db::CmpOp>(loc, db::DBCmpPredicate::eq, leftArgs[i], rightArgs[i]));
-   }
-   mlir::Value anded = cmps.size() == 1 ? cmps[0] : builder.create<db::AndOp>(loc, cmps).getResult();
-   builder.create<tuples::ReturnOp>(loc, anded);
-   return block;
+   return isGraphRefType(inner);
 }
 
 // Replace db ops on !db.nullable<GraphRefType> with GSubOp ops
