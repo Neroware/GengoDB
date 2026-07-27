@@ -294,6 +294,9 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       join->setAttr("useHashJoin", mlir::UnitAttr::get(ctxt));
       llvm::SmallVector<mlir::Attribute> nullsEqual(leftHash.size(), mlir::IntegerAttr::get(mlir::IntegerType::get(ctxt, 8), 0));
       join->setAttr("nullsEqual", mlir::ArrayAttr::get(ctxt, nullsEqual));
+      // A special case of outer joining for SPARQL semantics. The outer join matches 'null' keys with any concrete value.
+      llvm::SmallVector<mlir::Attribute> nullMatchesAll(leftHash.size(), mlir::IntegerAttr::get(mlir::IntegerType::get(ctxt, 8), 1));
+      join->setAttr("nullMatchesAll", mlir::ArrayAttr::get(ctxt, nullMatchesAll));
    }
    void fixStaleTripleColumnReferences(mlir::Value subtreeRoot, mlir::Value tripleResult, const tuples::Column* oldColumn, tuples::ColumnRefAttr newRef, llvm::SmallPtrSetImpl<mlir::Operation*>& visited) {
       auto* op = subtreeRoot.getDefiningOp();

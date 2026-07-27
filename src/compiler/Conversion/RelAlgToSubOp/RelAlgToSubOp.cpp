@@ -1103,16 +1103,23 @@ static std::pair<mlir::Value, mlir::ArrayAttr> unpackHashKeyColumns(mlir::Value 
    for (auto attr : hashKeys) {
       auto colRef = mlir::cast<tuples::ColumnRefAttr>(attr);
       auto colType = colRef.getColumn().type;
+      auto nullableType = mlir::dyn_cast<db::NullableType>(colType);
+      mlir::Type refType = nullableType ? nullableType.getType() : colType;
+      mlir::Type idType;
       Member idMember;
-      if (auto nodeRefType = mlir::dyn_cast<gsubop::NodeRefType>(colType)) {
+      if (auto nodeRefType = mlir::dyn_cast<gsubop::NodeRefType>(refType)) {
          idMember = nodeRefType.getNodeMembers().getMembers()[0];
-      } else if (auto edgeRefType = mlir::dyn_cast<gsubop::EdgeRefType>(colType)) {
+         idType = nullableType ? mlir::Type(db::NullableType::get(rewriter.getContext(), rewriter.getI32Type())) 
+            : mlir::Type(rewriter.getI32Type());
+      } else if (auto edgeRefType = mlir::dyn_cast<gsubop::EdgeRefType>(refType)) {
          idMember = edgeRefType.getEdgeMembers().getMembers()[0];
+         idType = nullableType ? mlir::Type(db::NullableType::get(rewriter.getContext(), rewriter.getI32Type())) 
+            : mlir::Type(rewriter.getI32Type());
       } else {
          newHashKeys.push_back(attr);
          continue;
       }
-      auto [idDef, idRef] = createColumn(rewriter.getI32Type(), "hashkey", "id");
+      auto [idDef, idRef] = createColumn(idType, "hashkey", "id");
       stream = rewriter.create<subop::GatherOp>(loc, stream, colRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{idMember, idDef}}));
       newHashKeys.push_back(idRef);
    }
