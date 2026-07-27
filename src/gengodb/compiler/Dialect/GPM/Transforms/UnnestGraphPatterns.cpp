@@ -17,6 +17,16 @@ namespace {
 using namespace gengodb::compiler::dialect;
 using namespace lingodb::compiler::dialect;
 using ColumnMapper = llvm::DenseMap<const tuples::Column*, const tuples::Column*>;
+const tuples::Column* getBNodeScopeColumn(mlir::Attribute entry) {
+   if (auto def = mlir::dyn_cast<tuples::ColumnDefAttr>(entry)) 
+      return &def.getColumn();
+   return &mlir::cast<tuples::ColumnRefAttr>(entry).getColumn();
+}
+tuples::ColumnRefAttr getBNodeScopeRef(mlir::Attribute entry, tuples::ColumnManager& columnManager) {
+   if (auto def = mlir::dyn_cast<tuples::ColumnDefAttr>(entry)) 
+      return columnManager.createRef(def.getColumnPtr().get());
+   return mlir::cast<tuples::ColumnRefAttr>(entry);
+}
 
 class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass, mlir::OperationPass<mlir::ModuleOp>> {
    virtual llvm::StringRef getArgument() const override { return "gpm-unnest-patterns"; }
@@ -194,7 +204,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          result.insert(triple.getBoundVariables());
          if (auto bnodeScope = triple->getAttrOfType<mlir::DictionaryAttr>("bnodeScope")) {
             for (auto entry : bnodeScope) {
-               result.insert(&mlir::cast<tuples::ColumnRefAttr>(entry.getValue()).getColumn());
+               result.insert(getBNodeScopeColumn(entry.getValue()));
             }
          }
       }
@@ -251,7 +261,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
                if (!bnodeScope) continue;
                auto entry = bnodeScope.get(bnodeTerm.getLocalId().getValue());
                if (!entry) continue;
-               leftRef = mlir::cast<tuples::ColumnRefAttr>(entry);
+               leftRef = getBNodeScopeRef(entry, columnManager);
             }
             else {
                continue;
@@ -407,24 +417,24 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
    void annotateBNodeScope(gpm::TriplePatternOp triple, llvm::StringMap<tuples::ColumnRefAttr>& scope) {
       auto* ctxt = triple.getContext();
       auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-      llvm::StringMap<tuples::ColumnRefAttr> usedHere;
+      llvm::StringMap<mlir::Attribute> usedHere;
       for (mlir::Attribute term : {triple.getS(), triple.getP(), triple.getO()}) {
          auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(term);
          if (!bnode) continue;
          auto localId = bnode.getLocalId().getValue();
          auto it = scope.find(localId);
-         tuples::ColumnRefAttr ref;
+         mlir::Attribute entry;
          if (it == scope.end()) {
             auto uniqueScope = columnManager.getUniqueScope("bnode");
             auto def = columnManager.createDef(uniqueScope, localId.str());
             def.getColumn().type = gpm::VariableBindingType::get(ctxt);
-            ref = columnManager.createRef(def.getColumnPtr().get());
-            scope[localId] = ref;
-         } 
-         else {
-            ref = it->second;
+            scope[localId] = columnManager.createRef(def.getColumnPtr().get());
+            entry = def;
          }
-         usedHere[localId] = ref;
+         else {
+            entry = it->second;
+         }
+         usedHere[localId] = entry;
       }
       if (!usedHere.empty()) {
          llvm::SmallVector<mlir::NamedAttribute> entries;

@@ -298,8 +298,13 @@ class TripleEmitter {
       auto bnode = mlir::cast<gpm::BNodeTermAttr>(term);
       tuples::ColumnRefAttr canonicalRef;
       if (bnodeScopeAttr) {
-         if (auto entry = bnodeScopeAttr.get(bnode.getLocalId().getValue()))
-            canonicalRef = mlir::cast<tuples::ColumnRefAttr>(entry);
+         if (auto entry = bnodeScopeAttr.get(bnode.getLocalId().getValue())) {
+            if (auto def = mlir::dyn_cast<tuples::ColumnDefAttr>(entry)) {
+               canonicalRef = columnManager.createRef(def.getColumnPtr().get());
+            } else {
+               canonicalRef = mlir::cast<tuples::ColumnRefAttr>(entry);
+            }
+         }
       }
       assert(canonicalRef && "blank node term without a bnodeScope entry");
       auto it = localTerms.find(&canonicalRef.getColumn());

@@ -132,7 +132,9 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getBindingCo
     }
     if (auto bnodeScope = (*this)->getAttrOfType<mlir::DictionaryAttr>("bnodeScope")) {
         for (auto entry : bnodeScope) {
-            if (auto ref = mlir::dyn_cast_or_null<tuples::ColumnRefAttr>(entry.getValue())) {
+            if (auto def = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(entry.getValue())) {
+                columns.insert(def.getColumnPtr().get());
+            } else if (auto ref = mlir::dyn_cast_or_null<tuples::ColumnRefAttr>(entry.getValue())) {
                 columns.insert(ref.getColumnPtr().get());
             }
         }
