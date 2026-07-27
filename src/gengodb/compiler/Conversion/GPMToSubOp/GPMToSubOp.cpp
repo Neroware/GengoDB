@@ -494,7 +494,8 @@ static void refreshNullableTypes(ModuleOp module) {
          auto fromExisting = mlir::cast<mlir::ArrayAttr>(defAttr.getFromExisting());
          auto sourceRef = mlir::cast<tuples::ColumnRefAttr>(fromExisting[0]);
          mlir::Type innerType = sourceRef.getColumn().type;
-         defAttr.getColumn().type = db::NullableType::get(module->getContext(), innerType);
+         mlir::Type newType = mlir::isa<db::NullableType>(innerType) ? innerType : db::NullableType::get(module->getContext(), innerType);
+         defAttr.getColumn().type = newType;
       }
    });
 }
