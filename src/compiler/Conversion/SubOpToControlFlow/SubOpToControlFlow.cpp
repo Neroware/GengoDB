@@ -4370,37 +4370,6 @@ class CreateBuiltinGraphLowering : public SubOpConversionPattern<gsubop::CreateB
    }
 };
 
-class GatherIdentifierLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::GatherIdentifierOp>{
-   public:
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::GatherIdentifierOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::GatherIdentifierOp op) const override {
-      auto type = op.getRef().getColumn().type;
-      if (mlir::isa<gsubop::NodeRefType>(type) || mlir::isa<gsubop::EdgeRefType>(type) 
-         || mlir::isa<gsubop::PropertyRefType>(type))
-            return success();
-      return failure();
-   }
-   void rewrite(gsubop::GatherIdentifierOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
-      auto loc = op->getLoc();
-      auto type = op.getRef().getColumn().type;
-      auto ref = mapping.resolve(op, op.getRef());
-      mlir::Value key;
-      if (mlir::isa<gsubop::NodeRefType>(type)) {
-         key = rt::GraphStorage::nodeId(rewriter, loc)(ref)[0];
-      }
-      if (mlir::isa<gsubop::EdgeRefType>(type)) {
-         auto resType = typeConverter->convertType(op.getIdentDef().getColumn().type);
-         key = rewriter.create<util::LoadElementOp>(loc, resType, ref, gsubop::RELATIONSHIP_ENTRY_RELATIONSHIP_TYPE_PTR);
-      }
-      if (mlir::isa<gsubop::PropertyRefType>(type)) {
-         auto resType = typeConverter->convertType(op.getIdentDef().getColumn().type);
-         key = rewriter.create<util::LoadElementOp>(loc, resType, ref, gsubop::PROPERTY_ENTRY_PROPERTY_KEY_PTR);
-      }
-      mapping.define(op.getIdentDef(), key);
-      rewriter.replaceTupleStream(op, mapping);
-   }
-};
-
 class IdentifiersEqualLowering : public SubOpConversionPattern<gsubop::IdentifiersEqualOp> {
    public:
    using SubOpConversionPattern<gsubop::IdentifiersEqualOp>::SubOpConversionPattern;
@@ -4442,11 +4411,15 @@ class GetIdentifierLowering : public SubOpConversionPattern<gsubop::GetIdentifie
    using SubOpConversionPattern<gsubop::GetIdentifierOp>::SubOpConversionPattern;
    LogicalResult matchAndRewrite(gsubop::GetIdentifierOp op, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
       auto loc = op->getLoc();
+      auto* ctxt = op.getContext();
       auto refType = op.getRef().getType();
+      auto propertyPayload = mlir::TupleType::get(ctxt, {rewriter.getI32Type()});
+      auto convertedNodeRefType = util::RefType::get(ctxt, getNodeEntryType(ctxt, propertyPayload));
+      auto convertedEdgeRefType = util::RefType::get(ctxt, getEdgeEntryType(ctxt, propertyPayload));
       mlir::Value ident;
-      if (mlir::isa<gsubop::NodeRefType>(refType)) {
+      if (mlir::isa<gsubop::NodeRefType>(refType) || refType == convertedNodeRefType) {
          ident = rt::GraphStorage::nodeId(rewriter, loc)(adaptor.getRef())[0];
-      } else if (mlir::isa<gsubop::EdgeRefType>(refType)) {
+      } else if (mlir::isa<gsubop::EdgeRefType>(refType) || refType == convertedEdgeRefType) {
          ident = rewriter.create<util::LoadElementOp>(loc, rewriter.getI32Type(), adaptor.getRef(), gsubop::RELATIONSHIP_ENTRY_RELATIONSHIP_TYPE_PTR);
       } else if (mlir::isa<gsubop::PropertyRefType>(refType)) {
          ident = rewriter.create<util::LoadElementOp>(loc, rewriter.getI32Type(), adaptor.getRef(), gsubop::PROPERTY_ENTRY_PROPERTY_KEY_PTR);
@@ -5654,7 +5627,6 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    //PropertyGraph
    patterns.insertPattern<ScanPropertySetLowering>(typeConverter, ctxt);
    patterns.insertPattern<CreateIdentifierLowering>(typeConverter, ctxt);
-   patterns.insertPattern<GatherIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<IdentifiersEqualLowering>(typeConverter, ctxt);
    patterns.insertPattern<GetIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<FilterByIdentifierLowering>(typeConverter, ctxt);

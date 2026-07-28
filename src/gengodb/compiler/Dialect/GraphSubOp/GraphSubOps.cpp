@@ -184,13 +184,6 @@ mlir::Operation* gsubop::GraphRefToStringOp::cloneSubOp(mlir::OpBuilder& builder
    return newOp;
 }
 
-mlir::Operation* gsubop::GatherIdentifierOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
-   auto newOp = builder.create<GatherIdentifierOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), columnMapping.remap(getRef()), columnMapping.clone(getIdentDef()));
-   mapResults(mapping, this->getOperation(), newOp.getOperation());
-
-   return newOp;
-}
-
 void gsubop::NodeCountOp::updateStateType(subop::SubOpStateUsageTransformer& transformer, mlir::Value state, mlir::Type newType) {
    if (state == getGraph() && newType != state.getType()) {
       auto newRefType = transformer.getNewRefType(this->getOperation(), getRef().getColumn().type);

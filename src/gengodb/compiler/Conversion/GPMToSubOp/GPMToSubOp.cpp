@@ -338,22 +338,20 @@ class TripleEmitter {
       return stream;
    }
    mlir::Value filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr left, tuples::ColumnRefAttr right) {
-      // TODO Get rid of GatherIdentifierOp
-      auto [leftIdDef, leftIdRef] = createColumn(gsubop::IdentifierType::get(ctxt), "idents", "self");
-      auto [rightIdDef, rightIdRef] = createColumn(gsubop::IdentifierType::get(ctxt), "idents", "self");
-      stream = rewriter.create<gsubop::GatherIdentifierOp>(loc, stream, left, leftIdDef);
-      stream = rewriter.create<gsubop::GatherIdentifierOp>(loc, stream, right, rightIdDef);
       auto [filterDef, filterRef] = createColumn(rewriter.getI1Type(), "map", "selfeq");
-      auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({filterDef}), rewriter.getArrayAttr({leftIdRef, rightIdRef}));
+      auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({filterDef}), rewriter.getArrayAttr({left, right}));
       auto* b = new Block();
-      auto lArg = b->addArgument(rewriter.getI32Type(), loc);
-      auto rArg = b->addArgument(rewriter.getI32Type(), loc);
+      auto lArg = b->addArgument(left.getColumn().type, loc);
+      auto rArg = b->addArgument(right.getColumn().type, loc);
       mapOp.getRegion().push_back(b);
       {
          mlir::OpBuilder::InsertionGuard guard(rewriter);
          rewriter.setInsertionPointToStart(b);
-         auto leftI32 = rewriter.create<UnrealizedConversionCastOp>(loc, rewriter.getI32Type(), lArg).getResult(0);
-         auto rightI32 = rewriter.create<UnrealizedConversionCastOp>(loc, rewriter.getI32Type(), rArg).getResult(0);
+         auto identType = gsubop::IdentifierType::get(ctxt);
+         auto leftIdent = rewriter.create<gsubop::GetIdentifierOp>(loc, identType, lArg);
+         auto rightIdent = rewriter.create<gsubop::GetIdentifierOp>(loc, identType, rArg);
+         auto leftI32 = rewriter.create<UnrealizedConversionCastOp>(loc, rewriter.getI32Type(), leftIdent.getResult()).getResult(0);
+         auto rightI32 = rewriter.create<UnrealizedConversionCastOp>(loc, rewriter.getI32Type(), rightIdent.getResult()).getResult(0);
          auto eq = rewriter.create<arith::CmpIOp>(loc, rewriter.getI1Type(), arith::CmpIPredicate::eq, leftI32, rightI32);
          rewriter.create<tuples::ReturnOp>(loc, eq.getResult());
       }
@@ -413,24 +411,23 @@ class TripleEmitter {
          return rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, edgeRef, ident);
       }
       auto ct = classify("p", pTerm);
-      auto [identColumnDef, identColumnRef] = createColumn(gsubop::IdentifierType::get(ctxt), "ident", "map");
-      stream = rewriter.create<gsubop::GatherIdentifierOp>(loc, stream, edgeRef, identColumnDef);
       auto nodeRefType = createNodeRefType(ctxt, group, graph);
       auto& graphData = graphs[graphSym];
       auto nodesRef = columnManager.createRef(graphData.nodeSetColumn);
-      auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({nodesRef, identColumnRef}));
+      auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({nodesRef, edgeRef}));
       auto* b = new Block();
       b->addArgument(tuples::TupleType::get(ctxt), loc);
       auto nodeSetArg = b->addArgument(graphData.nodeSetColumn->type, loc);
-      auto identArg = b->addArgument(gsubop::IdentifierType::get(ctxt), loc);
+      auto edgeArg = b->addArgument(edgeRef.getColumn().type, loc);
       nestedMapOp.getRegion().push_back(b);
       auto targetDef = resolveTargetDef(ct, nodeRefType);
       {
          mlir::OpBuilder::InsertionGuard guard(rewriter);
          rewriter.setInsertionPointToStart(b);
+         auto identVal = rewriter.create<gsubop::GetIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), edgeArg);
          auto [scanIdentDef, scanIdentRef] = createColumn(gsubop::IdentifierType::get(ctxt), "ident", "scan");
          mlir::Value inner = generateTupleStream(rewriter, loc, scanIdentDef, [&](mlir::OpBuilder&) -> mlir::Value {
-            return identArg;
+            return identVal;
          });
          inner = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), inner, nodeSetArg, rewriter.getArrayAttr({scanIdentRef}), targetDef);
          rewriter.create<tuples::ReturnOp>(loc, inner);

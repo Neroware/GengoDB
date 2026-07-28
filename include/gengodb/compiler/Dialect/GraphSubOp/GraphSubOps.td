@@ -144,17 +144,6 @@ def FilterByIdentifierOp : GraphSubOp_Op<"filter_by_identifier", [Pure,SubOperat
     }];
 }
 
-def GatherIdentifierOp : GraphSubOp_Op<"gather_identifier", [Pure,SubOperator,ReferenceProducer]> {
-    let summary = "gather identifier from graph ref (DEPRICATED)";
-    let arguments = (ins TupleStream : $stream, ColumnRefAttr:$ref, ColumnDefAttr:$identDef);
-    let results = (outs TupleStream : $res);
-    let assemblyFormat = [{ $stream custom<CustRef>($ref) `->` custom<CustDef>($identDef) attr-dict }];
-    let extraClassDeclaration = [{
-        lingodb::compiler::dialect::tuples::ColumnDefAttr getProducedReference(){ return getIdentDef(); }
-        mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
-    }];
-}
-
 def GetIdentifierOp : GraphSubOp_Op<"get_identifier", [Pure]> {
     let summary = "get graph ref identifier";
     let arguments = (ins AnyGraphRef : $ref);
