@@ -10,6 +10,7 @@ ex:coffee ex:asksForMore ex:coffee .
 
 # --- inlined literal types: <=4 bytes, stored directly in the property value ---
 ex:bob ex:age "30"^^xsd:int .
+ex:bob ex:birthday "1999-11-04"^^xsd:date .
 ex:bob ex:awake "true"^^xsd:boolean .
 ex:bob ex:temperatureOffset "-5"^^xsd:byte .
 ex:bob ex:queuePosition "300"^^xsd:short .

@@ -119,15 +119,16 @@ struct RdfDatatypeFixedHelper {
     }
 };
 struct LiteralKey {
-    std::string datatypeIri;
-    std::string data;
+    const char* data;
+    const size_t len;
+    const int32_t dataType;
     bool operator==(const LiteralKey& other) const noexcept {
-        return datatypeIri == other.datatypeIri && data == other.data;
+        return dataType == other.dataType && std::string(data, len) == std::string(other.data, other.len);
     }
 };
 struct LiteralKeyHash {
     std::size_t operator()(const LiteralKey& k) const noexcept {
-        return std::hash<std::string>{}(k.datatypeIri) ^ (std::hash<std::string>{}(k.data) << 1);
+        return std::hash<int32_t>{}(k.dataType) ^ (std::hash<std::string>{}(std::string(k.data, k.len)) << 1);
     }
 };
 class NodeHelper {

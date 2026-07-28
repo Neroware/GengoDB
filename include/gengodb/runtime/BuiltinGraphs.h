@@ -151,10 +151,13 @@ public:
         using BlobTableT = std::unordered_map<xsd::Type, std::unique_ptr<BlobTable>>;
 
         inline int64_t     get_i64(int32_t idx) const { return lst_i64_[idx]; }
+        inline const int64_t*  get_i64_ptr(int32_t idx) const { return &lst_i64_[idx]; }
         inline int32_t     add_i64(int64_t v) { lst_i64_.push_back(v); return static_cast<int32_t>(lst_i64_.size() - 1); }
         inline uint64_t    get_ui64(int32_t idx) const { return lst_ui64_[idx]; }
+        inline const uint64_t* get_ui64_ptr(int32_t idx) const { return &lst_ui64_[idx]; }
         inline int32_t     add_ui64(uint64_t v) { lst_ui64_.push_back(v); return static_cast<int32_t>(lst_ui64_.size() - 1); }
         inline double      get_double(int32_t idx) const { return lst_double_[idx]; }
+        inline const double*   get_double_ptr(int32_t idx) const { return &lst_double_[idx]; }
         inline int32_t     add_double(double v) { lst_double_.push_back(v); return static_cast<int32_t>(lst_double_.size() - 1); }
 
         template<xsd::Type t>
