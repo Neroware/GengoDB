@@ -10,7 +10,7 @@ module  {
                 %2 = gpm.triple_pattern %arg1 @graphs::@ref(?{@vars::@person}, id{"http://example.org/cup"}, ?{@vars::@cup({type = !gpm.variable_binding})})
                 tuples.return %2 : !tuples.tuplestream
             }
-            %opt2 = gpm.optional_graph_pattern %opt1 (%arg2 : !tuples.tuplestream){
+            %opt2 = gpm.basic_graph_pattern %opt1 (%arg2 : !tuples.tuplestream){
                 %3 = gpm.triple_pattern %arg2 @graphs::@ref(?{@vars::@cup}, id{"http://example.org/drinks"}, ?{@vars::@drink({type = !gpm.variable_binding})})
                 tuples.return %3 : !tuples.tuplestream
             }

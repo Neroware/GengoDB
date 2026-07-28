@@ -16,6 +16,7 @@
 #include "lingodb/compiler/runtime/ArrowTable.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
 #include "lingodb/compiler/runtime/Buffer.h"
 #include "lingodb/compiler/runtime/DataSourceIteration.h"
 #include "lingodb/compiler/runtime/EntryLock.h"
@@ -224,6 +225,10 @@ class EntryStorageHelper {
             if (mlir::isa<db::StringType>(nullableType.getType()) || (charType && charType.getLen() > 1)) {
                memberInfo.isNullable = false;
                memberInfo.stored = type;
+            } else if (mlir::isa<gsubop::NodeRefType, gsubop::EdgeRefType>(nullableType.getType())) {
+               memberInfo.isNullable = false;
+               auto convertedInner = typeConverter->convertType(nullableType.getType());
+               memberInfo.stored = convertedInner ? convertedInner : nullableType.getType();
             } else {
                // Compression is bounded
                if (compressionEnabled && nullBitOffset <= 63) {
@@ -787,7 +792,11 @@ class SubOpRewriter {
       for (auto* op : toInsert) {
          op->remove();
          builder.insert(op);
-         registerOpInserted(op);
+         if (op->getDialect()->getNamespace() == "subop" || op->getDialect()->getNamespace() == "gsubop") {
+            rewrite(op);
+         } else {
+            registerOpInserted(op);
+         }
       }
       std::vector<mlir::Value> adaptorVals;
       for (auto operand : terminator->getOperands()) {
@@ -4361,51 +4370,38 @@ class CreateBuiltinGraphLowering : public SubOpConversionPattern<gsubop::CreateB
    }
 };
 
-class GatherIdentifierLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::GatherIdentifierOp>{
-   public:
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::GatherIdentifierOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::GatherIdentifierOp op) const override {
-      auto type = op.getRef().getColumn().type;
-      if (mlir::isa<gsubop::NodeRefType>(type) || mlir::isa<gsubop::EdgeRefType>(type) 
-         || mlir::isa<gsubop::PropertyRefType>(type))
-            return success();
-      return failure();
-   }
-   void rewrite(gsubop::GatherIdentifierOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
-      auto loc = op->getLoc();
-      auto type = op.getRef().getColumn().type;
-      auto ref = mapping.resolve(op, op.getRef());
-      mlir::Value key;
-      if (mlir::isa<gsubop::NodeRefType>(type)) {
-         key = rt::GraphStorage::nodeId(rewriter, loc)(ref)[0];
-      }
-      if (mlir::isa<gsubop::EdgeRefType>(type)) {
-         auto resType = typeConverter->convertType(op.getIdentDef().getColumn().type);
-         key = rewriter.create<util::LoadElementOp>(loc, resType, ref, gsubop::RELATIONSHIP_ENTRY_RELATIONSHIP_TYPE_PTR);
-      }
-      if (mlir::isa<gsubop::PropertyRefType>(type)) {
-         auto resType = typeConverter->convertType(op.getIdentDef().getColumn().type);
-         key = rewriter.create<util::LoadElementOp>(loc, resType, ref, gsubop::PROPERTY_ENTRY_PROPERTY_KEY_PTR);
-      }
-      mapping.define(op.getIdentDef(), key);
-      rewriter.replaceTupleStream(op, mapping);
-   }
-};
-
 class IdentifiersEqualLowering : public SubOpConversionPattern<gsubop::IdentifiersEqualOp> {
    public:
    using SubOpConversionPattern<gsubop::IdentifiersEqualOp>::SubOpConversionPattern;
-   mlir::Value extractIdentifier(mlir::Location loc, mlir::Type origType, mlir::Value resolved, SubOpRewriter& rewriter) const {
-      if (mlir::isa<gsubop::NodeRefType>(origType)) {
-         return rt::GraphStorage::nodeId(rewriter, loc)(resolved)[0];
+   template <typename Builder>
+   mlir::Value extractIdentifier(mlir::Location loc, mlir::Type origType, mlir::Value resolved, Builder& builder) const {
+      if (mlir::isa<gsubop::EdgeRefType>(origType)) {
+         return builder.template create<util::LoadElementOp>(loc, builder.getI32Type(), resolved, gsubop::RELATIONSHIP_ENTRY_RELATIONSHIP_TYPE_PTR);
       }
-      return rewriter.create<util::LoadElementOp>(loc, rewriter.getI32Type(), resolved, gsubop::RELATIONSHIP_ENTRY_RELATIONSHIP_TYPE_PTR);
+      return rt::GraphStorage::nodeId(builder, loc)(resolved)[0];
    }
    LogicalResult matchAndRewrite(gsubop::IdentifiersEqualOp op, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
       auto loc = op->getLoc();
-      auto lhs = extractIdentifier(loc, op.getLhs().getType(), adaptor.getLhs(), rewriter);
-      auto rhs = extractIdentifier(loc, op.getRhs().getType(), adaptor.getRhs(), rewriter);
-      rewriter.replaceOp(op, rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lhs, rhs).getResult());
+      auto lhsType = op.getLhs().getType();
+      auto rhsType = op.getRhs().getType();
+      auto lhsNullable = mlir::dyn_cast<db::NullableType>(lhsType);
+      auto rhsNullable = mlir::dyn_cast<db::NullableType>(rhsType);
+      mlir::Type lhsInner = lhsNullable ? lhsNullable.getType() : lhsType;
+      mlir::Type rhsInner = rhsNullable ? rhsNullable.getType() : rhsType;
+      mlir::Value lhsValid = rewriter.create<util::IsRefValidOp>(loc, rewriter.getI1Type(), adaptor.getLhs());
+      mlir::Value rhsValid = rewriter.create<util::IsRefValidOp>(loc, rewriter.getI1Type(), adaptor.getRhs());
+      mlir::Value bothValid = rewriter.create<arith::AndIOp>(loc, lhsValid, rhsValid);
+      auto res = rewriter.create<mlir::scf::IfOp>(loc, bothValid, 
+         [&](mlir::OpBuilder& b, mlir::Location loc) {
+            mlir::Value lhs = extractIdentifier(loc, lhsInner, adaptor.getLhs(), b);
+            mlir::Value rhs = extractIdentifier(loc, rhsInner, adaptor.getRhs(), b);
+            mlir::Value cmp = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lhs, rhs);
+            b.create<mlir::scf::YieldOp>(loc, cmp); }, 
+         [&](mlir::OpBuilder& b, mlir::Location loc) {
+            mlir::Value trueVal = b.create<mlir::arith::ConstantOp>(loc, b.getI1Type(), b.getBoolAttr(true));
+            b.create<mlir::scf::YieldOp>(loc, trueVal); 
+         }).getResult(0);
+      rewriter.replaceOp(op, res);
       return mlir::success();
    }
 };
@@ -4415,11 +4411,15 @@ class GetIdentifierLowering : public SubOpConversionPattern<gsubop::GetIdentifie
    using SubOpConversionPattern<gsubop::GetIdentifierOp>::SubOpConversionPattern;
    LogicalResult matchAndRewrite(gsubop::GetIdentifierOp op, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
       auto loc = op->getLoc();
+      auto* ctxt = op.getContext();
       auto refType = op.getRef().getType();
+      auto propertyPayload = mlir::TupleType::get(ctxt, {rewriter.getI32Type()});
+      auto convertedNodeRefType = util::RefType::get(ctxt, getNodeEntryType(ctxt, propertyPayload));
+      auto convertedEdgeRefType = util::RefType::get(ctxt, getEdgeEntryType(ctxt, propertyPayload));
       mlir::Value ident;
-      if (mlir::isa<gsubop::NodeRefType>(refType)) {
+      if (mlir::isa<gsubop::NodeRefType>(refType) || refType == convertedNodeRefType) {
          ident = rt::GraphStorage::nodeId(rewriter, loc)(adaptor.getRef())[0];
-      } else if (mlir::isa<gsubop::EdgeRefType>(refType)) {
+      } else if (mlir::isa<gsubop::EdgeRefType>(refType) || refType == convertedEdgeRefType) {
          ident = rewriter.create<util::LoadElementOp>(loc, rewriter.getI32Type(), adaptor.getRef(), gsubop::RELATIONSHIP_ENTRY_RELATIONSHIP_TYPE_PTR);
       } else if (mlir::isa<gsubop::PropertyRefType>(refType)) {
          ident = rewriter.create<util::LoadElementOp>(loc, rewriter.getI32Type(), adaptor.getRef(), gsubop::PROPERTY_ENTRY_PROPERTY_KEY_PTR);
@@ -4973,6 +4973,72 @@ class EdgeRefGatherOpLowering : public SubOpTupleStreamConsumerConversionPattern
       rewriter.replaceTupleStream(gatherOp, mapping);
    }
 };
+class NullableNodeRefIdGatherOpLowering : public SubOpTupleStreamConsumerConversionPattern<subop::GatherOp, 2> {
+   public:
+   using SubOpTupleStreamConsumerConversionPattern<subop::GatherOp, 2>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(subop::GatherOp gatherOp) const override {
+      auto nullableType = mlir::dyn_cast<db::NullableType>(gatherOp.getRef().getColumn().type);
+      if (!nullableType) return failure();
+      auto referenceType = mlir::dyn_cast<gsubop::NodeRefType>(nullableType.getType());
+      if (!referenceType) return failure();
+      auto mapping = gatherOp.getMapping().getMapping();
+      return (mapping.size() == 1 && mapping[0].first == referenceType.getNodeMembers().getMembers()[0]) ? success() : failure();
+   }
+   void rewrite(subop::GatherOp gatherOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto loc = gatherOp.getLoc();
+      auto ctxt = gatherOp.getContext();
+      auto referenceType = mlir::cast<gsubop::NodeRefType>(mlir::cast<db::NullableType>(gatherOp.getRef().getColumn().type).getType());
+      auto ref = mapping.resolve(gatherOp, gatherOp.getRef());
+      auto columnDef = gatherOp.getMapping().getColumnDef(referenceType.getNodeMembers().getMembers()[0]);
+      auto nullableIdType = db::NullableType::get(ctxt, rewriter.getI32Type());
+      mlir::Value valid = rewriter.create<util::IsRefValidOp>(loc, rewriter.getI1Type(), ref);
+      auto res = rewriter.create<mlir::scf::IfOp>(loc, valid, 
+         [&](mlir::OpBuilder& b, mlir::Location loc) {
+            mlir::Value nodeId = rt::GraphStorage::nodeId(b, loc)({ref})[0];
+            mlir::Value wrapped = b.create<db::AsNullableOp>(loc, nullableIdType, nodeId);
+            b.create<mlir::scf::YieldOp>(loc, wrapped); 
+         }, 
+         [&](mlir::OpBuilder& b, mlir::Location loc) {
+            mlir::Value nullVal = b.create<db::NullOp>(loc, nullableIdType);
+            b.create<mlir::scf::YieldOp>(loc, nullVal); 
+         }).getResult(0);
+      mapping.define(mlir::ArrayAttr::get(ctxt, {columnDef}), {res});
+      rewriter.replaceTupleStream(gatherOp, mapping);
+   }
+};
+class NullableEdgeRefIdGatherOpLowering : public SubOpTupleStreamConsumerConversionPattern<subop::GatherOp, 2> {
+   public:
+   using SubOpTupleStreamConsumerConversionPattern<subop::GatherOp, 2>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(subop::GatherOp gatherOp) const override {
+      auto nullableType = mlir::dyn_cast<db::NullableType>(gatherOp.getRef().getColumn().type);
+      if (!nullableType) return failure();
+      auto referenceType = mlir::dyn_cast<gsubop::EdgeRefType>(nullableType.getType());
+      if (!referenceType) return failure();
+      auto mapping = gatherOp.getMapping().getMapping();
+      return (mapping.size() == 1 && mapping[0].first == referenceType.getEdgeMembers().getMembers()[0]) ? success() : failure();
+   }
+   void rewrite(subop::GatherOp gatherOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto loc = gatherOp.getLoc();
+      auto ctxt = gatherOp.getContext();
+      auto referenceType = mlir::cast<gsubop::EdgeRefType>(mlir::cast<db::NullableType>(gatherOp.getRef().getColumn().type).getType());
+      auto ref = mapping.resolve(gatherOp, gatherOp.getRef());
+      auto columnDef = gatherOp.getMapping().getColumnDef(referenceType.getEdgeMembers().getMembers()[0]);
+      auto nullableIdType = db::NullableType::get(ctxt, rewriter.getI32Type());
+      mlir::Value valid = rewriter.create<util::IsRefValidOp>(loc, rewriter.getI1Type(), ref);
+      auto res = rewriter.create<mlir::scf::IfOp>(loc, valid, 
+         [&](mlir::OpBuilder& b, mlir::Location loc) {
+            mlir::Value edgeId = rt::GraphStorage::relId(b, loc)({ref})[0];
+            mlir::Value wrapped = b.create<db::AsNullableOp>(loc, nullableIdType, edgeId);
+            b.create<mlir::scf::YieldOp>(loc, wrapped); 
+         }, 
+         [&](mlir::OpBuilder& b, mlir::Location loc) {
+            mlir::Value nullVal = b.create<db::NullOp>(loc, nullableIdType);
+            b.create<mlir::scf::YieldOp>(loc, nullVal); 
+         }).getResult(0);
+      mapping.define(mlir::ArrayAttr::get(ctxt, {columnDef}), {res});
+      rewriter.replaceTupleStream(gatherOp, mapping);
+   }
+};
 
 class NodeRefScatterOpLowering : public SubOpTupleStreamConsumerConversionPattern<subop::ScatterOp, 2> {
    public:
@@ -5356,13 +5422,26 @@ private:
    }
 };
 
+static bool isGraphRefType(mlir::Type type) {
+   return mlir::isa<gsubop::NodeRefType>(type) || mlir::isa<gsubop::EdgeRefType>(type) || mlir::isa<gsubop::PropertyRefType>(type);
+}
+static bool isNullableGraphRefType(mlir::Type type) {
+   auto nullable = mlir::dyn_cast<db::NullableType>(type);
+   return nullable && (mlir::isa<gsubop::NodeRefType>(nullable.getType()) || mlir::isa<gsubop::EdgeRefType>(nullable.getType()));
+}
+static bool isGraphRefTypeOrNullableGraphRefType(mlir::Type type) {
+   return isGraphRefType(type) || isNullableGraphRefType(type);
+}
+
 class GraphRefToStringOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::GraphRefToStringOp> {
    using SubOpTupleStreamConsumerConversionPattern<gsubop::GraphRefToStringOp>::SubOpTupleStreamConsumerConversionPattern;
    LogicalResult match(gsubop::GraphRefToStringOp castOp) const override {
       auto refType = castOp.getRef().getColumn().type;
-      if (!mlir::isa<gsubop::NodeRefType>(refType) && !mlir::isa<gsubop::EdgeRefType>(refType) 
-         && !mlir::isa<gsubop::PropertyRefType>(refType)) {
-            return failure();
+      if (!isGraphRefTypeOrNullableGraphRefType(refType)) {
+         return failure();
+      }
+      if (auto nullable = mlir::dyn_cast_or_null<db::NullableType>(castOp.getStrRef().getColumn().type)) {
+         return mlir::isa<db::StringType>(nullable.getType()) ? success() : failure();
       }
       if (!mlir::isa<db::StringType>(castOp.getStrRef().getColumn().type)) {
          return failure();
@@ -5374,77 +5453,95 @@ class GraphRefToStringOpLowering : public SubOpTupleStreamConsumerConversionPatt
       auto ctxt = rewriter.getContext();
       auto ref = mapping.resolve(castOp, castOp.getRef());
       auto refType = castOp.getRef().getColumn().type;
-      mlir::Value strRef, str;
+      bool nullable = mlir::isa<db::NullableType>(refType);
+      if (nullable) {
+         refType = mlir::cast<db::NullableType>(refType).getType();
+         if (mlir::isa<db::NullableType>(ref.getType())) {
+            mlir::OpBuilder::InsertionGuard guard(rewriter);
+            rewriter.rewrite(ref.getDefiningOp());
+            ref = rewriter.getMapped(ref);
+         }
+      }
+      mlir::Value strRef;
       rewriter.atStartOf(&ref.getDefiningOp()->getParentOfType<func::FuncOp>().getBlocks().front(), [&](SubOpRewriter& rewriter){
          strRef = rewriter.create<util::AllocaOp>(loc, util::RefType::get(ctxt, db::StringType::get(ctxt)), mlir::Value());
       });
-      if (mlir::isa<gsubop::NodeRefType>(refType)) {
-         str = rt::GraphRefString::fromNode(rewriter, loc)({ref})[0];
-      }
-      else if (mlir::isa<gsubop::EdgeRefType>(refType)) {
-         str = rt::GraphRefString::fromRel(rewriter, loc)({ref})[0];
+      auto computeStr = [&](mlir::OpBuilder& b, mlir::Value refVal) -> mlir::Value {
+         mlir::Value rawStr;
+         if (mlir::isa<gsubop::NodeRefType>(refType)) {
+            rawStr = rt::GraphRefString::fromNode(b, loc)({refVal})[0];
+         } 
+         else if (mlir::isa<gsubop::EdgeRefType>(refType)) {
+            rawStr = rt::GraphRefString::fromRel(b, loc)({refVal})[0];
+         } 
+         else {
+            rawStr = rt::GraphRefString::fromProp(b, loc)({refVal})[0];
+         }
+         b.create<util::StoreOp>(loc, rawStr, strRef, mlir::Value());
+         return b.create<util::LoadOp>(loc, strRef);
+      };
+      mlir::Value res;
+      if (nullable) {
+         auto nullableStrType = db::NullableType::get(ctxt, db::StringType::get(ctxt));
+         mlir::Value valid = rewriter.create<util::IsRefValidOp>(loc, rewriter.getI1Type(), ref);
+         res = rewriter.create<mlir::scf::IfOp>(
+                        loc, valid, [&](mlir::OpBuilder& b, mlir::Location loc) {
+                           mlir::Value str = computeStr(b, ref);
+                           mlir::Value asNullable = b.create<db::AsNullableOp>(loc, nullableStrType, str);
+                           b.create<mlir::scf::YieldOp>(loc, asNullable); }, [&](mlir::OpBuilder& b, mlir::Location loc) {
+                           mlir::Value nullStr = b.create<db::NullOp>(loc, nullableStrType);
+                           b.create<mlir::scf::YieldOp>(loc, nullStr); })
+                  .getResult(0);
       }
       else {
-         str = rt::GraphRefString::fromProp(rewriter, loc)({ref})[0];
+         res = computeStr(rewriter, ref);
       }
-      rewriter.create<util::StoreOp>(loc, str, strRef, mlir::Value());
-      auto res = rewriter.create<util::LoadOp>(loc, strRef);
       mapping.define(castOp.getStrRef(), res);
       rewriter.replaceTupleStream(castOp, mapping);
    }
 };
 
-static bool isNullableGraphRefType(mlir::Type refType) {
-   auto nullable = mlir::dyn_cast<db::NullableType>(refType);
-   if (!nullable) return false;
-   auto inner = nullable.getType();
-   return mlir::isa<gsubop::NodeRefType>(inner) || mlir::isa<gsubop::EdgeRefType>(inner);
-}
-class WrapNullableRefOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::WrapNullableRefOp> {
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::WrapNullableRefOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::WrapNullableRefOp op) const override {
-      return isNullableGraphRefType(op.getNullableRef().getColumn().type) ? success() : failure();
-   }
-   void rewrite(gsubop::WrapNullableRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
-      mapping.define(op.getNullableRef(), mapping.resolve(op, op.getRef()));
-      rewriter.replaceTupleStream(op, mapping);
+class WrapNullableRefOpLowering : public SubOpConversionPattern<gsubop::WrapNullableRefOp> {
+   using SubOpConversionPattern<gsubop::WrapNullableRefOp>::SubOpConversionPattern;
+   LogicalResult matchAndRewrite(gsubop::WrapNullableRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
+      if (!isNullableGraphRefType(op.getType()))
+         return failure();
+      rewriter.replaceOp(op, adaptor.getRef());
+      return success();
    }
 };
-class NullRefOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::NullRefOp> {
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::NullRefOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::NullRefOp op) const override {
-      return isNullableGraphRefType(op.getNullableRef().getColumn().type) ? success() : failure();
-   }
-   void rewrite(gsubop::NullRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+class NullRefOpLowering : public SubOpConversionPattern<gsubop::NullRefOp> {
+   using SubOpConversionPattern<gsubop::NullRefOp>::SubOpConversionPattern;
+   LogicalResult matchAndRewrite(gsubop::NullRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
+      if (!isNullableGraphRefType(op.getResult().getType()))
+         return failure();
       auto loc = op.getLoc();
-      auto nullableType = mlir::cast<db::NullableType>(op.getNullableRef().getColumn().type);
+      auto nullableType = mlir::cast<db::NullableType>(op.getType());
       auto convertedType = typeConverter->convertType(nullableType.getType());
-      mapping.define(op.getNullableRef(), rewriter.create<util::InvalidRefOp>(loc, convertedType));
-      rewriter.replaceTupleStream(op, mapping);
+      mlir::Value result = rewriter.create<util::InvalidRefOp>(loc, convertedType);
+      rewriter.replaceOp(op, result);
+      return success();
    }
 };
-class IsNullRefOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::IsNullRefOp> {
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::IsNullRefOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::IsNullRefOp op) const override {
-      return isNullableGraphRefType(op.getRef().getColumn().type) ? success() : failure();
-   }
-   void rewrite(gsubop::IsNullRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+class IsNullRefOpLowering : public SubOpConversionPattern<gsubop::IsNullRefOp> {
+   using SubOpConversionPattern<gsubop::IsNullRefOp>::SubOpConversionPattern;
+   LogicalResult matchAndRewrite(gsubop::IsNullRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
+      if (!isNullableGraphRefType(op.getRef().getType()))
+         return failure();
       auto loc = op.getLoc();
-      auto ref = mapping.resolve(op, op.getRef());
-      mlir::Value valid = rewriter.create<util::IsRefValidOp>(loc, rewriter.getI1Type(), ref);
+      mlir::Value valid = rewriter.create<util::IsRefValidOp>(loc, rewriter.getI1Type(), adaptor.getRef());
       mlir::Value isNull = rewriter.create<mlir::arith::XOrIOp>(loc, valid, rewriter.create<mlir::arith::ConstantIntOp>(loc, 1, rewriter.getI1Type()));
-      mapping.define(op.getIsNull(), isNull);
-      rewriter.replaceTupleStream(op, mapping);
+      rewriter.replaceOp(op, isNull);
+      return success();
    }
 };
-class UnwrapNullableRefOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::UnwrapNullableRefOp> {
-   using SubOpTupleStreamConsumerConversionPattern<gsubop::UnwrapNullableRefOp>::SubOpTupleStreamConsumerConversionPattern;
-   LogicalResult match(gsubop::UnwrapNullableRefOp op) const override {
-      return isNullableGraphRefType(op.getRef().getColumn().type) ? success() : failure();
-   }
-   void rewrite(gsubop::UnwrapNullableRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
-      mapping.define(op.getUnwrapped(), mapping.resolve(op, op.getRef()));
-      rewriter.replaceTupleStream(op, mapping);
+class UnwrapNullableRefOpLowering : public SubOpConversionPattern<gsubop::UnwrapNullableRefOp> {
+   using SubOpConversionPattern<gsubop::UnwrapNullableRefOp>::SubOpConversionPattern;
+   LogicalResult matchAndRewrite(gsubop::UnwrapNullableRefOp op, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
+      if (!isNullableGraphRefType(op.getRef().getType()))
+         return failure();
+      rewriter.replaceOp(op, adaptor.getRef());
+      return success();
    }
 };
 
@@ -5521,6 +5618,8 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    patterns.insertPattern<EdgeCountOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<NodeRefGatherOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<EdgeRefGatherOpLowering>(typeConverter, ctxt);
+   patterns.insertPattern<NullableNodeRefIdGatherOpLowering>(typeConverter, ctxt);
+   patterns.insertPattern<NullableEdgeRefIdGatherOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<NodeRefScatterOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<EdgeRefScatterOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<ReduceGraphRefLowering>(typeConverter, ctxt);
@@ -5528,7 +5627,6 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    //PropertyGraph
    patterns.insertPattern<ScanPropertySetLowering>(typeConverter, ctxt);
    patterns.insertPattern<CreateIdentifierLowering>(typeConverter, ctxt);
-   patterns.insertPattern<GatherIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<IdentifiersEqualLowering>(typeConverter, ctxt);
    patterns.insertPattern<GetIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<FilterByIdentifierLowering>(typeConverter, ctxt);
@@ -5778,6 +5876,12 @@ void SubOpToControlFlowLoweringPass::runOnOperation() {
    typeConverter.addConversion([&](gsubop::NodeSetType t) -> Type {
       return util::RefType::get(t.getContext(), mlir::IntegerType::get(ctxt, 8));
    });
+   typeConverter.addConversion([&](db::NullableType t) -> std::optional<Type> {
+      if (mlir::isa<gsubop::NodeRefType, gsubop::EdgeRefType>(t.getType())) {
+         return typeConverter.convertType(t.getType());
+      }
+      return std::nullopt;
+   });
    typeConverter.addConversion([&](gsubop::NodeRefType t) -> Type {
       return util::RefType::get(t.getContext(), getNodeEntryType<EntryStorageHelper>(t, typeConverter));
    });
@@ -5884,6 +5988,7 @@ void subop::setCompressionEnabled(bool compressionEnabled) {
 }
 void subop::createLowerSubOpPipeline(mlir::OpPassManager& pm) {
    //pm.addPass(subop::createGlobalOptPass());
+   pm.addPass(gsubop::createStringifyMaterializedGraphRefsPass());
    pm.addPass(subop::createFoldColumnsPass());
    pm.addPass(subop::createReuseLocalPass());
    pm.addPass(subop::createSpecializeSubOpPass(true));

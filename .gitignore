@@ -26,3 +26,4 @@ db.lingodb
 db.neo4j.*
 CLAUDE.md
 .claude/
+test.sparql

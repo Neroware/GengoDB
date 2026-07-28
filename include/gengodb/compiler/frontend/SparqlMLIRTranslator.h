@@ -53,9 +53,9 @@ struct Triple {
 };
 
 // Base class for WHERE clause elements.
-// Future ARQ operators (OPTIONAL, FILTER, UNION, …) add new subclasses here.
+// Future ARQ operators (FILTER, UNION, …) add new subclasses here.
 struct PatternElement {
-   enum class Kind { Graph };
+   enum class Kind { Graph, Optional };
    virtual ~PatternElement() = default;
    virtual Kind kind() const = 0;
 };
@@ -64,6 +64,13 @@ struct GraphPattern : PatternElement {
    std::string graphUri;
    std::vector<Triple> triples;
    Kind kind() const override { return Kind::Graph; }
+};
+
+// SPARQL OPTIONAL { ... } — a nested group joined onto the enclosing group via
+// a left outer join, so variables first bound inside may end up unbound (null).
+struct OptionalPattern : PatternElement {
+   std::vector<std::unique_ptr<PatternElement>> patterns;
+   Kind kind() const override { return Kind::Optional; }
 };
 
 struct Query {
@@ -245,7 +252,13 @@ class Parser {
       return out;
    }
 
-   void parseGroup(sparql::Query& q, const std::string& activeGraph) {
+   // Parses a `{ ... }` group into `out`. Recursive so it can also parse the
+   // nested group of an OPTIONAL block — SPARQL allows GRAPH clauses, plain
+   // triples, and (nested) OPTIONAL blocks inside an OPTIONAL just like at the
+   // top level.
+   void parseGroup(std::vector<std::unique_ptr<sparql::PatternElement>>& out,
+                   const std::map<std::string, std::string>& prefixes,
+                   const std::string& activeGraph) {
       eat(TK::LBrace);
       while (!is(TK::RBrace) && !is(TK::Eof)) {
          if (is(TK::Dot)) { advance(); continue; }
@@ -254,19 +267,25 @@ class Parser {
             advance();
             std::string uri;
             if      (is(TK::IRI))          { uri = tok.value; advance(); }
-            else if (is(TK::PrefixedName)) { uri = expandPrefix(tok.value, q.prefixes); advance(); }
+            else if (is(TK::PrefixedName)) { uri = expandPrefix(tok.value, prefixes); advance(); }
             else throw std::runtime_error("Expected graph IRI after GRAPH at line " + std::to_string(tok.line));
-            auto gp = std::make_unique<sparql::GraphPattern>();
-            gp->graphUri = uri;
-            eat(TK::LBrace);
-            gp->triples = parseTriples(q.prefixes);
-            eat(TK::RBrace);
-            q.patterns.push_back(std::move(gp));
+            // Recurse with `uri` as the active graph so OPTIONAL, nested GRAPH,
+            // and bare triples inside this block are all tagged with it —
+            // mirrors how the top-level group is parsed.
+            parseGroup(out, prefixes, uri);
+            continue;
+         }
+
+         if (kw("OPTIONAL")) {
+            advance();
+            auto opt = std::make_unique<sparql::OptionalPattern>();
+            parseGroup(opt->patterns, prefixes, activeGraph);
+            out.push_back(std::move(opt));
             continue;
          }
 
          // Extension point: raise descriptive error for unsupported ARQ operators
-         for (const char* op : {"OPTIONAL","FILTER","UNION","MINUS","SERVICE","BIND","VALUES"}) {
+         for (const char* op : {"FILTER","UNION","MINUS","SERVICE","BIND","VALUES"}) {
             if (kw(op)) throw std::runtime_error(std::string("ARQ operator '") + op + "' is not yet supported");
          }
 
@@ -274,18 +293,18 @@ class Parser {
             auto gp = std::make_unique<sparql::GraphPattern>();
             gp->graphUri = activeGraph;
             eat(TK::LBrace);
-            gp->triples = parseTriples(q.prefixes);
+            gp->triples = parseTriples(prefixes);
             eat(TK::RBrace);
-            if (!gp->triples.empty()) q.patterns.push_back(std::move(gp));
+            if (!gp->triples.empty()) out.push_back(std::move(gp));
             continue;
          }
 
-         auto triples = parseTriples(q.prefixes);
+         auto triples = parseTriples(prefixes);
          if (!triples.empty()) {
             auto gp = std::make_unique<sparql::GraphPattern>();
             gp->graphUri = activeGraph;
             gp->triples = std::move(triples);
-            q.patterns.push_back(std::move(gp));
+            out.push_back(std::move(gp));
          }
       }
       eat(TK::RBrace);
@@ -334,7 +353,7 @@ class Parser {
       while (kw("FROM")) { advance(); if (kw("NAMED")) advance(); if (is(TK::IRI) || is(TK::PrefixedName)) advance(); }
 
       if (kw("WHERE")) advance();
-      parseGroup(q, "");
+      parseGroup(q.patterns, q.prefixes, "");
 
       while (!is(TK::Eof)) advance();
       return q;
@@ -458,6 +477,84 @@ class Translator {
       return bgpOp.getRes();
    }
 
+   // Build an OptionalGraphPatternOp: the nested group is translated against
+   // the block argument (the stream accumulated so far), left-outer-joining
+   // its result onto `inputStream`. Variables first bound inside may end up
+   // null if the optional group has no match — this is exactly what
+   // gpm.optional_graph_pattern's lowering (outer join, null-matches-all)
+   // implements.
+   mlir::Value buildOptional(const sparql::OptionalPattern& opt, mlir::Value inputStream) {
+      auto loc = builder.getUnknownLoc();
+      auto optOp = builder.create<gpm::OptionalGraphPatternOp>(
+         loc, tuples::TupleStreamType::get(ctxt), inputStream);
+
+      auto* block = new mlir::Block;
+      block->addArgument(tuples::TupleStreamType::get(ctxt), loc);
+      optOp.getPattern().push_back(block);
+      {
+         mlir::OpBuilder::InsertionGuard guard(builder);
+         builder.setInsertionPointToStart(block);
+         mlir::Value result = buildPatternGroup(opt.patterns, block->getArgument(0));
+         if (!result)
+            throw std::runtime_error("OPTIONAL block contains no supported graph patterns");
+         builder.create<tuples::ReturnOp>(loc, result);
+      }
+      return optOp.getRes();
+   }
+
+   // Chains a sequence of pattern elements, each joined onto the result of the
+   // previous one: GraphPattern elements become (nested) BasicGraphPatternOps,
+   // OptionalPattern elements become OptionalGraphPatternOps wrapping a
+   // recursive call over their own nested group.
+   // `externalInput` seeds the chain (used as the first element's input if it
+   // is set); it must be set for nested groups (the enclosing block argument)
+   // and is left null only for the outermost call, where the very first
+   // element instead seeds itself from its own named graph.
+   mlir::Value buildPatternGroup(const std::vector<std::unique_ptr<sparql::PatternElement>>& patterns,
+                                 mlir::Value externalInput) {
+      mlir::Value prevStream = externalInput;
+      for (const auto& elemPtr : patterns) {
+         if (elemPtr->kind() == sparql::PatternElement::Kind::Graph) {
+            const auto& gp = static_cast<const sparql::GraphPattern&>(*elemPtr);
+            if (gp.graphUri.empty())
+               throw std::runtime_error("Triple patterns without an explicit GRAPH clause are not yet supported");
+
+            auto [alias, graphStream] = namedGraph(gp.graphUri);
+            auto graphRef = colMgr.createRef("graphs", alias);
+
+            // First element takes the named_graph stream; subsequent take the previous result.
+            mlir::Value input = prevStream ? prevStream : graphStream;
+            prevStream = buildBGP(gp, input, graphRef);
+         } else if (elemPtr->kind() == sparql::PatternElement::Kind::Optional) {
+            const auto& opt = static_cast<const sparql::OptionalPattern&>(*elemPtr);
+            if (!prevStream)
+               throw std::runtime_error("OPTIONAL cannot be the first pattern in a query");
+            prevStream = buildOptional(opt, prevStream);
+         }
+      }
+      return prevStream;
+   }
+
+   // Recursively creates NamedGraphOps for every GRAPH clause referenced
+   // anywhere in the pattern tree (including inside OPTIONAL blocks), while
+   // the builder's insertion point is still the top-level execution-group
+   // block. A GraphPatternOp/OptionalGraphPatternOp body may only contain
+   // triple patterns, nested graph patterns, or the terminator (see
+   // verifyGraphPatternBody) — NamedGraphOp is not allowed there, so any graph
+   // first referenced deep inside an OPTIONAL must be pre-created here rather
+   // than lazily when its first triple is built.
+   void preRegisterGraphs(const std::vector<std::unique_ptr<sparql::PatternElement>>& patterns) {
+      for (const auto& elemPtr : patterns) {
+         if (elemPtr->kind() == sparql::PatternElement::Kind::Graph) {
+            const auto& gp = static_cast<const sparql::GraphPattern&>(*elemPtr);
+            if (!gp.graphUri.empty()) namedGraph(gp.graphUri);
+         } else if (elemPtr->kind() == sparql::PatternElement::Kind::Optional) {
+            const auto& opt = static_cast<const sparql::OptionalPattern&>(*elemPtr);
+            preRegisterGraphs(opt.patterns);
+         }
+      }
+   }
+
    public:
    Translator(mlir::MLIRContext* ctxt, mlir::OpBuilder& builder)
       : ctxt(ctxt), builder(builder),
@@ -475,26 +572,14 @@ class Translator {
          mlir::OpBuilder::InsertionGuard guard(builder);
          builder.setInsertionPointToStart(egBlock);
 
-         // Chain BGPs: each takes the previous BGP's result as its input stream.
-         // With global variable tracking, variables bound in an earlier BGP appear
-         // as ColumnRefAttrs in later BGPs — valid because later BGPs receive the
-         // accumulated tuple stream from the previous BGP.
-         mlir::Value prevStream;
-         for (const auto& elemPtr : query.patterns) {
-            if (elemPtr->kind() != sparql::PatternElement::Kind::Graph) continue;
-            // Extension point: handle other PatternElement::Kind values here
-
-            const auto& gp = static_cast<const sparql::GraphPattern&>(*elemPtr);
-            if (gp.graphUri.empty())
-               throw std::runtime_error("Triple patterns without an explicit GRAPH clause are not yet supported");
-
-            auto [alias, graphStream] = namedGraph(gp.graphUri);
-            auto graphRef = colMgr.createRef("graphs", alias);
-
-            // First BGP takes the named_graph stream; subsequent take the previous BGP.
-            mlir::Value input = prevStream ? prevStream : graphStream;
-            prevStream = buildBGP(gp, input, graphRef);
-         }
+         // Pre-create every referenced named graph up front (see preRegisterGraphs),
+         // then chain the top-level pattern elements: each GraphPattern becomes a
+         // BasicGraphPatternOp, each OptionalPattern an OptionalGraphPatternOp,
+         // joined onto the result of the previous element. With global variable
+         // tracking, variables bound earlier appear as ColumnRefAttrs later on —
+         // valid because later elements receive the accumulated tuple stream.
+         preRegisterGraphs(query.patterns);
+         mlir::Value prevStream = buildPatternGroup(query.patterns, {});
 
          if (!prevStream)
             throw std::runtime_error("WHERE clause contains no supported graph patterns");
