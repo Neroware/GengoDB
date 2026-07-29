@@ -8,12 +8,17 @@ module  {
             }
             %filtered = relalg.selection %bgp (%arg0 : !tuples.tuple){
                 %ageVal = tuples.getcol %arg0 @vars::@age : !gpm.variable_binding
-                %gt10 = xsd.compare_literal gt %ageVal : !gpm.variable_binding, "10" dtype 200 -> !db.nullable<i1>
-                %lt100 = xsd.compare_literal lt %ageVal : !gpm.variable_binding, "100" dtype 200 -> !db.nullable<i1>
-                %anded = db.and %gt10, %lt100 : !db.nullable<i1>, !db.nullable<i1>
-                %lt10 = xsd.compare_literal lt %ageVal : !gpm.variable_binding, "10" dtype 200 -> !db.nullable<i1>
-                %notLt10 = db.not %lt10 : !db.nullable<i1>
-                %pred = db.or %anded, %notLt10 : !db.nullable<i1>, !db.nullable<i1>
+                %ageLex, %ageType = xsd.literal_of_ref %ageVal : !gpm.variable_binding -> !db.nullable<!util.varlen32>, !db.nullable<i32>
+                %zeroLexRaw = util.varlen32_create_const "0"
+                %zeroLex = db.as_nullable %zeroLexRaw : !util.varlen32 -> !db.nullable<!util.varlen32>
+                %zeroTypeRaw = db.constant ( 200 ) : i32
+                %zeroType = db.as_nullable %zeroTypeRaw : i32 -> !db.nullable<i32>
+                %quotLex, %quotType = xsd.arith div %ageLex : !db.nullable<!util.varlen32>, %ageType : !db.nullable<i32>, %zeroLex : !db.nullable<!util.varlen32>, %zeroType : !db.nullable<i32> -> !db.nullable<!util.varlen32>, !db.nullable<i32>
+                %hundredLexRaw = util.varlen32_create_const "100"
+                %hundredLex = db.as_nullable %hundredLexRaw : !util.varlen32 -> !db.nullable<!util.varlen32>
+                %hundredTypeRaw = db.constant ( 200 ) : i32
+                %hundredType = db.as_nullable %hundredTypeRaw : i32 -> !db.nullable<i32>
+                %pred = xsd.compare_dyn gt %quotLex : !db.nullable<!util.varlen32>, %quotType : !db.nullable<i32>, %hundredLex : !db.nullable<!util.varlen32>, %hundredType : !db.nullable<i32> -> !db.nullable<i1>
                 tuples.return %pred : !db.nullable<i1>
             }
             %res_table = relalg.materialize %filtered [@vars::@person, @vars::@age] => ["person", "age"] : !subop.local_table<[col1: !db.string, col2: !db.string],["person", "age"]>
