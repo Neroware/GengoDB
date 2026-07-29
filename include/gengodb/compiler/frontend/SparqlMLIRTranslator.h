@@ -16,6 +16,7 @@
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOps.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOpsAttributes.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOpsTypes.h"
+#include "gengodb/semantics/Datatypes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -53,9 +54,9 @@ struct Triple {
 };
 
 // Base class for WHERE clause elements.
-// Future ARQ operators (FILTER, UNION, …) add new subclasses here.
+// Future ARQ operators (UNION, BIND, …) add new subclasses here.
 struct PatternElement {
-   enum class Kind { Graph, Optional };
+   enum class Kind { Graph, Optional, Filter };
    virtual ~PatternElement() = default;
    virtual Kind kind() const = 0;
 };
@@ -73,6 +74,62 @@ struct OptionalPattern : PatternElement {
    Kind kind() const override { return Kind::Optional; }
 };
 
+// ------------------------------------------------------------
+// FILTER expressions
+// ------------------------------------------------------------
+// Scope: comparisons (=,!=,<,<=,>,>=), the logical connectives (&&,||,!), and
+// literals/variable references -- the SPARQL three-valued (TRUE/FALSE/ERROR)
+// boolean core. Arithmetic (+,-,*,/) and the builtin test functions
+// (bound(), isIRI(), …) are not yet supported -- see
+// Translator::translateFilterExpr's default case.
+struct Expr {
+   enum class Kind { Variable, Literal, Not, And, Or, Compare };
+   virtual ~Expr() = default;
+   virtual Kind kind() const = 0;
+};
+
+struct VariableExpr : Expr {
+   std::string name;
+   Kind kind() const override { return Kind::Variable; }
+};
+
+// A literal written directly in the query text -- its XSD datatype is known
+// at parse time (unlike a graph-bound variable's, which is only known at
+// runtime). `lexicalForm` is the literal's canonical XSD lexical form, passed
+// through unparsed to `gsubop.xsd_compare_literal`'s runtime-side XSD parser.
+struct LiteralExpr : Expr {
+   std::string lexicalForm;
+   gengodb::semantics::xsd::Type xsdType{gengodb::semantics::xsd::Type::Unspecified};
+   Kind kind() const override { return Kind::Literal; }
+};
+
+struct NotExpr : Expr {
+   std::unique_ptr<Expr> operand;
+   Kind kind() const override { return Kind::Not; }
+};
+
+// Flattened N-ary && / || chains (mirrors db.and/db.or's variadic operands).
+struct AndExpr : Expr {
+   std::vector<std::unique_ptr<Expr>> operands;
+   Kind kind() const override { return Kind::And; }
+};
+struct OrExpr : Expr {
+   std::vector<std::unique_ptr<Expr>> operands;
+   Kind kind() const override { return Kind::Or; }
+};
+
+enum class CompareOp { Eq, Neq, Lt, Lte, Gt, Gte };
+struct CompareExpr : Expr {
+   CompareOp op;
+   std::unique_ptr<Expr> lhs, rhs;
+   Kind kind() const override { return Kind::Compare; }
+};
+
+struct FilterPattern : PatternElement {
+   std::unique_ptr<Expr> expr;
+   Kind kind() const override { return Kind::Filter; }
+};
+
 struct Query {
    std::map<std::string, std::string> prefixes; // label → expansion IRI (""=default)
    bool selectStar{false};
@@ -88,7 +145,8 @@ struct Query {
 enum class TK {
    Eof, IRI, PrefixedName, Variable, BlankNode,
    Keyword, LBrace, RBrace, Dot, Comma, Semicolon,
-   Star, LeftParen, RightParen, StringLit, Colon, Unknown
+   Star, LeftParen, RightParen, StringLit, Colon, Unknown,
+   Number, Eq, Neq, Lt, Lte, Gt, Gte, AndAnd, OrOr, Bang, DoubleCaret
 };
 
 struct Token { TK kind; std::string value; size_t line{1}; };
@@ -157,7 +215,24 @@ class Tokenizer {
       skipWS();
       if (pos >= src.size()) return {TK::Eof, {}, line};
       char c = cur();
-      if (c == '<')  { adv(); return {TK::IRI, readUntil('>'), line}; }
+      if (c == '<') {
+         // Disambiguate IRIREF (<...>) from the less-than/less-equal operator:
+         // an IRIREF never contains whitespace or another reserved delimiter,
+         // so scan ahead (without consuming) for a closing '>' before any
+         // character that couldn't appear inside one.
+         size_t p = pos + 1;
+         bool isIri = false;
+         while (p < src.size()) {
+            char pc = src[p];
+            if (pc == '>') { isIri = true; break; }
+            if (std::isspace(static_cast<unsigned char>(pc)) || pc == '<' || pc == '"' || pc == '{' || pc == '}' || pc == '|' || pc == '^' || pc == '`' || pc == '\\') break;
+            p++;
+         }
+         if (isIri) { adv(); return {TK::IRI, readUntil('>'), line}; }
+         adv();
+         if (cur() == '=') { adv(); return {TK::Lte, "<=", line}; }
+         return {TK::Lt, "<", line};
+      }
       if (c == '"')  { adv(); return {TK::StringLit, readStr('"'), line}; }
       if (c == '\'') { adv(); return {TK::StringLit, readStr('\''), line}; }
       if (c == '?' || c == '$') {
@@ -181,6 +256,29 @@ class Tokenizer {
       if (c == '*') { adv(); return {TK::Star,      "*", line}; }
       if (c == '(') { adv(); return {TK::LeftParen, "(", line}; }
       if (c == ')') { adv(); return {TK::RightParen,")", line}; }
+      if (c == '=') { adv(); return {TK::Eq, "=", line}; }
+      if (c == '!') {
+         adv();
+         if (cur() == '=') { adv(); return {TK::Neq, "!=", line}; }
+         return {TK::Bang, "!", line};
+      }
+      if (c == '>') {
+         adv();
+         if (cur() == '=') { adv(); return {TK::Gte, ">=", line}; }
+         return {TK::Gt, ">", line};
+      }
+      if (c == '&' && la() == '&') { adv(); adv(); return {TK::AndAnd, "&&", line}; }
+      if (c == '|' && la() == '|') { adv(); adv(); return {TK::OrOr, "||", line}; }
+      if (c == '^' && la() == '^') { adv(); adv(); return {TK::DoubleCaret, "^^", line}; }
+      if (std::isdigit(static_cast<unsigned char>(c))) {
+         std::string n;
+         while (pos < src.size() && std::isdigit(static_cast<unsigned char>(cur()))) n += adv();
+         if (cur() == '.' && std::isdigit(static_cast<unsigned char>(la()))) {
+            n += adv();
+            while (pos < src.size() && std::isdigit(static_cast<unsigned char>(cur()))) n += adv();
+         }
+         return {TK::Number, n, line};
+      }
       if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') return readIdent();
       adv(); return {TK::Unknown, std::string(1, c), line};
    }
@@ -213,6 +311,102 @@ class Parser {
       if (col == std::string::npos) return raw;
       auto it = pref.find(raw.substr(0, col));
       return (it != pref.end()) ? it->second + raw.substr(col + 1) : raw;
+   }
+
+   // ---- FILTER expression parsing ----
+   // Precedence, loosest to tightest: || , && , comparisons (non-chaining),
+   // unary ! , primary (parenthesized expr / variable / literal).
+   std::unique_ptr<sparql::Expr> parsePrimary(const std::map<std::string, std::string>& pref) {
+      if (is(TK::LeftParen)) {
+         advance();
+         auto e = parseFilterExpr(pref);
+         eat(TK::RightParen);
+         return e;
+      }
+      if (is(TK::Variable)) {
+         auto e = std::make_unique<sparql::VariableExpr>();
+         e->name = tok.value; advance();
+         return e;
+      }
+      if (is(TK::Number)) {
+         auto e = std::make_unique<sparql::LiteralExpr>();
+         e->lexicalForm = tok.value;
+         e->xsdType = tok.value.find('.') != std::string::npos
+            ? gengodb::semantics::xsd::Type::Decimal
+            : gengodb::semantics::xsd::Type::Integer;
+         advance();
+         return e;
+      }
+      if (is(TK::StringLit)) {
+         auto e = std::make_unique<sparql::LiteralExpr>();
+         e->lexicalForm = tok.value;
+         e->xsdType = gengodb::semantics::xsd::Type::String;
+         advance();
+         if (is(TK::DoubleCaret)) {
+            advance();
+            std::string dtIri;
+            if (is(TK::IRI))               { dtIri = tok.value; advance(); }
+            else if (is(TK::PrefixedName)) { dtIri = expandPrefix(tok.value, pref); advance(); }
+            else throw std::runtime_error("Expected datatype IRI after '^^' at line " + std::to_string(tok.line));
+            std::string localName = dtIri;
+            auto sep = localName.find_last_of("#/");
+            if (sep != std::string::npos) localName = localName.substr(sep + 1);
+            auto parsed = gengodb::semantics::xsd::from_string(localName);
+            if (!parsed) throw std::runtime_error("Unsupported XSD datatype '" + dtIri + "' at line " + std::to_string(tok.line));
+            e->xsdType = *parsed;
+         }
+         return e;
+      }
+      if (kw("TRUE") || kw("FALSE")) {
+         auto e = std::make_unique<sparql::LiteralExpr>();
+         e->lexicalForm = kw("TRUE") ? "true" : "false";
+         e->xsdType = gengodb::semantics::xsd::Type::Boolean;
+         advance();
+         return e;
+      }
+      throw std::runtime_error("Expected FILTER expression term at line " + std::to_string(tok.line) + ", got '" + tok.value + "'");
+   }
+   std::unique_ptr<sparql::Expr> parseUnaryExpr(const std::map<std::string, std::string>& pref) {
+      if (is(TK::Bang)) {
+         advance();
+         auto e = std::make_unique<sparql::NotExpr>();
+         e->operand = parseUnaryExpr(pref);
+         return e;
+      }
+      return parsePrimary(pref);
+   }
+   std::unique_ptr<sparql::Expr> parseComparisonExpr(const std::map<std::string, std::string>& pref) {
+      auto lhs = parseUnaryExpr(pref);
+      sparql::CompareOp op;
+      if      (is(TK::Eq))  op = sparql::CompareOp::Eq;
+      else if (is(TK::Neq)) op = sparql::CompareOp::Neq;
+      else if (is(TK::Lt))  op = sparql::CompareOp::Lt;
+      else if (is(TK::Lte)) op = sparql::CompareOp::Lte;
+      else if (is(TK::Gt))  op = sparql::CompareOp::Gt;
+      else if (is(TK::Gte)) op = sparql::CompareOp::Gte;
+      else return lhs;
+      advance();
+      auto e = std::make_unique<sparql::CompareExpr>();
+      e->op = op;
+      e->lhs = std::move(lhs);
+      e->rhs = parseUnaryExpr(pref);
+      return e;
+   }
+   std::unique_ptr<sparql::Expr> parseAndFilterExpr(const std::map<std::string, std::string>& pref) {
+      auto first = parseComparisonExpr(pref);
+      if (!is(TK::AndAnd)) return first;
+      auto e = std::make_unique<sparql::AndExpr>();
+      e->operands.push_back(std::move(first));
+      while (is(TK::AndAnd)) { advance(); e->operands.push_back(parseComparisonExpr(pref)); }
+      return e;
+   }
+   std::unique_ptr<sparql::Expr> parseFilterExpr(const std::map<std::string, std::string>& pref) {
+      auto first = parseAndFilterExpr(pref);
+      if (!is(TK::OrOr)) return first;
+      auto e = std::make_unique<sparql::OrExpr>();
+      e->operands.push_back(std::move(first));
+      while (is(TK::OrOr)) { advance(); e->operands.push_back(parseAndFilterExpr(pref)); }
+      return e;
    }
 
    sparql::Term parseTerm(const std::map<std::string, std::string>& pref) {
@@ -284,8 +478,19 @@ class Parser {
             continue;
          }
 
+         if (kw("FILTER")) {
+            advance();
+            eat(TK::LeftParen);
+            auto expr = parseFilterExpr(prefixes);
+            eat(TK::RightParen);
+            auto fp = std::make_unique<sparql::FilterPattern>();
+            fp->expr = std::move(expr);
+            out.push_back(std::move(fp));
+            continue;
+         }
+
          // Extension point: raise descriptive error for unsupported ARQ operators
-         for (const char* op : {"FILTER","UNION","MINUS","SERVICE","BIND","VALUES"}) {
+         for (const char* op : {"UNION","MINUS","SERVICE","BIND","VALUES"}) {
             if (kw(op)) throw std::runtime_error(std::string("ARQ operator '") + op + "' is not yet supported");
          }
 
@@ -502,10 +707,109 @@ class Translator {
       return optOp.getRes();
    }
 
+   // ---- FILTER translation ----
+   static gpm::XsdCmpPredicate toGpmPredicate(sparql::CompareOp op) {
+      switch (op) {
+         case sparql::CompareOp::Eq:  return gpm::XsdCmpPredicate::eq;
+         case sparql::CompareOp::Neq: return gpm::XsdCmpPredicate::neq;
+         case sparql::CompareOp::Lt:  return gpm::XsdCmpPredicate::lt;
+         case sparql::CompareOp::Lte: return gpm::XsdCmpPredicate::lte;
+         case sparql::CompareOp::Gt:  return gpm::XsdCmpPredicate::gt;
+         case sparql::CompareOp::Gte: return gpm::XsdCmpPredicate::gte;
+      }
+      throw std::runtime_error("Unknown FILTER compare operator");
+   }
+   // a OP b  <=>  b FLIP(OP) a -- used when a literal appears on the left of a
+   // comparison, since gpm.xsd_compare_literal always takes the variable first.
+   static sparql::CompareOp flipCompareOp(sparql::CompareOp op) {
+      switch (op) {
+         case sparql::CompareOp::Lt:  return sparql::CompareOp::Gt;
+         case sparql::CompareOp::Gt:  return sparql::CompareOp::Lt;
+         case sparql::CompareOp::Lte: return sparql::CompareOp::Gte;
+         case sparql::CompareOp::Gte: return sparql::CompareOp::Lte;
+         default: return op; // eq/neq are symmetric
+      }
+   }
+   // A variable referenced inside a FILTER must already be bound by an earlier
+   // triple pattern (FILTER cannot introduce a new binding).
+   mlir::Value getFilterColumn(const std::string& name, mlir::Value tupleArg) {
+      auto it = varDefs.find(name);
+      if (it == varDefs.end())
+         throw std::runtime_error("FILTER references unbound variable ?" + name);
+      auto ref = colMgr.createRef(it->second.getColumnPtr().get());
+      return builder.create<tuples::GetColumnOp>(builder.getUnknownLoc(), ref.getColumn().type, ref, tupleArg);
+   }
+   mlir::Value translateCompareExpr(const sparql::CompareExpr& e, mlir::Value tupleArg) {
+      auto loc = builder.getUnknownLoc();
+      auto resType = db::NullableType::get(ctxt, builder.getI1Type());
+      bool lhsIsVar = e.lhs->kind() == sparql::Expr::Kind::Variable;
+      bool rhsIsVar = e.rhs->kind() == sparql::Expr::Kind::Variable;
+
+      if (lhsIsVar && rhsIsVar) {
+         mlir::Value lhs = getFilterColumn(static_cast<const sparql::VariableExpr&>(*e.lhs).name, tupleArg);
+         mlir::Value rhs = getFilterColumn(static_cast<const sparql::VariableExpr&>(*e.rhs).name, tupleArg);
+         return builder.create<gpm::XsdCompareOp>(loc, resType, toGpmPredicate(e.op), lhs, rhs);
+      }
+      if (lhsIsVar != rhsIsVar) {
+         bool literalOnLeft = !lhsIsVar;
+         mlir::Value var = getFilterColumn(static_cast<const sparql::VariableExpr&>(literalOnLeft ? *e.rhs : *e.lhs).name, tupleArg);
+         const auto& lit = static_cast<const sparql::LiteralExpr&>(literalOnLeft ? *e.lhs : *e.rhs);
+         auto op = literalOnLeft ? flipCompareOp(e.op) : e.op;
+         return builder.create<gpm::XsdCompareLiteralOp>(loc, resType, toGpmPredicate(op), var,
+            lit.lexicalForm, gengodb::semantics::xsd::to_int32(lit.xsdType));
+      }
+      throw std::runtime_error("FILTER comparisons between two literals are not yet supported");
+   }
+   mlir::Value translateFilterExpr(const sparql::Expr& expr, mlir::Value tupleArg) {
+      auto loc = builder.getUnknownLoc();
+      switch (expr.kind()) {
+         case sparql::Expr::Kind::Not: {
+            const auto& e = static_cast<const sparql::NotExpr&>(expr);
+            return builder.create<db::NotOp>(loc, translateFilterExpr(*e.operand, tupleArg));
+         }
+         case sparql::Expr::Kind::And: {
+            const auto& e = static_cast<const sparql::AndExpr&>(expr);
+            llvm::SmallVector<mlir::Value> vals;
+            for (const auto& o : e.operands) vals.push_back(translateFilterExpr(*o, tupleArg));
+            return builder.create<db::AndOp>(loc, vals);
+         }
+         case sparql::Expr::Kind::Or: {
+            const auto& e = static_cast<const sparql::OrExpr&>(expr);
+            llvm::SmallVector<mlir::Value> vals;
+            for (const auto& o : e.operands) vals.push_back(translateFilterExpr(*o, tupleArg));
+            return builder.create<db::OrOp>(loc, vals);
+         }
+         case sparql::Expr::Kind::Compare:
+            return translateCompareExpr(static_cast<const sparql::CompareExpr&>(expr), tupleArg);
+         default:
+            throw std::runtime_error("Unsupported FILTER expression (only comparisons, &&, ||, ! are implemented)");
+      }
+   }
+   // Wraps `inputStream` in a relalg.selection -- not a bespoke GPM-level op --
+   // so predicates over columns spanning a join (a shared variable pulling two
+   // triples together into a relalg.join) go through RelAlgToSubOp.cpp's
+   // already-correct, already-tested SelectionLowering, instead of being
+   // lowered eagerly during GPMToSubOp before the join structure even exists.
+   mlir::Value buildFilter(const sparql::FilterPattern& fp, mlir::Value inputStream) {
+      auto loc = builder.getUnknownLoc();
+      auto selOp = builder.create<relalg::SelectionOp>(loc, tuples::TupleStreamType::get(ctxt), inputStream);
+      auto* block = new mlir::Block;
+      auto tupleArg = block->addArgument(tuples::TupleType::get(ctxt), loc);
+      selOp.getPredicate().push_back(block);
+      {
+         mlir::OpBuilder::InsertionGuard guard(builder);
+         builder.setInsertionPointToStart(block);
+         mlir::Value pred = translateFilterExpr(*fp.expr, tupleArg);
+         builder.create<tuples::ReturnOp>(loc, pred);
+      }
+      return selOp.getResult();
+   }
+
    // Chains a sequence of pattern elements, each joined onto the result of the
    // previous one: GraphPattern elements become (nested) BasicGraphPatternOps,
    // OptionalPattern elements become OptionalGraphPatternOps wrapping a
-   // recursive call over their own nested group.
+   // recursive call over their own nested group, and FilterPattern elements
+   // wrap a relalg.selection around the accumulated stream.
    // `externalInput` seeds the chain (used as the first element's input if it
    // is set); it must be set for nested groups (the enclosing block argument)
    // and is left null only for the outermost call, where the very first
@@ -530,6 +834,11 @@ class Translator {
             if (!prevStream)
                throw std::runtime_error("OPTIONAL cannot be the first pattern in a query");
             prevStream = buildOptional(opt, prevStream);
+         } else if (elemPtr->kind() == sparql::PatternElement::Kind::Filter) {
+            const auto& fp = static_cast<const sparql::FilterPattern&>(*elemPtr);
+            if (!prevStream)
+               throw std::runtime_error("FILTER cannot be the first pattern in a query");
+            prevStream = buildFilter(fp, prevStream);
          }
       }
       return prevStream;
