@@ -5,9 +5,11 @@
 #include "gengodb/catalog/CreateRdfGraphDef.h"
 #include "gengodb/semantics/Identifiers.h"
 #include <rdf4cpp.hpp>
+#include <rdf4cpp/Timezone.hpp>
 
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -100,12 +102,14 @@ struct RdfDatatypeInlineHelper {
     }
 };
 struct RdfDatatypeFixedHelper {
-    enum class Kind { Int64, UInt64, Double };
+    enum class Kind { Int64, UInt64, Double, Date };
+    static constexpr int32_t kDateTzBias = 841;
     std::optional<Kind> kindOf(const IRI& datatype) const {
         const Namespace xsd = extra_namespaces().XSD;
         if (datatype == xsd + "long")          return Kind::Int64;
         if (datatype == xsd + "unsignedLong")  return Kind::UInt64;
         if (datatype == xsd + "double")        return Kind::Double;
+        if (datatype == xsd + "date")          return Kind::Date;
         return std::nullopt;
     }
     template<typename T>
@@ -116,6 +120,28 @@ struct RdfDatatypeFixedHelper {
             return T{};
         }
         return *v;
+    }
+    static int64_t packDate(const std::pair<rdf4cpp::YearMonthDay, rdf4cpp::OptionalTimezone>& v) {
+        const int64_t yearVal = static_cast<int64_t>(v.first.year());
+        assert(yearVal >= std::numeric_limits<int32_t>::min() && yearVal <= std::numeric_limits<int32_t>::max() && "xsd:date year out of fixed-storage range");
+        const auto year = static_cast<uint32_t>(static_cast<int32_t>(yearVal));
+        const auto month = static_cast<uint32_t>(static_cast<unsigned>(v.first.month()));
+        const auto day = static_cast<uint32_t>(static_cast<unsigned>(v.first.day()));
+        const uint32_t tz = v.second.has_value() ? static_cast<uint32_t>(v.second->offset.count() + kDateTzBias) : 0u;
+        const uint64_t bits = (static_cast<uint64_t>(year) << 32) | (static_cast<uint64_t>(month & 0xFF) << 24) | (static_cast<uint64_t>(day & 0xFF) << 16) | static_cast<uint64_t>(tz & 0xFFFF);
+        return static_cast<int64_t>(bits);
+    }
+    static std::pair<rdf4cpp::YearMonthDay, rdf4cpp::OptionalTimezone> unpackDate(int64_t packed) {
+        const auto bits = static_cast<uint64_t>(packed);
+        const auto year = static_cast<int32_t>(static_cast<uint32_t>(bits >> 32));
+        const auto month = static_cast<unsigned>((bits >> 24) & 0xFF);
+        const auto day = static_cast<unsigned>((bits >> 16) & 0xFF);
+        const auto tz = static_cast<uint32_t>(bits & 0xFFFF);
+        rdf4cpp::OptionalTimezone tzOpt = std::nullopt;
+        if (tz != 0) {
+            tzOpt = rdf4cpp::Timezone{std::chrono::minutes{static_cast<int>(tz) - kDateTzBias}};
+        }
+        return {rdf4cpp::YearMonthDay{rdf4cpp::Year{year}, std::chrono::month{month}, std::chrono::day{day}}, tzOpt};
     }
 };
 struct LiteralKey {

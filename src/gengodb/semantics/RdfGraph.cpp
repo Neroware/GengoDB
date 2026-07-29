@@ -3,6 +3,7 @@
 #include "gengodb/semantics/RdfFileFormat.h"
 
 #include <rdf4cpp/Graph.hpp>
+#include <rdf4cpp/datatypes/xsd/time/Date.hpp>
 #include <rdf4cpp/parser/RDFFileParser.hpp>
 
 #include <cstdio>
@@ -58,8 +59,12 @@ inline int32_t NodeHelper::resolve(const Literal& l) {
                 fixedDouble = fixedHelper.extract<double>(anyValue);
                 data.assign(reinterpret_cast<const char*>(&fixedDouble), sizeof(fixedDouble));
                 break;
+            case RdfDatatypeFixedHelper::Kind::Date:
+                fixedI64 = RdfDatatypeFixedHelper::packDate(fixedHelper.extract<std::pair<rdf4cpp::YearMonthDay, rdf4cpp::OptionalTimezone>>(anyValue));
+                data.assign(reinterpret_cast<const char*>(&fixedI64), sizeof(fixedI64));
+                break;
         }
-    } 
+    }
     else {
         const auto lang = l.language_tag();
         assert(lang.size() <= 0xff && "language tag too long to persist");
@@ -85,7 +90,8 @@ inline int32_t NodeHelper::resolve(const Literal& l) {
     } else if (fixedKind) {
         auto& propData = g->storage->storage().getPropData();
         switch (*fixedKind) {
-            case RdfDatatypeFixedHelper::Kind::Int64: {
+            case RdfDatatypeFixedHelper::Kind::Int64:
+            case RdfDatatypeFixedHelper::Kind::Date: {
                 const int32_t idx = propData.add_i64(fixedI64);
                 value = static_cast<uint32_t>(idx);
                 persistedData = reinterpret_cast<const char*>(propData.get_i64_ptr(idx));
@@ -217,6 +223,7 @@ void RdfGraph::rebuildLiteralNodeCache() {
             const auto idx = static_cast<int32_t>(p.value);
             switch (*fixedKind) {
                 case RdfDatatypeFixedHelper::Kind::Int64:
+                case RdfDatatypeFixedHelper::Kind::Date:
                     data = reinterpret_cast<const char*>(propData.get_i64_ptr(idx));
                     len = sizeof(int64_t);
                     break;
@@ -265,13 +272,14 @@ Literal RdfGraph::getLiteral(int32_t id) const {
                 lex = std::to_string(propData.get_ui64(idx));
                 break;
             case RdfDatatypeFixedHelper::Kind::Double: {
-                // std::to_string truncates to 6 fractional digits; %.17g is required
-                // for a double to always round-trip exactly through its decimal text.
                 char buf[32];
                 std::snprintf(buf, sizeof(buf), "%.17g", propData.get_double(idx));
                 lex = buf;
                 break;
             }
+            case RdfDatatypeFixedHelper::Kind::Date:
+                lex = std::string(Literal::make_typed_from_value<datatypes::xsd::Date>(RdfDatatypeFixedHelper::unpackDate(propData.get_i64(idx))).lexical_form());
+                break;
         }
         return Literal::make_typed(lex, datatype);
     }
