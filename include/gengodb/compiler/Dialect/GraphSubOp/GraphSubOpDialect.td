@@ -141,6 +141,21 @@ def Identifier : GraphSubOp_Type<"Identifier", "identifier", [State]> {
 def AnyGraphRef: AnyTypeOf<[NodeRef,EdgeRef,PropertyRef]>;
 
 //===----------------------------------------------------------------------===//
+// Enums
+//===----------------------------------------------------------------------===//
+
+def XsdCmp_EQ  : I64EnumAttrCase<"eq", 0>;
+def XsdCmp_NEQ : I64EnumAttrCase<"neq", 1>;
+def XsdCmp_LT  : I64EnumAttrCase<"lt", 2>;
+def XsdCmp_LTE : I64EnumAttrCase<"lte", 3>;
+def XsdCmp_GT  : I64EnumAttrCase<"gt", 4>;
+def XsdCmp_GTE : I64EnumAttrCase<"gte", 5>;
+def XsdCmpPredicateAttr : I64EnumAttr<"XsdCmpPredicate", "",
+        [XsdCmp_EQ, XsdCmp_NEQ, XsdCmp_LT, XsdCmp_LTE, XsdCmp_GT, XsdCmp_GTE]> {
+    let cppNamespace = "::gengodb::compiler::dialect::gsubop";
+}
+
+//===----------------------------------------------------------------------===//
 // Attributes
 //===----------------------------------------------------------------------===//
 

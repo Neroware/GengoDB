@@ -135,6 +135,7 @@ gen_rt_def(tracing-rt-defs "Tracing.h")
 gen_rt_def(graph-rt-defs "../../gengodb/runtime/Graph.h")
 gen_rt_def(builtin-graph-rt-defs "../../gengodb/runtime/BuiltinGraphs.h")
 gen_rt_def(graph-data-rt-defs "../../gengodb/runtime/GraphData.h")
+gen_rt_def(xsd-rt-defs "../../gengodb/runtime/XsdRuntime.h")
 message("cpp files ${runtime_funcs_ptr_libs}")
 string(REPLACE " " ";" runtime_funcs_ptr_libs "${runtime_funcs_ptr_libs}")
 

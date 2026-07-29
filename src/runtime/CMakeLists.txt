@@ -41,6 +41,7 @@ add_library(runtime OBJECT
         ../gengodb/runtime/BuiltinGraphs.cpp
         ../gengodb/runtime/GengoDBGraph.cpp
         ../gengodb/runtime/GraphData.cpp
+        ../gengodb/runtime/XsdRuntime.cpp
 )
 set(COMPILE_DEFS "")
 if (ENABLE_GPU_BACKEND)

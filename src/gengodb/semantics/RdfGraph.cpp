@@ -192,6 +192,7 @@ void RdfGraph::ensureLoaded() {
                 default: return std::string();
             }
         });
+        storage->storage().getMetadata().set_rdf(this);
     }
 }
 void RdfGraph::rebuildLiteralNodeCache() {

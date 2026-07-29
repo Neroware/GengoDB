@@ -488,6 +488,41 @@ class GpmIdentifiersEqualLowering : public OpConversionPattern<gpm::IdentifiersE
       return success();
    }
 };
+class GpmXsdCompareLowering : public OpConversionPattern<gpm::XsdCompareOp> {
+   public:
+   using OpConversionPattern<gpm::XsdCompareOp>::OpConversionPattern;
+   mlir::Value refreshIfStale(mlir::Value operand, ConversionPatternRewriter& rewriter) const {
+      auto getColOp = mlir::dyn_cast_or_null<tuples::GetColumnOp>(operand.getDefiningOp());
+      if (!getColOp) return operand;
+      mlir::Type liveType = getColOp.getAttr().getColumn().type;
+      if (liveType == operand.getType()) return operand;
+      return rewriter.create<tuples::GetColumnOp>(getColOp.getLoc(), liveType, getColOp.getAttr(), getColOp.getTuple());
+   }
+   LogicalResult matchAndRewrite(gpm::XsdCompareOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      mlir::Value lhs = refreshIfStale(adaptor.getLhs(), rewriter);
+      mlir::Value rhs = refreshIfStale(adaptor.getRhs(), rewriter);
+      auto predicate = static_cast<gsubop::XsdCmpPredicate>(static_cast<int64_t>(op.getPredicate()));
+      rewriter.replaceOpWithNewOp<gsubop::XsdCompareOp>(op, op.getResult().getType(), predicate, lhs, rhs);
+      return success();
+   }
+};
+class GpmXsdCompareLiteralLowering : public OpConversionPattern<gpm::XsdCompareLiteralOp> {
+   public:
+   using OpConversionPattern<gpm::XsdCompareLiteralOp>::OpConversionPattern;
+   mlir::Value refreshIfStale(mlir::Value operand, ConversionPatternRewriter& rewriter) const {
+      auto getColOp = mlir::dyn_cast_or_null<tuples::GetColumnOp>(operand.getDefiningOp());
+      if (!getColOp) return operand;
+      mlir::Type liveType = getColOp.getAttr().getColumn().type;
+      if (liveType == operand.getType()) return operand;
+      return rewriter.create<tuples::GetColumnOp>(getColOp.getLoc(), liveType, getColOp.getAttr(), getColOp.getTuple());
+   }
+   LogicalResult matchAndRewrite(gpm::XsdCompareLiteralOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      mlir::Value lhs = refreshIfStale(adaptor.getLhs(), rewriter);
+      auto predicate = static_cast<gsubop::XsdCmpPredicate>(static_cast<int64_t>(op.getPredicate()));
+      rewriter.replaceOpWithNewOp<gsubop::XsdCompareLiteralOp>(op, op.getResult().getType(), predicate, lhs, op.getRhsLexicalForm(), op.getRhsXsdType());
+      return success();
+   }
+};
 
 static void refreshNullableTypes(ModuleOp module) {
    module.walk([&](relalg::OuterJoinOp outerJoinOp) {
@@ -540,6 +575,8 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs, externalGraphs);
    patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs);
    patterns.insert<GpmIdentifiersEqualLowering>(typeConverter, ctxt);
+   patterns.insert<GpmXsdCompareLowering>(typeConverter, ctxt);
+   patterns.insert<GpmXsdCompareLiteralLowering>(typeConverter, ctxt);
 
    if (failed(applyFullConversion(module, target, std::move(patterns)))) {
       signalPassFailure();
