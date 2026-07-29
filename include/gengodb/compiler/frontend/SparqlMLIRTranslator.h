@@ -37,6 +37,7 @@
 #include <cctype>
 #include <map>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -156,6 +157,9 @@ struct Query {
    bool selectStar{false};
    std::vector<std::string> selectVars;
    std::vector<std::unique_ptr<PatternElement>> patterns;
+   // SPARQL LIMIT solution modifier -- caps the number of solutions in the
+   // final result the same way relalg.limit already caps SQL's LIMIT clause.
+   std::optional<int64_t> limit;
 };
 
 } // namespace sparql
@@ -618,6 +622,20 @@ class Parser {
       if (kw("WHERE")) advance();
       parseGroup(q.patterns, q.prefixes, "");
 
+      // Solution modifiers. Only LIMIT is implemented so far (mapped onto
+      // relalg.limit, the same op SQL's LIMIT clause already uses) --
+      // ORDER BY / OFFSET raise a descriptive error instead of being
+      // silently dropped, since either would silently change the result set.
+      if (kw("ORDER")) throw std::runtime_error("ORDER BY is not yet supported");
+      if (kw("LIMIT")) {
+         advance();
+         if (!is(TK::Number))
+            throw std::runtime_error("Expected integer after LIMIT at line " + std::to_string(tok.line));
+         q.limit = std::stoll(tok.value);
+         advance();
+      }
+      if (kw("OFFSET")) throw std::runtime_error("OFFSET is not yet supported");
+
       while (!is(TK::Eof)) advance();
       return q;
    }
@@ -1014,6 +1032,14 @@ class Translator {
 
          if (!prevStream)
             throw std::runtime_error("WHERE clause contains no supported graph patterns");
+
+         // SPARQL LIMIT -- reuses relalg.limit, the same op SQL's LIMIT clause
+         // lowers to (see SQLMlirTranslator::translateResultModifier's
+         // BOUND_LIMIT case), rather than adding a bespoke GPM-level op.
+         if (query.limit) {
+            prevStream = builder.create<relalg::LimitOp>(
+               loc, tuples::TupleStreamType::get(ctxt), static_cast<int32_t>(*query.limit), prevStream);
+         }
 
          // Project the requested variables
          std::vector<std::string> outVars = query.selectStar ? allVars : query.selectVars;
