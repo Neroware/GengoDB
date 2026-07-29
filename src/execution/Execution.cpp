@@ -6,6 +6,7 @@
 #include "lingodb/compiler/Conversion/ArrowToStd/ArrowToStd.h"
 #include "lingodb/compiler/Conversion/DBToStd/DBToStd.h"
 #include "gengodb/compiler/Conversion/GPMToSubOp/GPMToSubOpPass.h"
+#include "gengodb/compiler/Conversion/XSDToControlFlow/XSDToControlFlowPass.h"
 #include "lingodb/compiler/Conversion/RelAlgToSubOp/RelAlgToSubOpPass.h"
 #include "lingodb/compiler/Conversion/SubOpToControlFlow/SubOpToControlFlowPass.h"
 #include "lingodb/compiler/Dialect/RelAlg/Passes.h"
@@ -188,6 +189,7 @@ class SubOpLoweringStep : public LoweringStep {
       addLingoDBInstrumentation(lowerSubOpPm, getSerializationState());
 
       subop::setCompressionEnabled(enabledPasses.contains("Compression"));
+      lowerSubOpPm.addPass(xsd::createLowerXSDToControlFlowPass());
       lowerSubOpPm.addPass(subop::createLowerSubOpPass());
       if (cleanupAfterSubOp.getValue()) {
          lowerSubOpPm.addPass(lingodb::compiler::createCanonicalizerPass());

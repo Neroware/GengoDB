@@ -36,7 +36,6 @@
 #include "lingodb/gengodb/runtime/Graph.h"
 #include "lingodb/gengodb/runtime/BuiltinGraphs.h"
 #include "lingodb/gengodb/runtime/GraphData.h"
-#include "lingodb/gengodb/runtime/XsdRuntime.h"
 #include "gengodb/compiler/Conversion/GraphSubOpToCF/GraphHelpers.h"
 #include "gengodb/compiler/Conversion/GraphSubOpToCF/GraphEntryTypes.h"
 
@@ -4407,59 +4406,6 @@ class IdentifiersEqualLowering : public SubOpConversionPattern<gsubop::Identifie
    }
 };
 
-static mlir::Value xsdTriStateToNullableBool(mlir::OpBuilder& b, mlir::Location loc, mlir::Value raw, mlir::Type resultType) {
-   mlir::Value minusOne = b.create<arith::ConstantOp>(loc, b.getI8Type(), b.getIntegerAttr(b.getI8Type(), -1));
-   mlir::Value one = b.create<arith::ConstantOp>(loc, b.getI8Type(), b.getIntegerAttr(b.getI8Type(), 1));
-   mlir::Value isError = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, raw, minusOne);
-   mlir::Value boolVal = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, raw, one);
-   return b.create<db::AsNullableOp>(loc, resultType, boolVal, isError);
-}
-class XsdCompareLowering : public SubOpConversionPattern<gsubop::XsdCompareOp> {
-   public:
-   using SubOpConversionPattern<gsubop::XsdCompareOp>::SubOpConversionPattern;
-   LogicalResult matchAndRewrite(gsubop::XsdCompareOp op, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
-      auto loc = op->getLoc();
-      auto resultType = op.getResult().getType();
-      mlir::Value predicateConst = rewriter.create<mlir::arith::ConstantIntOp>(loc, static_cast<int32_t>(op.getPredicate()), 32);
-      mlir::Value lhsValid = rewriter.create<util::IsRefValidOp>(loc, rewriter.getI1Type(), adaptor.getLhs());
-      mlir::Value rhsValid = rewriter.create<util::IsRefValidOp>(loc, rewriter.getI1Type(), adaptor.getRhs());
-      mlir::Value bothValid = rewriter.create<arith::AndIOp>(loc, lhsValid, rhsValid);
-      auto res = rewriter.create<mlir::scf::IfOp>(loc, bothValid,
-         [&](mlir::OpBuilder& b, mlir::Location loc) {
-            mlir::Value raw = rt::XsdRuntime::compareNodeNode(b, loc)({adaptor.getLhs(), adaptor.getRhs(), predicateConst})[0];
-            b.create<mlir::scf::YieldOp>(loc, xsdTriStateToNullableBool(b, loc, raw, resultType));
-         },
-         [&](mlir::OpBuilder& b, mlir::Location loc) {
-            b.create<mlir::scf::YieldOp>(loc, b.create<db::NullOp>(loc, resultType).getResult());
-         }).getResult(0);
-      rewriter.replaceOp(op, res);
-      return mlir::success();
-   }
-};
-class XsdCompareLiteralLowering : public SubOpConversionPattern<gsubop::XsdCompareLiteralOp> {
-   public:
-   using SubOpConversionPattern<gsubop::XsdCompareLiteralOp>::SubOpConversionPattern;
-   LogicalResult matchAndRewrite(gsubop::XsdCompareLiteralOp op, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
-      auto loc = op->getLoc();
-      auto* ctxt = op.getContext();
-      auto resultType = op.getResult().getType();
-      mlir::Value predicateConst = rewriter.create<mlir::arith::ConstantIntOp>(loc, static_cast<int32_t>(op.getPredicate()), 32);
-      mlir::Value lhsValid = rewriter.create<util::IsRefValidOp>(loc, rewriter.getI1Type(), adaptor.getLhs());
-      auto res = rewriter.create<mlir::scf::IfOp>(loc, lhsValid,
-         [&](mlir::OpBuilder& b, mlir::Location loc) {
-            mlir::Value lexicalForm = b.create<util::CreateConstVarLen>(loc, util::VarLen32Type::get(ctxt), op.getRhsLexicalForm());
-            mlir::Value xsdType = b.create<mlir::arith::ConstantIntOp>(loc, op.getRhsXsdType(), 32);
-            mlir::Value raw = rt::XsdRuntime::compareNodeLiteral(b, loc)({adaptor.getLhs(), lexicalForm, xsdType, predicateConst})[0];
-            b.create<mlir::scf::YieldOp>(loc, xsdTriStateToNullableBool(b, loc, raw, resultType));
-         },
-         [&](mlir::OpBuilder& b, mlir::Location loc) {
-            b.create<mlir::scf::YieldOp>(loc, b.create<db::NullOp>(loc, resultType).getResult());
-         }).getResult(0);
-      rewriter.replaceOp(op, res);
-      return mlir::success();
-   }
-};
-
 class GetIdentifierLowering : public SubOpConversionPattern<gsubop::GetIdentifierOp> {
    public:
    using SubOpConversionPattern<gsubop::GetIdentifierOp>::SubOpConversionPattern;
@@ -5682,8 +5628,6 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    patterns.insertPattern<ScanPropertySetLowering>(typeConverter, ctxt);
    patterns.insertPattern<CreateIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<IdentifiersEqualLowering>(typeConverter, ctxt);
-   patterns.insertPattern<XsdCompareLowering>(typeConverter, ctxt);
-   patterns.insertPattern<XsdCompareLiteralLowering>(typeConverter, ctxt);
    patterns.insertPattern<GetIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<FilterByIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<CastPropertyRefLowering>(typeConverter, ctxt);

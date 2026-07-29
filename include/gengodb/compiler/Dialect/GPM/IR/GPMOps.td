@@ -94,29 +94,4 @@ def IdentifiersEqualOp : GPM_Op<"identifiers_equal", [Pure]> {
   let assemblyFormat = [{ $lhs `:` type($lhs) `,` $rhs `:` type($rhs) attr-dict }];
 }
 
-def GPM_XsdCompareOp : GPM_Op<"xsd_compare", [Pure]> {
-  let summary = "XSD/SPARQL value-semantics comparison between two RDF terms";
-  let description = [{
-    Pattern-authoring-time counterpart of `gsubop.xsd_compare` -- see there for the
-    comparison/nullability semantics. Lowered 1:1 into `gsubop.xsd_compare` by
-    `GPMToSubOp.cpp`, the same relationship `gpm.identifiers_equal` has to
-    `gsubop.identifiers_equal`.
-  }];
-  let arguments = (ins GPM_XsdCmpPredicateAttr:$predicate, AnyType:$lhs, AnyType:$rhs);
-  let results = (outs AnyType:$result);
-  let assemblyFormat = [{ $predicate $lhs `:` type($lhs) `,` $rhs `:` type($rhs) `->` type($result) attr-dict }];
-}
-
-def GPM_XsdCompareLiteralOp : GPM_Op<"xsd_compare_literal", [Pure]> {
-  let summary = "XSD/SPARQL value-semantics comparison of an RDF term against a query-text literal";
-  let description = [{
-    GPM counterpart of `gsubop.xsd_compare_literal`, see there for
-    the comparison/nullability semantics and why the literal side is given as attributes
-    rather than a second operand. Lowered 1:1 into `gsubop.xsd_compare_literal`.
-  }];
-  let arguments = (ins GPM_XsdCmpPredicateAttr:$predicate, AnyType:$lhs, StrAttr:$rhsLexicalForm, I32Attr:$rhsXsdType);
-  let results = (outs AnyType:$result);
-  let assemblyFormat = [{ $predicate $lhs `:` type($lhs) `,` $rhsLexicalForm `dtype` $rhsXsdType `->` type($result) attr-dict }];
-}
-
 #endif // GENGODB_DIALECT_GPM_IR_GPMOPS

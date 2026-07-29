@@ -12,10 +12,14 @@
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamDialect.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
 #include "lingodb/compiler/Dialect/util/UtilDialect.h"
+#include "lingodb/compiler/Dialect/util/UtilOps.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOps.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOpsAttributes.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOpsTypes.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
+#include "gengodb/compiler/Dialect/XSD/XSDDialect.h"
+#include "gengodb/compiler/Dialect/XSD/XSDOps.h"
 #include "gengodb/semantics/Datatypes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -77,13 +81,13 @@ struct OptionalPattern : PatternElement {
 // ------------------------------------------------------------
 // FILTER expressions
 // ------------------------------------------------------------
-// Scope: comparisons (=,!=,<,<=,>,>=), the logical connectives (&&,||,!), and
-// literals/variable references -- the SPARQL three-valued (TRUE/FALSE/ERROR)
-// boolean core. Arithmetic (+,-,*,/) and the builtin test functions
+// Scope: comparisons (=,!=,<,<=,>,>=), the logical connectives (&&,||,!), numeric
+// arithmetic (+,-,*,/, unary -), and literals/variable references -- the SPARQL
+// three-valued (TRUE/FALSE/ERROR) boolean core. The builtin test functions
 // (bound(), isIRI(), …) are not yet supported -- see
 // Translator::translateFilterExpr's default case.
 struct Expr {
-   enum class Kind { Variable, Literal, Not, And, Or, Compare };
+   enum class Kind { Variable, Literal, Not, And, Or, Compare, Arith, Negate };
    virtual ~Expr() = default;
    virtual Kind kind() const = 0;
 };
@@ -96,7 +100,7 @@ struct VariableExpr : Expr {
 // A literal written directly in the query text -- its XSD datatype is known
 // at parse time (unlike a graph-bound variable's, which is only known at
 // runtime). `lexicalForm` is the literal's canonical XSD lexical form, passed
-// through unparsed to `gsubop.xsd_compare_literal`'s runtime-side XSD parser.
+// through unparsed to `xsd.compare_literal`'s runtime-side XSD parser.
 struct LiteralExpr : Expr {
    std::string lexicalForm;
    gengodb::semantics::xsd::Type xsdType{gengodb::semantics::xsd::Type::Unspecified};
@@ -125,6 +129,23 @@ struct CompareExpr : Expr {
    Kind kind() const override { return Kind::Compare; }
 };
 
+// Numeric arithmetic (+ - * /). A sub-result's XSD type is only known at runtime (it
+// depends on the runtime-bound datatype of any variable in the expression), unlike a
+// comparison's result which is always statically boolean -- see
+// Translator::translateArithExpr for how this is represented in MLIR.
+enum class ArithOp { Add, Sub, Mul, Div };
+struct ArithExpr : Expr {
+   ArithOp op;
+   std::unique_ptr<Expr> lhs, rhs;
+   Kind kind() const override { return Kind::Arith; }
+};
+// Unary '-'. Unary '+' needs no AST node -- it's a parse-time no-op (see
+// Parser::parseUnaryExpr).
+struct NegateExpr : Expr {
+   std::unique_ptr<Expr> operand;
+   Kind kind() const override { return Kind::Negate; }
+};
+
 struct FilterPattern : PatternElement {
    std::unique_ptr<Expr> expr;
    Kind kind() const override { return Kind::Filter; }
@@ -146,7 +167,8 @@ enum class TK {
    Eof, IRI, PrefixedName, Variable, BlankNode,
    Keyword, LBrace, RBrace, Dot, Comma, Semicolon,
    Star, LeftParen, RightParen, StringLit, Colon, Unknown,
-   Number, Eq, Neq, Lt, Lte, Gt, Gte, AndAnd, OrOr, Bang, DoubleCaret
+   Number, Eq, Neq, Lt, Lte, Gt, Gte, AndAnd, OrOr, Bang, DoubleCaret,
+   Plus, Minus, Slash
 };
 
 struct Token { TK kind; std::string value; size_t line{1}; };
@@ -270,6 +292,9 @@ class Tokenizer {
       if (c == '&' && la() == '&') { adv(); adv(); return {TK::AndAnd, "&&", line}; }
       if (c == '|' && la() == '|') { adv(); adv(); return {TK::OrOr, "||", line}; }
       if (c == '^' && la() == '^') { adv(); adv(); return {TK::DoubleCaret, "^^", line}; }
+      if (c == '+') { adv(); return {TK::Plus,  "+", line}; }
+      if (c == '-') { adv(); return {TK::Minus, "-", line}; }
+      if (c == '/') { adv(); return {TK::Slash, "/", line}; }
       if (std::isdigit(static_cast<unsigned char>(c))) {
          std::string n;
          while (pos < src.size() && std::isdigit(static_cast<unsigned char>(cur()))) n += adv();
@@ -373,10 +398,43 @@ class Parser {
          e->operand = parseUnaryExpr(pref);
          return e;
       }
+      if (is(TK::Minus)) {
+         advance();
+         auto e = std::make_unique<sparql::NegateExpr>();
+         e->operand = parseUnaryExpr(pref);
+         return e;
+      }
+      if (is(TK::Plus)) { advance(); return parseUnaryExpr(pref); } // unary '+' is a no-op
       return parsePrimary(pref);
    }
-   std::unique_ptr<sparql::Expr> parseComparisonExpr(const std::map<std::string, std::string>& pref) {
+   std::unique_ptr<sparql::Expr> parseMultiplicativeExpr(const std::map<std::string, std::string>& pref) {
       auto lhs = parseUnaryExpr(pref);
+      while (is(TK::Star) || is(TK::Slash)) {
+         auto op = is(TK::Star) ? sparql::ArithOp::Mul : sparql::ArithOp::Div;
+         advance();
+         auto e = std::make_unique<sparql::ArithExpr>();
+         e->op = op;
+         e->lhs = std::move(lhs);
+         e->rhs = parseUnaryExpr(pref);
+         lhs = std::move(e);
+      }
+      return lhs;
+   }
+   std::unique_ptr<sparql::Expr> parseAdditiveExpr(const std::map<std::string, std::string>& pref) {
+      auto lhs = parseMultiplicativeExpr(pref);
+      while (is(TK::Plus) || is(TK::Minus)) {
+         auto op = is(TK::Plus) ? sparql::ArithOp::Add : sparql::ArithOp::Sub;
+         advance();
+         auto e = std::make_unique<sparql::ArithExpr>();
+         e->op = op;
+         e->lhs = std::move(lhs);
+         e->rhs = parseMultiplicativeExpr(pref);
+         lhs = std::move(e);
+      }
+      return lhs;
+   }
+   std::unique_ptr<sparql::Expr> parseComparisonExpr(const std::map<std::string, std::string>& pref) {
+      auto lhs = parseAdditiveExpr(pref);
       sparql::CompareOp op;
       if      (is(TK::Eq))  op = sparql::CompareOp::Eq;
       else if (is(TK::Neq)) op = sparql::CompareOp::Neq;
@@ -389,7 +447,7 @@ class Parser {
       auto e = std::make_unique<sparql::CompareExpr>();
       e->op = op;
       e->lhs = std::move(lhs);
-      e->rhs = parseUnaryExpr(pref);
+      e->rhs = parseAdditiveExpr(pref);
       return e;
    }
    std::unique_ptr<sparql::Expr> parseAndFilterExpr(const std::map<std::string, std::string>& pref) {
@@ -708,19 +766,19 @@ class Translator {
    }
 
    // ---- FILTER translation ----
-   static gpm::XsdCmpPredicate toGpmPredicate(sparql::CompareOp op) {
+   static xsd::XsdCmpPredicate toXsdPredicate(sparql::CompareOp op) {
       switch (op) {
-         case sparql::CompareOp::Eq:  return gpm::XsdCmpPredicate::eq;
-         case sparql::CompareOp::Neq: return gpm::XsdCmpPredicate::neq;
-         case sparql::CompareOp::Lt:  return gpm::XsdCmpPredicate::lt;
-         case sparql::CompareOp::Lte: return gpm::XsdCmpPredicate::lte;
-         case sparql::CompareOp::Gt:  return gpm::XsdCmpPredicate::gt;
-         case sparql::CompareOp::Gte: return gpm::XsdCmpPredicate::gte;
+         case sparql::CompareOp::Eq:  return xsd::XsdCmpPredicate::eq;
+         case sparql::CompareOp::Neq: return xsd::XsdCmpPredicate::neq;
+         case sparql::CompareOp::Lt:  return xsd::XsdCmpPredicate::lt;
+         case sparql::CompareOp::Lte: return xsd::XsdCmpPredicate::lte;
+         case sparql::CompareOp::Gt:  return xsd::XsdCmpPredicate::gt;
+         case sparql::CompareOp::Gte: return xsd::XsdCmpPredicate::gte;
       }
       throw std::runtime_error("Unknown FILTER compare operator");
    }
    // a OP b  <=>  b FLIP(OP) a -- used when a literal appears on the left of a
-   // comparison, since gpm.xsd_compare_literal always takes the variable first.
+   // comparison, since xsd.compare_literal always takes the variable first.
    static sparql::CompareOp flipCompareOp(sparql::CompareOp op) {
       switch (op) {
          case sparql::CompareOp::Lt:  return sparql::CompareOp::Gt;
@@ -739,23 +797,87 @@ class Translator {
       auto ref = colMgr.createRef(it->second.getColumnPtr().get());
       return builder.create<tuples::GetColumnOp>(builder.getUnknownLoc(), ref.getColumn().type, ref, tupleArg);
    }
+   static xsd::XsdArithPredicate toXsdArithPredicate(sparql::ArithOp op) {
+      switch (op) {
+         case sparql::ArithOp::Add: return xsd::XsdArithPredicate::add;
+         case sparql::ArithOp::Sub: return xsd::XsdArithPredicate::sub;
+         case sparql::ArithOp::Mul: return xsd::XsdArithPredicate::mul;
+         case sparql::ArithOp::Div: return xsd::XsdArithPredicate::div;
+      }
+      throw std::runtime_error("Unknown FILTER arithmetic operator");
+   }
+   // Translates a numeric FILTER (sub-)expression into the dynamic XSD value pair
+   // `(lexicalForm, xsdType)` -- see xsd.arith's op-doc: an arithmetic
+   // sub-result's XSD type is only known at runtime (it depends on the runtime-bound
+   // datatype of any variable in the expression), unlike a comparison's result which
+   // is always statically boolean, so it can't be represented as a single typed value
+   // the way translateCompareExpr's result is.
+   std::pair<mlir::Value, mlir::Value> translateArithExpr(const sparql::Expr& expr, mlir::Value tupleArg) {
+      auto loc = builder.getUnknownLoc();
+      // The lexical form is deliberately the raw runtime `!util.varlen32` type, not
+      // the logical `!db.string` -- see XSDToControlFlow.cpp's `unwrapNullableVarLen`
+      // doc comment for why (DBToStd has no fallback for a leftover db.string bridging
+      // cast it didn't itself introduce).
+      auto lexType = db::NullableType::get(ctxt, util::VarLen32Type::get(ctxt));
+      auto typeType = db::NullableType::get(ctxt, builder.getI32Type());
+      switch (expr.kind()) {
+         case sparql::Expr::Kind::Variable: {
+            mlir::Value ref = getFilterColumn(static_cast<const sparql::VariableExpr&>(expr).name, tupleArg);
+            auto op = builder.create<xsd::LiteralOfRefOp>(loc, lexType, typeType, ref);
+            return {op.getLexicalForm(), op.getXsdType()};
+         }
+         case sparql::Expr::Kind::Literal: {
+            const auto& lit = static_cast<const sparql::LiteralExpr&>(expr);
+            mlir::Value lexConst = builder.create<util::CreateConstVarLen>(loc, util::VarLen32Type::get(ctxt), lit.lexicalForm);
+            mlir::Value lex = builder.create<db::AsNullableOp>(loc, lexType, lexConst);
+            mlir::Value typeConst = builder.create<mlir::arith::ConstantIntOp>(loc, gengodb::semantics::xsd::to_int32(lit.xsdType), 32);
+            mlir::Value typ = builder.create<db::AsNullableOp>(loc, typeType, typeConst);
+            return {lex, typ};
+         }
+         case sparql::Expr::Kind::Negate: {
+            const auto& e = static_cast<const sparql::NegateExpr&>(expr);
+            auto [lex, typ] = translateArithExpr(*e.operand, tupleArg);
+            auto op = builder.create<xsd::NegateOp>(loc, lexType, typeType, lex, typ);
+            return {op.getLexicalForm(), op.getXsdTypeResult()};
+         }
+         case sparql::Expr::Kind::Arith: {
+            const auto& e = static_cast<const sparql::ArithExpr&>(expr);
+            auto [lhsLex, lhsTyp] = translateArithExpr(*e.lhs, tupleArg);
+            auto [rhsLex, rhsTyp] = translateArithExpr(*e.rhs, tupleArg);
+            auto op = builder.create<xsd::ArithOp>(loc, lexType, typeType, toXsdArithPredicate(e.op), lhsLex, lhsTyp, rhsLex, rhsTyp);
+            return {op.getLexicalForm(), op.getXsdType()};
+         }
+         default:
+            throw std::runtime_error("Expected a numeric FILTER expression (variable, literal, arithmetic, or unary '-')");
+      }
+   }
    mlir::Value translateCompareExpr(const sparql::CompareExpr& e, mlir::Value tupleArg) {
       auto loc = builder.getUnknownLoc();
       auto resType = db::NullableType::get(ctxt, builder.getI1Type());
       bool lhsIsVar = e.lhs->kind() == sparql::Expr::Kind::Variable;
       bool rhsIsVar = e.rhs->kind() == sparql::Expr::Kind::Variable;
+      bool lhsIsLit = e.lhs->kind() == sparql::Expr::Kind::Literal;
+      bool rhsIsLit = e.rhs->kind() == sparql::Expr::Kind::Literal;
 
+      // Either side is itself an arithmetic (sub-)expression -- neither the
+      // var/var nor the var/literal fast path applies, since both operands need to
+      // be evaluated into the dynamic XSD value pair first.
+      if (!(lhsIsVar || lhsIsLit) || !(rhsIsVar || rhsIsLit)) {
+         auto [lhsLex, lhsTyp] = translateArithExpr(*e.lhs, tupleArg);
+         auto [rhsLex, rhsTyp] = translateArithExpr(*e.rhs, tupleArg);
+         return builder.create<xsd::CompareDynOp>(loc, resType, toXsdPredicate(e.op), lhsLex, lhsTyp, rhsLex, rhsTyp);
+      }
       if (lhsIsVar && rhsIsVar) {
          mlir::Value lhs = getFilterColumn(static_cast<const sparql::VariableExpr&>(*e.lhs).name, tupleArg);
          mlir::Value rhs = getFilterColumn(static_cast<const sparql::VariableExpr&>(*e.rhs).name, tupleArg);
-         return builder.create<gpm::XsdCompareOp>(loc, resType, toGpmPredicate(e.op), lhs, rhs);
+         return builder.create<xsd::CompareOp>(loc, resType, toXsdPredicate(e.op), lhs, rhs);
       }
       if (lhsIsVar != rhsIsVar) {
          bool literalOnLeft = !lhsIsVar;
          mlir::Value var = getFilterColumn(static_cast<const sparql::VariableExpr&>(literalOnLeft ? *e.rhs : *e.lhs).name, tupleArg);
          const auto& lit = static_cast<const sparql::LiteralExpr&>(literalOnLeft ? *e.lhs : *e.rhs);
          auto op = literalOnLeft ? flipCompareOp(e.op) : e.op;
-         return builder.create<gpm::XsdCompareLiteralOp>(loc, resType, toGpmPredicate(op), var,
+         return builder.create<xsd::CompareLiteralOp>(loc, resType, toXsdPredicate(op), var,
             lit.lexicalForm, gengodb::semantics::xsd::to_int32(lit.xsdType));
       }
       throw std::runtime_error("FILTER comparisons between two literals are not yet supported");
@@ -782,7 +904,7 @@ class Translator {
          case sparql::Expr::Kind::Compare:
             return translateCompareExpr(static_cast<const sparql::CompareExpr&>(expr), tupleArg);
          default:
-            throw std::runtime_error("Unsupported FILTER expression (only comparisons, &&, ||, ! are implemented)");
+            throw std::runtime_error("Unsupported FILTER expression (only comparisons, &&, ||, !, and arithmetic +-*/ are implemented)");
       }
    }
    // Wraps `inputStream` in a relalg.selection -- not a bespoke GPM-level op --
@@ -944,7 +1066,9 @@ inline void registerSparqlDialects(mlir::MLIRContext& context) {
                    util::UtilDialect,
                    mlir::scf::SCFDialect,
                    mlir::LLVM::LLVMDialect,
-                   gpm::GPMDialect>();
+                   gpm::GPMDialect,
+                   gsubop::GraphSubOpDialect,
+                   xsd::XSDDialect>();
    context.appendDialectRegistry(registry);
    context.loadAllAvailableDialects();
 }

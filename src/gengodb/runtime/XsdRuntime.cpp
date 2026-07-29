@@ -5,6 +5,8 @@
 #include <rdf4cpp/Literal.hpp>
 #include <rdf4cpp/TriBool.hpp>
 
+#include <optional>
+
 using namespace lingodb::runtime;
 using gengodb::semantics::extra_namespaces;
 using gengodb::semantics::RdfGraph;
@@ -30,6 +32,20 @@ const RdfGraph* owningRdfGraph(PropertyGraph::NodeEntry* node) {
         GraphStorage::graphPtr(reinterpret_cast<uint8_t*>(node)));
     return pgraph->getMetadata().get_rdf();
 }
+rdf4cpp::Literal literalFromLexicalType(VarLen32 lexicalForm, int32_t xsdTypeRaw) {
+    auto xsdType = gengodb::semantics::xsd::from_int32(xsdTypeRaw);
+    if (!xsdType.has_value()) return rdf4cpp::Literal::make_null();
+    auto datatype = extra_namespaces().XSD + gengodb::semantics::xsd::to_string(xsdType.value());
+    return rdf4cpp::Literal::make_typed(lexicalForm.str(), datatype);
+}
+constexpr int32_t kUnspecified = 0;
+VarLen32 emptyVarLen32() { return VarLen32{}; }
+std::optional<rdf4cpp::Literal> literalOfRef(PropertyGraph::NodeEntry* ref) {
+    const RdfGraph* graph = owningRdfGraph(ref);
+    int32_t id = GraphStorage::nodeId(reinterpret_cast<uint8_t*>(ref));
+    if (graph->getNodeType(id) != gengodb::semantics::RDFNodeType::Literal) return std::nullopt;
+    return graph->getLiteral(id);
+}
 } // namespace
 
 int8_t XsdRuntime::compareNodeNode(PropertyGraph::NodeEntry* lhs, PropertyGraph::NodeEntry* rhs, int32_t predicate) {
@@ -43,18 +59,74 @@ int8_t XsdRuntime::compareNodeNode(PropertyGraph::NodeEntry* lhs, PropertyGraph:
     }
     return triBoolToInt8(applyPredicate(lhsGraph->getLiteral(lhsId), rhsGraph->getLiteral(rhsId), predicate));
 }
-
 int8_t XsdRuntime::compareNodeLiteral(PropertyGraph::NodeEntry* lhs, VarLen32 rhsLexicalForm, int32_t rhsXsdType, int32_t predicate) {
-    const RdfGraph* lhsGraph = owningRdfGraph(lhs);
-    int32_t lhsId = GraphStorage::nodeId(reinterpret_cast<uint8_t*>(lhs));
-    if (lhsGraph->getNodeType(lhsId) != gengodb::semantics::RDFNodeType::Literal) {
-        return -1;
+    auto lhsLiteral = literalOfRef(lhs);
+    if (!lhsLiteral.has_value()) return -1;
+    auto rhs = literalFromLexicalType(rhsLexicalForm, rhsXsdType);
+    return triBoolToInt8(applyPredicate(*lhsLiteral, rhs, predicate));
+}
+VarLen32 XsdRuntime::literalLexicalOfRef(PropertyGraph::NodeEntry* ref) {
+    auto lit = literalOfRef(ref);
+    if (!lit.has_value()) return emptyVarLen32();
+    return VarLen32::fromString(std::string(lit->lexical_form()));
+}
+int32_t XsdRuntime::literalTypeOfRef(PropertyGraph::NodeEntry* ref) {
+    auto lit = literalOfRef(ref);
+    if (!lit.has_value()) return kUnspecified;
+    return static_cast<int32_t>(gengodb::semantics::xsd::from_iri(lit->datatype()));
+}
+
+namespace {
+rdf4cpp::Literal applyArith(const rdf4cpp::Literal& lhs, const rdf4cpp::Literal& rhs, int32_t predicate) {
+    try {
+        switch (predicate) {
+            case 0: return lhs + rhs;
+            case 1: return lhs - rhs;
+            case 2: return lhs * rhs;
+            case 3: return lhs / rhs;
+            default: return rdf4cpp::Literal::make_null();
+        }
+    } catch (...) {
+        return rdf4cpp::Literal::make_null();
     }
-    auto xsdType = gengodb::semantics::xsd::from_int32(rhsXsdType);
-    if (!xsdType.has_value()) {
-        return -1;
+}
+} // namespace
+
+VarLen32 XsdRuntime::arithLexical(VarLen32 lhsLexicalForm, int32_t lhsXsdType, VarLen32 rhsLexicalForm, int32_t rhsXsdType, int32_t predicate) {
+    if (lhsXsdType == kUnspecified || rhsXsdType == kUnspecified) return emptyVarLen32();
+    auto result = applyArith(literalFromLexicalType(lhsLexicalForm, lhsXsdType), literalFromLexicalType(rhsLexicalForm, rhsXsdType), predicate);
+    if (result.null()) return emptyVarLen32();
+    return VarLen32::fromString(std::string(result.lexical_form()));
+}
+int32_t XsdRuntime::arithType(VarLen32 lhsLexicalForm, int32_t lhsXsdType, VarLen32 rhsLexicalForm, int32_t rhsXsdType, int32_t predicate) {
+    if (lhsXsdType == kUnspecified || rhsXsdType == kUnspecified) return kUnspecified;
+    auto result = applyArith(literalFromLexicalType(lhsLexicalForm, lhsXsdType), literalFromLexicalType(rhsLexicalForm, rhsXsdType), predicate);
+    if (result.null()) return kUnspecified;
+    return static_cast<int32_t>(gengodb::semantics::xsd::from_iri(result.datatype()));
+}
+VarLen32 XsdRuntime::negateLexical(VarLen32 lexicalForm, int32_t xsdType) {
+    if (xsdType == kUnspecified) return emptyVarLen32();
+    rdf4cpp::Literal result;
+    try {
+        result = -literalFromLexicalType(lexicalForm, xsdType);
+    } catch (...) {
+        return emptyVarLen32();
     }
-    auto datatype = extra_namespaces().XSD + gengodb::semantics::xsd::to_string(xsdType.value());
-    auto rhs = rdf4cpp::Literal::make_typed(rhsLexicalForm.str(), datatype);
-    return triBoolToInt8(applyPredicate(lhsGraph->getLiteral(lhsId), rhs, predicate));
+    if (result.null()) return emptyVarLen32();
+    return VarLen32::fromString(std::string(result.lexical_form()));
+}
+int32_t XsdRuntime::negateType(VarLen32 lexicalForm, int32_t xsdType) {
+    if (xsdType == kUnspecified) return kUnspecified;
+    rdf4cpp::Literal result;
+    try {
+        result = -literalFromLexicalType(lexicalForm, xsdType);
+    } catch (...) {
+        return kUnspecified;
+    }
+    if (result.null()) return kUnspecified;
+    return static_cast<int32_t>(gengodb::semantics::xsd::from_iri(result.datatype()));
+}
+int8_t XsdRuntime::compareDyn(VarLen32 lhsLexicalForm, int32_t lhsXsdType, VarLen32 rhsLexicalForm, int32_t rhsXsdType, int32_t predicate) {
+    if (lhsXsdType == kUnspecified || rhsXsdType == kUnspecified) return -1;
+    return triBoolToInt8(applyPredicate(literalFromLexicalType(lhsLexicalForm, lhsXsdType), literalFromLexicalType(rhsLexicalForm, rhsXsdType), predicate));
 }

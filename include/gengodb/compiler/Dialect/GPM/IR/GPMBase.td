@@ -52,17 +52,6 @@ def GPM_PatternKind : I64EnumAttr<"PatternKind", "graph pattern construct (SPARQ
     let cppNamespace = "::gengodb::compiler::dialect::gpm";
 }
 
-def GPM_XsdCmp_EQ  : I64EnumAttrCase<"eq", 0>;
-def GPM_XsdCmp_NEQ : I64EnumAttrCase<"neq", 1>;
-def GPM_XsdCmp_LT  : I64EnumAttrCase<"lt", 2>;
-def GPM_XsdCmp_LTE : I64EnumAttrCase<"lte", 3>;
-def GPM_XsdCmp_GT  : I64EnumAttrCase<"gt", 4>;
-def GPM_XsdCmp_GTE : I64EnumAttrCase<"gte", 5>;
-def GPM_XsdCmpPredicateAttr : I64EnumAttr<"XsdCmpPredicate", "",
-        [GPM_XsdCmp_EQ, GPM_XsdCmp_NEQ, GPM_XsdCmp_LT, GPM_XsdCmp_LTE, GPM_XsdCmp_GT, GPM_XsdCmp_GTE]> {
-    let cppNamespace = "::gengodb::compiler::dialect::gpm";
-}
-
 //===----------------------------------------------------------------------===//
 // Types
 //===----------------------------------------------------------------------===//
