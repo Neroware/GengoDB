@@ -160,6 +160,10 @@ struct Query {
    // SPARQL LIMIT solution modifier -- caps the number of solutions in the
    // final result the same way relalg.limit already caps SQL's LIMIT clause.
    std::optional<int64_t> limit;
+   // SPARQL DISTINCT solution modifier -- dedups the projected solutions,
+   // lowered onto relalg.projection's distinct set_semantic (see
+   // Translator::translate), the same op SQL's SELECT DISTINCT lowers to.
+   bool distinct{false};
 };
 
 } // namespace sparql
@@ -608,7 +612,11 @@ class Parser {
 
       // SELECT
       eatKw("SELECT");
-      while (kw("DISTINCT") || kw("REDUCED")) advance();
+      // DISTINCT is a firm requirement -- dedup the solutions (implemented via
+      // relalg.projection distinct in Translator::translate). REDUCED merely
+      // *permits* removing duplicates without requiring it, so treating it as
+      // a no-op is a conforming implementation.
+      if (kw("DISTINCT")) { q.distinct = true; advance(); } else if (kw("REDUCED")) { advance(); }
       if (is(TK::Star)) { advance(); q.selectStar = true; }
       else {
          while (is(TK::Variable)) { q.selectVars.push_back(tok.value); advance(); }
@@ -1033,14 +1041,6 @@ class Translator {
          if (!prevStream)
             throw std::runtime_error("WHERE clause contains no supported graph patterns");
 
-         // SPARQL LIMIT -- reuses relalg.limit, the same op SQL's LIMIT clause
-         // lowers to (see SQLMlirTranslator::translateResultModifier's
-         // BOUND_LIMIT case), rather than adding a bespoke GPM-level op.
-         if (query.limit) {
-            prevStream = builder.create<relalg::LimitOp>(
-               loc, tuples::TupleStreamType::get(ctxt), static_cast<int32_t>(*query.limit), prevStream);
-         }
-
          // Project the requested variables
          std::vector<std::string> outVars = query.selectStar ? allVars : query.selectVars;
 
@@ -1053,6 +1053,25 @@ class Translator {
             members.push_back(memMgr.createMember("col" + std::to_string(i + 1), db::StringType::get(ctxt)));
             colRefs.push_back(colMgr.createRef("vars", vn));
             colNames.push_back(mlir::StringAttr::get(ctxt, vn));
+         }
+
+         // SPARQL DISTINCT -- dedups on exactly the projected/output variables
+         // via relalg.projection's distinct set_semantic, the same op and the
+         // same RelAlgToSubOp hashmap-based lowering SQL's SELECT DISTINCT
+         // already relies on. Must run before LIMIT: SPARQL's algebra is
+         // Slice(Distinct(Project(pattern))), so LIMIT has to count distinct
+         // solutions rather than raw pre-dedup rows.
+         if (query.distinct) {
+            prevStream = builder.create<relalg::ProjectionOp>(
+               loc, relalg::SetSemantic::distinct, prevStream, mlir::ArrayAttr::get(ctxt, colRefs));
+         }
+
+         // SPARQL LIMIT -- reuses relalg.limit, the same op SQL's LIMIT clause
+         // lowers to (see SQLMlirTranslator::translateResultModifier's
+         // BOUND_LIMIT case), rather than adding a bespoke GPM-level op.
+         if (query.limit) {
+            prevStream = builder.create<relalg::LimitOp>(
+               loc, tuples::TupleStreamType::get(ctxt), static_cast<int32_t>(*query.limit), prevStream);
          }
 
          tableType = subop::LocalTableType::get(

@@ -3120,7 +3120,12 @@ class LookupPreAggrHtFragment : public SubOpTupleStreamConsumerConversionPattern
          for (size_t i = 0; i < res.size(); i++) {
             auto convertedType = typeConverter->convertType(res[i].getType());
             if (res[i].getType() != convertedType) {
-               res[i] = rewriter.create<mlir::UnrealizedConversionCastOp>(lookupOp->getLoc(), convertedType, res[i]).getResult(0);
+               if (res[i].getDefiningOp<util::UndefOp>()) {
+                  res[i] = rewriter.create<util::UndefOp>(lookupOp->getLoc(), convertedType);
+               } 
+               else {
+                  res[i] = rewriter.create<mlir::UnrealizedConversionCastOp>(lookupOp->getLoc(), convertedType, res[i]).getResult(0);
+               }
             }
          }
          return res;
@@ -3216,7 +3221,12 @@ class LookupHashMapLowering : public SubOpTupleStreamConsumerConversionPattern<s
          for (size_t i = 0; i < res.size(); i++) {
             auto convertedType = typeConverter->convertType(res[i].getType());
             if (res[i].getType() != convertedType) {
-               res[i] = rewriter.create<mlir::UnrealizedConversionCastOp>(lookupOp->getLoc(), convertedType, res[i]).getResult(0);
+               if (res[i].getDefiningOp<util::UndefOp>()) {
+                  res[i] = rewriter.create<util::UndefOp>(lookupOp->getLoc(), convertedType);
+               } 
+               else {
+                  res[i] = rewriter.create<mlir::UnrealizedConversionCastOp>(lookupOp->getLoc(), convertedType, res[i]).getResult(0);
+               }
             }
          }
          return res;

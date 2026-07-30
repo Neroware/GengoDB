@@ -339,6 +339,35 @@ static mlir::Block* createCompareBlock(std::vector<mlir::Type> keyTypes, Convers
    return equalBlock;
 }
 
+// Unpack complex types to their key members
+static std::pair<mlir::Value, mlir::ArrayAttr> unpackHashKeyColumns(mlir::Value stream, mlir::ArrayAttr hashKeys, mlir::ConversionPatternRewriter& rewriter, mlir::Location loc) {
+   llvm::SmallVector<mlir::Attribute> newHashKeys;
+   for (auto attr : hashKeys) {
+      auto colRef = mlir::cast<tuples::ColumnRefAttr>(attr);
+      auto colType = colRef.getColumn().type;
+      auto nullableType = mlir::dyn_cast<db::NullableType>(colType);
+      mlir::Type refType = nullableType ? nullableType.getType() : colType;
+      mlir::Type idType;
+      Member idMember;
+      if (auto nodeRefType = mlir::dyn_cast<gsubop::NodeRefType>(refType)) {
+         idMember = nodeRefType.getNodeMembers().getMembers()[0];
+         idType = nullableType ? mlir::Type(db::NullableType::get(rewriter.getContext(), rewriter.getI32Type()))
+            : mlir::Type(rewriter.getI32Type());
+      } else if (auto edgeRefType = mlir::dyn_cast<gsubop::EdgeRefType>(refType)) {
+         idMember = edgeRefType.getEdgeMembers().getMembers()[0];
+         idType = nullableType ? mlir::Type(db::NullableType::get(rewriter.getContext(), rewriter.getI32Type()))
+            : mlir::Type(rewriter.getI32Type());
+      } else {
+         newHashKeys.push_back(attr);
+         continue;
+      }
+      auto [idDef, idRef] = createColumn(idType, "hashkey", "id");
+      stream = rewriter.create<subop::GatherOp>(loc, stream, colRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{idMember, idDef}}));
+      newHashKeys.push_back(idRef);
+   }
+   return {stream, rewriter.getArrayAttr(newHashKeys)};
+}
+
 class ProjectionDistinctLowering : public OpConversionPattern<relalg::ProjectionOp> {
    public:
    using OpConversionPattern<relalg::ProjectionOp>::OpConversionPattern;
@@ -349,46 +378,80 @@ class ProjectionDistinctLowering : public OpConversionPattern<relalg::Projection
       auto loc = projectionOp->getLoc();
 
       auto& colManager = context->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      auto& memberManager = context->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
+
+      mlir::Value rel;
+      mlir::ArrayAttr hashKeyCols;
+      std::tie(rel, hashKeyCols) = unpackHashKeyColumns(adaptor.getRel(), projectionOp.getCols(), rewriter, loc);
 
       llvm::SmallVector<Member> keyMemberList;
+      llvm::SmallVector<Member> valueMemberList;
       std::vector<mlir::Type> keyTypes;
       llvm::SmallVector<subop::DefMappingPairT> defMapping;
-      for (auto x : projectionOp.getCols()) {
-         auto ref = mlir::cast<tuples::ColumnRefAttr>(x);
-         auto member = createMember(context, "keyval", ref.getColumn().type);
-         keyMemberList.push_back(member);
-         keyTypes.push_back((ref.getColumn().type));
-         defMapping.push_back({member, colManager.createDef(&ref.getColumn())});
+      llvm::SmallVector<mlir::Attribute> passthroughCols;
+      for (auto [origAttr, keyAttr] : llvm::zip(projectionOp.getCols(), hashKeyCols)) {
+         auto origRef = mlir::cast<tuples::ColumnRefAttr>(origAttr);
+         auto keyRef = mlir::cast<tuples::ColumnRefAttr>(keyAttr);
+         auto keyMember = createMember(context, "keyval", keyRef.getColumn().type);
+         keyMemberList.push_back(keyMember);
+         keyTypes.push_back(keyRef.getColumn().type);
+         if (origAttr == keyAttr) {
+            defMapping.push_back({keyMember, colManager.createDef(&origRef.getColumn())});
+         } 
+         else {
+            auto valueMember = createMember(context, "keyval", origRef.getColumn().type);
+            valueMemberList.push_back(valueMember);
+            defMapping.push_back({valueMember, colManager.createDef(&origRef.getColumn())});
+            passthroughCols.push_back(origAttr);
+         }
       }
       auto keyMembers = createStateMembersAttr(context, keyMemberList);
-      auto stateMembers = createStateMembersAttr(context, {});
+      auto stateMembers = createStateMembersAttr(context, valueMemberList);
 
       auto stateType = subop::MapType::get(rewriter.getContext(), keyMembers, stateMembers, false);
       mlir::Value state = rewriter.create<subop::GenericCreateOp>(loc, stateType);
       auto [referenceDef, referenceRef] = createColumn(subop::LookupEntryRefType::get(context, stateType), "lookup", "ref");
-      auto lookupOp = rewriter.create<subop::LookupOrInsertOp>(loc, tuples::TupleStreamType::get(getContext()), adaptor.getRel(), state, projectionOp.getCols(), referenceDef);
+      auto lookupOp = rewriter.create<subop::LookupOrInsertOp>(loc, tuples::TupleStreamType::get(getContext()), rel, state, hashKeyCols, referenceDef);
       auto* initialValueBlock = new Block;
       {
          mlir::OpBuilder::InsertionGuard guard(rewriter);
          rewriter.setInsertionPointToStart(initialValueBlock);
-         rewriter.create<tuples::ReturnOp>(loc);
+         llvm::SmallVector<mlir::Value> defaultValues;
+         for (auto& valueMember : valueMemberList) {
+            defaultValues.push_back(rewriter.create<util::UndefOp>(loc, memberManager.getType(valueMember)));
+         }
+         rewriter.create<tuples::ReturnOp>(loc, defaultValues);
       }
       lookupOp.getInitFn().push_back(initialValueBlock);
       lookupOp.getEqFn().push_back(createCompareBlock(keyTypes, rewriter, loc));
-      auto reduceOp = rewriter.create<subop::ReduceOp>(loc, lookupOp, referenceRef, rewriter.getArrayAttr({}), rewriter.getArrayAttr({}));
+      auto reduceOp = rewriter.create<subop::ReduceOp>(loc, lookupOp, referenceRef, rewriter.getArrayAttr(passthroughCols), createMemberAttrArray(context, valueMemberList));
 
       {
          mlir::Block* reduceBlock = new Block;
          mlir::OpBuilder::InsertionGuard guard(rewriter);
          rewriter.setInsertionPointToStart(reduceBlock);
-         rewriter.create<tuples::ReturnOp>(loc, mlir::ValueRange({}));
+         llvm::SmallVector<mlir::Value> columnArgs;
+         for (auto attr : passthroughCols) {
+            columnArgs.push_back(reduceBlock->addArgument(mlir::cast<tuples::ColumnRefAttr>(attr).getColumn().type, loc));
+         }
+         for (auto& valueMember : valueMemberList) {
+            reduceBlock->addArgument(memberManager.getType(valueMember), loc);
+         }
+         rewriter.create<tuples::ReturnOp>(loc, mlir::ValueRange(columnArgs));
          reduceOp.getRegion().push_back(reduceBlock);
       }
       {
          mlir::Block* combineBlock = new Block;
          mlir::OpBuilder::InsertionGuard guard(rewriter);
          rewriter.setInsertionPointToStart(combineBlock);
-         rewriter.create<tuples::ReturnOp>(loc, mlir::ValueRange({}));
+         llvm::SmallVector<mlir::Value> leftArgs;
+         for (auto& valueMember : valueMemberList) {
+            leftArgs.push_back(combineBlock->addArgument(memberManager.getType(valueMember), loc));
+         }
+         for (auto& valueMember : valueMemberList) {
+            combineBlock->addArgument(memberManager.getType(valueMember), loc);
+         }
+         rewriter.create<tuples::ReturnOp>(loc, mlir::ValueRange(leftArgs));
          reduceOp.getCombine().push_back(combineBlock);
       }
       mlir::Value scan = rewriter.create<subop::ScanOp>(loc, state, createColumnDefMemberMappingAttr(context, defMapping));
@@ -1099,34 +1162,6 @@ std::pair<mlir::Block*, mlir::ArrayAttr> createVerifyEqFnForTuple(mlir::Conversi
    return {helper.getMapBlock(), helper.getColRefs()};
 }
 
-// Unpack complex types to their key members
-static std::pair<mlir::Value, mlir::ArrayAttr> unpackHashKeyColumns(mlir::Value stream, mlir::ArrayAttr hashKeys, mlir::ConversionPatternRewriter& rewriter, mlir::Location loc) {
-   llvm::SmallVector<mlir::Attribute> newHashKeys;
-   for (auto attr : hashKeys) {
-      auto colRef = mlir::cast<tuples::ColumnRefAttr>(attr);
-      auto colType = colRef.getColumn().type;
-      auto nullableType = mlir::dyn_cast<db::NullableType>(colType);
-      mlir::Type refType = nullableType ? nullableType.getType() : colType;
-      mlir::Type idType;
-      Member idMember;
-      if (auto nodeRefType = mlir::dyn_cast<gsubop::NodeRefType>(refType)) {
-         idMember = nodeRefType.getNodeMembers().getMembers()[0];
-         idType = nullableType ? mlir::Type(db::NullableType::get(rewriter.getContext(), rewriter.getI32Type())) 
-            : mlir::Type(rewriter.getI32Type());
-      } else if (auto edgeRefType = mlir::dyn_cast<gsubop::EdgeRefType>(refType)) {
-         idMember = edgeRefType.getEdgeMembers().getMembers()[0];
-         idType = nullableType ? mlir::Type(db::NullableType::get(rewriter.getContext(), rewriter.getI32Type())) 
-            : mlir::Type(rewriter.getI32Type());
-      } else {
-         newHashKeys.push_back(attr);
-         continue;
-      }
-      auto [idDef, idRef] = createColumn(idType, "hashkey", "id");
-      stream = rewriter.create<subop::GatherOp>(loc, stream, colRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{idMember, idDef}}));
-      newHashKeys.push_back(idRef);
-   }
-   return {stream, rewriter.getArrayAttr(newHashKeys)};
-}
 static std::pair<mlir::Value, tuples::ColumnRefAttr> computeNullKeyMarker(mlir::Value stream, mlir::ArrayAttr hashCols, mlir::ArrayAttr targetOriginalCols, mlir::ArrayAttr sourceOriginalCols, mlir::ArrayAttr nullMatchesAll, mlir::ConversionPatternRewriter& rewriter, mlir::Location loc, llvm::SmallVectorImpl<std::pair<tuples::ColumnRefAttr, tuples::ColumnRefAttr>>& fillPairs) {
    if (!nullMatchesAll) return {stream, tuples::ColumnRefAttr()};
    llvm::SmallVector<tuples::ColumnRefAttr> nullMatchCols;
