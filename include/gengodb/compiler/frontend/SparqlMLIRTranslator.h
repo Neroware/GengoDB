@@ -565,12 +565,14 @@ class Parser {
          }
 
          if (is(TK::LBrace)) {
-            auto gp = std::make_unique<sparql::GraphPattern>();
-            gp->graphUri = activeGraph;
-            eat(TK::LBrace);
-            gp->triples = parseTriples(prefixes);
-            eat(TK::RBrace);
-            if (!gp->triples.empty()) out.push_back(std::move(gp));
+            // A nested `{ ... }` group is itself a full GroupGraphPattern --
+            // SPARQL allows OPTIONAL/FILTER/GRAPH inside it just like at the
+            // top level, not just bare triples. buildPatternGroup already
+            // folds every pattern element into one sequential stream
+            // regardless of original nesting (see its flat loop), so it's
+            // safe to just append this group's elements directly into `out`
+            // rather than tracking the nesting explicitly.
+            parseGroup(out, prefixes, activeGraph);
             continue;
          }
 
