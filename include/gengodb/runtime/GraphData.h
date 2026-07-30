@@ -86,6 +86,11 @@ struct GraphRefString {
     static VarLen32 fromNode(PropertyGraph::NodeEntry* node);
 }; // GraphPropertyData
 
+struct GraphRefCompare {
+    static int8_t nodes(PropertyGraph::NodeEntry* a, PropertyGraph::NodeEntry* b);
+    static int8_t rels(PropertyGraph::RelEntry* a, PropertyGraph::RelEntry* b);
+}; // GraphRefCompare
+
 } // namespace lingodb::runtime
 
 #endif // GENGODB_RUNTIME_GRAPHDATA_H

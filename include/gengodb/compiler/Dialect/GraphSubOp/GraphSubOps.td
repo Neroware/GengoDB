@@ -213,4 +213,11 @@ def UnwrapNullableRefOp : GraphSubOp_Op<"unwrap_nullable_ref", [Pure]> {
     let assemblyFormat = [{  $ref `:` type($ref) `->` type($result) attr-dict }];
 }
 
+def GraphRefCompareOp : GraphSubOp_Op<"ref_compare", [Pure]> {
+    let summary = "compare two graph refs";
+    let arguments = (ins AnyType : $left, AnyType : $right, BoolAttr : $isEdge, BoolAttr : $nullable);
+    let results = (outs I8 : $res);
+    let assemblyFormat = [{ $left `:` type($left) `,` $right `:` type($right) attr-dict }];
+}
+
 #endif // GENGODB_DIALECT_GRAPHSUBOP_OPS

@@ -1897,25 +1897,19 @@ class OffsetLowering : public OpConversionPattern<relalg::OffsetOp> {
       auto loc = offsetOp->getLoc();
       relalg::ColumnSet requiredColumns = requiredColumnsMap.lookup(offsetOp);
       MaterializationHelper helper(requiredColumns, context);
-
       auto vectorType = subop::BufferType::get(context, helper.createStateMembersAttr());
       mlir::Value vector = rewriter.create<subop::GenericCreateOp>(loc, vectorType);
       rewriter.create<subop::MaterializeOp>(loc, adaptor.getRel(), vector, helper.createColumnstateMapping());
-
       auto continuousViewType = subop::ContinuousViewType::get(context, vectorType);
       mlir::Value continuousView = rewriter.create<subop::CreateContinuousView>(loc, continuousViewType, vector);
       auto continuousViewRefType = subop::ContinuousEntryRefType::get(context, continuousViewType);
-
       auto [refDef, refRef] = createColumn(continuousViewRefType, "scan", "ref");
       mlir::Value scan = rewriter.create<subop::ScanRefsOp>(loc, continuousView, refDef);
       mlir::Value afterGather = rewriter.create<subop::GatherOp>(loc, scan, refRef, helper.createStateColumnMapping());
-
       auto [beginDef, beginRef] = createColumn(continuousViewRefType, "view", "begin");
       mlir::Value afterBegin = rewriter.create<subop::GetBeginReferenceOp>(loc, afterGather, continuousView, beginDef);
-
       auto [posDef, posRef] = createColumn(rewriter.getIndexType(), "offset", "pos");
       mlir::Value afterEntriesBetween = rewriter.create<subop::EntriesBetweenOp>(loc, afterBegin, beginRef, refRef, posDef);
-
       auto [keepDef, keepRef] = createColumn(rewriter.getI1Type(), "offset", "keep");
       int64_t offsetVal = static_cast<int64_t>(offsetOp.getOffset());
       mlir::Value mapped = map(afterEntriesBetween, rewriter, loc, rewriter.getArrayAttr(keepDef), [&](mlir::ConversionPatternRewriter& b, subop::MapCreationHelper& mapHelper, mlir::Location loc) -> std::vector<mlir::Value> {
@@ -1928,17 +1922,36 @@ class OffsetLowering : public OpConversionPattern<relalg::OffsetOp> {
       return success();
    }
 };
-static mlir::Value spaceShipCompare(mlir::OpBuilder& builder, std::vector<std::pair<mlir::Value, mlir::Value>> sortCriteria, size_t pos, mlir::Location loc) {
-   mlir::Value compareRes = builder.create<db::SortCompare>(loc, sortCriteria.at(pos).first, sortCriteria.at(pos).second);
+static mlir::Value buildCompareValue(mlir::OpBuilder& builder, mlir::Value left, mlir::Value right, mlir::Location loc) {
+   auto leftType = left.getType();
+   auto nullableType = mlir::dyn_cast<db::NullableType>(leftType);
+   auto baseType = nullableType ? nullableType.getType() : leftType;
+   if (mlir::isa<gsubop::NodeRefType, gsubop::EdgeRefType>(baseType)) {
+      bool isEdge = mlir::isa<gsubop::EdgeRefType>(baseType);
+      return builder.create<gsubop::GraphRefCompareOp>(loc, builder.getI8Type(), left, right, builder.getBoolAttr(isEdge), builder.getBoolAttr(static_cast<bool>(nullableType)));
+   }
+   return builder.create<db::SortCompare>(loc, left, right);
+}
+static mlir::Value chainCompareResults(mlir::OpBuilder& builder, const std::vector<mlir::Value>& compareResults, size_t pos, mlir::Location loc) {
+   mlir::Value compareRes = compareResults[pos];
    auto zero = builder.create<db::ConstantOp>(loc, builder.getI8Type(), builder.getIntegerAttr(builder.getI8Type(), 0));
    auto isZero = builder.create<db::CmpOp>(loc, db::DBCmpPredicate::eq, compareRes, zero);
-   if (pos + 1 < sortCriteria.size()) {
+   if (pos + 1 < compareResults.size()) {
       auto ifOp = builder.create<mlir::scf::IfOp>(
-         loc, isZero, [&](mlir::OpBuilder& builder, mlir::Location loc) { builder.create<mlir::scf::YieldOp>(loc, spaceShipCompare(builder, sortCriteria, pos + 1, loc)); }, [&](mlir::OpBuilder& builder, mlir::Location loc) { builder.create<mlir::scf::YieldOp>(loc, compareRes); });
+         loc, isZero, [&](mlir::OpBuilder& builder, mlir::Location loc) { builder.create<mlir::scf::YieldOp>(loc, chainCompareResults(builder, compareResults, pos + 1, loc)); }, [&](mlir::OpBuilder& builder, mlir::Location loc) { builder.create<mlir::scf::YieldOp>(loc, compareRes); });
       return ifOp.getResult(0);
-   } else {
+   } 
+   else {
       return compareRes;
    }
+}
+static mlir::Value spaceShipCompare(mlir::OpBuilder& builder, std::vector<std::pair<mlir::Value, mlir::Value>> sortCriteria, size_t pos, mlir::Location loc) {
+   std::vector<mlir::Value> compareResults;
+   compareResults.reserve(sortCriteria.size());
+   for (auto& criterion : sortCriteria) {
+      compareResults.push_back(buildCompareValue(builder, criterion.first, criterion.second, loc));
+   }
+   return chainCompareResults(builder, compareResults, pos, loc);
 }
 static mlir::Value createSortedView(ConversionPatternRewriter& rewriter, mlir::Value buffer, mlir::ArrayAttr sortSpecs, mlir::Location loc, MaterializationHelper& helper) {
    auto* block = new Block;

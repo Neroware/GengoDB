@@ -376,6 +376,11 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          if (newFromExisting == fromExisting) return attr;
          return columnManager.createDef(&colDef.getColumn(), newFromExisting);
       }
+      if (auto sortSpec = mlir::dyn_cast<relalg::SortSpecificationAttr>(attr)) {
+         auto newRef = remapColumnAttr(sortSpec.getAttr(), colMap, columnManager);
+         if (newRef == sortSpec.getAttr()) return attr;
+         return relalg::SortSpecificationAttr::get(attr.getContext(), mlir::cast<tuples::ColumnRefAttr>(newRef), sortSpec.getSortSpec());
+      }
       if (auto arr = mlir::dyn_cast<mlir::ArrayAttr>(attr)) {
          bool changed = false;
          llvm::SmallVector<mlir::Attribute> newElems;

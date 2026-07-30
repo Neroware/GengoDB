@@ -168,6 +168,12 @@ struct Query {
    // lowered onto relalg.projection's distinct set_semantic (see
    // Translator::translate), the same op SQL's SELECT DISTINCT lowers to.
    bool distinct{false};
+   struct OrderKey { std::string var; bool descending{false}; };
+   // SPARQL ORDER BY solution modifier -- lowered onto relalg.sort (see
+   // Translator::translate), the same op SQL's ORDER BY lowers to. Applied
+   // after DISTINCT and before OFFSET/LIMIT, matching SPARQL's
+   // Slice(OrderBy(Distinct(Project(pattern)))) algebra.
+   std::vector<OrderKey> orderBy;
 };
 
 } // namespace sparql
@@ -636,13 +642,35 @@ class Parser {
       if (kw("WHERE")) advance();
       parseGroup(q.patterns, q.prefixes, "");
 
-      // Solution modifiers. LIMIT and OFFSET are implemented (mapped onto
-      // relalg.limit/relalg.offset -- see Translator::translate) -- SPARQL's
-      // grammar permits either order (LimitClause OffsetClause? | OffsetClause
-      // LimitClause?), so accept both, each at most once. ORDER BY raises a
-      // descriptive error instead of being silently dropped, since it would
-      // silently change which solutions LIMIT/OFFSET keep.
-      if (kw("ORDER")) throw std::runtime_error("ORDER BY is not yet supported");
+      // Solution modifiers. ORDER BY is mapped onto relalg.sort (see
+      // Translator::translate) -- each order condition is either a bare
+      // variable (ascending) or ASC(?var)/DESC(?var); arbitrary-expression
+      // order keys are not supported. LIMIT and OFFSET are implemented
+      // (mapped onto relalg.limit/relalg.offset -- see Translator::translate)
+      // -- SPARQL's grammar permits either order (LimitClause OffsetClause? |
+      // OffsetClause LimitClause?), so accept both, each at most once.
+      if (kw("ORDER")) {
+         advance();
+         if (!kw("BY")) throw std::runtime_error("Expected BY after ORDER at line " + std::to_string(tok.line));
+         advance();
+         do {
+            bool desc = false;
+            if (kw("ASC") || kw("DESC")) {
+               desc = kw("DESC");
+               advance();
+               eat(TK::LeftParen);
+               if (!is(TK::Variable)) throw std::runtime_error("Expected variable inside ASC()/DESC() at line " + std::to_string(tok.line));
+               q.orderBy.push_back({tok.value, desc});
+               advance();
+               eat(TK::RightParen);
+            } else if (is(TK::Variable)) {
+               q.orderBy.push_back({tok.value, false});
+               advance();
+            } else {
+               throw std::runtime_error("Expected variable or ASC()/DESC() after ORDER BY at line " + std::to_string(tok.line));
+            }
+         } while (is(TK::Variable) || kw("ASC") || kw("DESC"));
+      }
       for (int i = 0; i < 2 && (kw("LIMIT") || kw("OFFSET")); i++) {
          if (kw("LIMIT")) {
             if (q.limit) throw std::runtime_error("Duplicate LIMIT clause at line " + std::to_string(tok.line));
@@ -1081,6 +1109,25 @@ class Translator {
          if (query.distinct) {
             prevStream = builder.create<relalg::ProjectionOp>(
                loc, relalg::SetSemantic::distinct, prevStream, mlir::ArrayAttr::get(ctxt, colRefs));
+         }
+
+         // SPARQL ORDER BY -- relalg.sort, the same op SQL's ORDER BY lowers to
+         // (see SQLMlirTranslator::translateResultModifier's BOUND_ORDER_BY
+         // case). Must run after DISTINCT and before OFFSET/LIMIT: SPARQL's
+         // algebra is Slice(OrderBy(Distinct(Project(pattern)))), so
+         // OFFSET/LIMIT slice the already-ordered sequence.
+         if (!query.orderBy.empty()) {
+            llvm::SmallVector<mlir::Attribute> sortSpecs;
+            for (const auto& key : query.orderBy) {
+               auto it = varDefs.find(key.var);
+               if (it == varDefs.end())
+                  throw std::runtime_error("ORDER BY references unbound variable ?" + key.var);
+               auto ref = colMgr.createRef(it->second.getColumnPtr().get());
+               sortSpecs.push_back(relalg::SortSpecificationAttr::get(
+                  ctxt, ref, key.descending ? relalg::SortSpec::desc : relalg::SortSpec::asc));
+            }
+            prevStream = builder.create<relalg::SortOp>(
+               loc, tuples::TupleStreamType::get(ctxt), prevStream, mlir::ArrayAttr::get(ctxt, sortSpecs));
          }
 
          // SPARQL OFFSET -- relalg.offset skips the first N solutions (see
