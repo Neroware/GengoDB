@@ -160,6 +160,10 @@ struct Query {
    // SPARQL LIMIT solution modifier -- caps the number of solutions in the
    // final result the same way relalg.limit already caps SQL's LIMIT clause.
    std::optional<int64_t> limit;
+   // SPARQL OFFSET solution modifier -- skips the first N solutions, lowered
+   // onto relalg.offset (see Translator::translate). Applied before LIMIT,
+   // matching SPARQL's Slice(offset, length, ...) algebra.
+   std::optional<int64_t> offset;
    // SPARQL DISTINCT solution modifier -- dedups the projected solutions,
    // lowered onto relalg.projection's distinct set_semantic (see
    // Translator::translate), the same op SQL's SELECT DISTINCT lowers to.
@@ -630,19 +634,30 @@ class Parser {
       if (kw("WHERE")) advance();
       parseGroup(q.patterns, q.prefixes, "");
 
-      // Solution modifiers. Only LIMIT is implemented so far (mapped onto
-      // relalg.limit, the same op SQL's LIMIT clause already uses) --
-      // ORDER BY / OFFSET raise a descriptive error instead of being
-      // silently dropped, since either would silently change the result set.
+      // Solution modifiers. LIMIT and OFFSET are implemented (mapped onto
+      // relalg.limit/relalg.offset -- see Translator::translate) -- SPARQL's
+      // grammar permits either order (LimitClause OffsetClause? | OffsetClause
+      // LimitClause?), so accept both, each at most once. ORDER BY raises a
+      // descriptive error instead of being silently dropped, since it would
+      // silently change which solutions LIMIT/OFFSET keep.
       if (kw("ORDER")) throw std::runtime_error("ORDER BY is not yet supported");
-      if (kw("LIMIT")) {
-         advance();
-         if (!is(TK::Number))
-            throw std::runtime_error("Expected integer after LIMIT at line " + std::to_string(tok.line));
-         q.limit = std::stoll(tok.value);
-         advance();
+      for (int i = 0; i < 2 && (kw("LIMIT") || kw("OFFSET")); i++) {
+         if (kw("LIMIT")) {
+            if (q.limit) throw std::runtime_error("Duplicate LIMIT clause at line " + std::to_string(tok.line));
+            advance();
+            if (!is(TK::Number))
+               throw std::runtime_error("Expected integer after LIMIT at line " + std::to_string(tok.line));
+            q.limit = std::stoll(tok.value);
+            advance();
+         } else {
+            if (q.offset) throw std::runtime_error("Duplicate OFFSET clause at line " + std::to_string(tok.line));
+            advance();
+            if (!is(TK::Number))
+               throw std::runtime_error("Expected integer after OFFSET at line " + std::to_string(tok.line));
+            q.offset = std::stoll(tok.value);
+            advance();
+         }
       }
-      if (kw("OFFSET")) throw std::runtime_error("OFFSET is not yet supported");
 
       while (!is(TK::Eof)) advance();
       return q;
@@ -1064,6 +1079,15 @@ class Translator {
          if (query.distinct) {
             prevStream = builder.create<relalg::ProjectionOp>(
                loc, relalg::SetSemantic::distinct, prevStream, mlir::ArrayAttr::get(ctxt, colRefs));
+         }
+
+         // SPARQL OFFSET -- relalg.offset skips the first N solutions (see
+         // RelAlgToSubOp.cpp's OffsetLowering). Must run before LIMIT: SPARQL's
+         // algebra is Slice(offset, length, ...), i.e. solutions are skipped
+         // first and LIMIT then counts from what remains.
+         if (query.offset) {
+            prevStream = builder.create<relalg::OffsetOp>(
+               loc, tuples::TupleStreamType::get(ctxt), static_cast<int32_t>(*query.offset), prevStream);
          }
 
          // SPARQL LIMIT -- reuses relalg.limit, the same op SQL's LIMIT clause

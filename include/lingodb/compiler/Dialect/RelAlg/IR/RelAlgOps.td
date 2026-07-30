@@ -176,6 +176,14 @@ def LimitOp : RelAlg_Op<"limit", [Pure,Operator,UnaryOperator,DeclareOpInterface
     let assemblyFormat = [{ $max_rows $rel attr-dict }];
 }
 
+def OffsetOp : RelAlg_Op<"offset", [Pure,Operator,UnaryOperator,DeclareOpInterfaceMethods<NullColumnTypeChangeable>]> {
+    let summary = "offset operation";
+
+    let arguments = (ins I32Attr:$offset, TupleStream:$rel);
+    let results = (outs TupleStream:$result);
+    let assemblyFormat = [{ $offset $rel attr-dict }];
+}
+
 def TopKOp : RelAlg_Op<"topk", [Pure,Operator,UnaryOperator]> {
     let summary = "top k operation";
     let description = [{
