@@ -277,4 +277,36 @@ VarLen32 GraphRefString::fromRel(PropertyGraph::RelEntry* rel) {
     return VarLen32::fromString(pgraph->getMetadata().identifier(rel->typeId));
 }
 
+namespace {
+int8_t compareRdfNodes(PropertyGraph* pgraphA, node_id_t idA, PropertyGraph* pgraphB, node_id_t idB) {
+    const RdfGraph* rdfGraph = pgraphA->getMetadata().get_rdf();
+    assert(pgraphA == pgraphB && "comparing graph refs from different named graphs is not supported");
+    auto toNode = [&](node_id_t id) -> Node {
+        switch (rdfGraph->getNodeType(id)) {
+            case RDFNodeType::IRI:     return rdfGraph->getIri(id);
+            case RDFNodeType::BNode:   return rdfGraph->getBNode(id);
+            case RDFNodeType::Literal: return rdfGraph->getLiteral(id);
+            default: assert(false && "unexpected node type"); return Node{};
+        }
+    };
+    auto ord = toNode(idA).order(toNode(idB));
+    if (ord == std::strong_ordering::less) return -1;
+    if (ord == std::strong_ordering::greater) return 1;
+    return 0;
+}
+} // namespace
+
+int8_t GraphRefCompare::nodes(PropertyGraph::NodeEntry* a, PropertyGraph::NodeEntry* b) {
+    auto* pgraphA = reinterpret_cast<PropertyGraph*>(GraphStorage::graphPtr(reinterpret_cast<uint8_t*>(a)));
+    auto* pgraphB = reinterpret_cast<PropertyGraph*>(GraphStorage::graphPtr(reinterpret_cast<uint8_t*>(b)));
+    return compareRdfNodes(pgraphA, GraphStorage::nodeId(reinterpret_cast<uint8_t*>(a)),
+                            pgraphB, GraphStorage::nodeId(reinterpret_cast<uint8_t*>(b)));
+}
+int8_t GraphRefCompare::rels(PropertyGraph::RelEntry* a, PropertyGraph::RelEntry* b) {
+    auto* pgraphA = reinterpret_cast<PropertyGraph*>(GraphStorage::graphPtr(reinterpret_cast<uint8_t*>(a)));
+    auto* pgraphB = reinterpret_cast<PropertyGraph*>(GraphStorage::graphPtr(reinterpret_cast<uint8_t*>(b)));
+    return compareRdfNodes(pgraphA, static_cast<node_id_t>(a->typeId),
+                            pgraphB, static_cast<node_id_t>(b->typeId));
+}
+
 } // namespace lingodb::runtime

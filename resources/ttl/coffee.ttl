@@ -25,6 +25,7 @@ ex:bob ex:nickname "Bobbi"@de .
 ex:bob ex:customerId "123456789012345678901234567890"^^xsd:integer .
 
 # --- fixed 8-byte literal types: stored in PropertyData's i64/ui64/double vectors ---
+ex:bob ex:birthday "1999-11-04"^^xsd:date .
 ex:bob ex:accountBalance "-987654321012345"^^xsd:long .
 ex:bob ex:loyaltyPoints "18446744073709551615"^^xsd:unsignedLong .
 ex:bob ex:favoriteRating "4.75"^^xsd:double .

@@ -14,6 +14,8 @@
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpsTypes.h"
+#include "gengodb/compiler/Dialect/XSD/XSDDialect.h"
+#include "gengodb/compiler/Dialect/XSD/XSDOps.h"
 #include "lingodb/compiler/Dialect/SubOperator/Utils.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
 #include "lingodb/compiler/Dialect/util/FunctionHelper.h"
@@ -489,6 +491,47 @@ class GpmIdentifiersEqualLowering : public OpConversionPattern<gpm::IdentifiersE
    }
 };
 
+static bool isStaleRefOperand(mlir::Value operand) {
+   auto getColOp = mlir::dyn_cast_or_null<tuples::GetColumnOp>(operand.getDefiningOp());
+   if (!getColOp) return false;
+   return getColOp.getAttr().getColumn().type != operand.getType();
+}
+static mlir::Value refreshStaleRefOperand(mlir::Value operand, ConversionPatternRewriter& rewriter) {
+   auto getColOp = mlir::dyn_cast_or_null<tuples::GetColumnOp>(operand.getDefiningOp());
+   if (!getColOp) return operand;
+   mlir::Type liveType = getColOp.getAttr().getColumn().type;
+   if (liveType == operand.getType()) return operand;
+   return rewriter.create<tuples::GetColumnOp>(getColOp.getLoc(), liveType, getColOp.getAttr(), getColOp.getTuple());
+}
+class XsdCompareRefreshLowering : public OpConversionPattern<xsd::CompareOp> {
+   public:
+   using OpConversionPattern<xsd::CompareOp>::OpConversionPattern;
+   LogicalResult matchAndRewrite(xsd::CompareOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      mlir::Value lhs = refreshStaleRefOperand(adaptor.getLhs(), rewriter);
+      mlir::Value rhs = refreshStaleRefOperand(adaptor.getRhs(), rewriter);
+      rewriter.replaceOpWithNewOp<xsd::CompareOp>(op, op.getResult().getType(), op.getPredicate(), lhs, rhs);
+      return success();
+   }
+};
+class XsdCompareLiteralRefreshLowering : public OpConversionPattern<xsd::CompareLiteralOp> {
+   public:
+   using OpConversionPattern<xsd::CompareLiteralOp>::OpConversionPattern;
+   LogicalResult matchAndRewrite(xsd::CompareLiteralOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      mlir::Value lhs = refreshStaleRefOperand(adaptor.getLhs(), rewriter);
+      rewriter.replaceOpWithNewOp<xsd::CompareLiteralOp>(op, op.getResult().getType(), op.getPredicate(), lhs, op.getRhsLexicalForm(), op.getRhsXsdType());
+      return success();
+   }
+};
+class XsdLiteralOfRefRefreshLowering : public OpConversionPattern<xsd::LiteralOfRefOp> {
+   public:
+   using OpConversionPattern<xsd::LiteralOfRefOp>::OpConversionPattern;
+   LogicalResult matchAndRewrite(xsd::LiteralOfRefOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      mlir::Value ref = refreshStaleRefOperand(adaptor.getRef(), rewriter);
+      rewriter.replaceOpWithNewOp<xsd::LiteralOfRefOp>(op, op.getLexicalForm().getType(), op.getXsdType().getType(), ref);
+      return success();
+   }
+};
+
 static void refreshNullableTypes(ModuleOp module) {
    module.walk([&](relalg::OuterJoinOp outerJoinOp) {
       for (mlir::Attribute attr : outerJoinOp.getMapping()) {
@@ -526,6 +569,16 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    target.addLegalDialect<cf::ControlFlowDialect>();
    target.addLegalDialect<scf::SCFDialect>();
    target.addLegalDialect<util::UtilDialect>();
+   target.addLegalDialect<xsd::XSDDialect>();
+   target.addDynamicallyLegalOp<xsd::CompareOp>([](xsd::CompareOp op) {
+      return !isStaleRefOperand(op.getLhs()) && !isStaleRefOperand(op.getRhs());
+   });
+   target.addDynamicallyLegalOp<xsd::CompareLiteralOp>([](xsd::CompareLiteralOp op) {
+      return !isStaleRefOperand(op.getLhs());
+   });
+   target.addDynamicallyLegalOp<xsd::LiteralOfRefOp>([](xsd::LiteralOfRefOp op) {
+      return !isStaleRefOperand(op.getRef());
+   });
 
    TypeConverter typeConverter;
    typeConverter.addConversion([](tuples::TupleStreamType t) { return t; });
@@ -540,6 +593,9 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs, externalGraphs);
    patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs);
    patterns.insert<GpmIdentifiersEqualLowering>(typeConverter, ctxt);
+   patterns.insert<XsdCompareRefreshLowering>(typeConverter, ctxt);
+   patterns.insert<XsdCompareLiteralRefreshLowering>(typeConverter, ctxt);
+   patterns.insert<XsdLiteralOfRefRefreshLowering>(typeConverter, ctxt);
 
    if (failed(applyFullConversion(module, target, std::move(patterns)))) {
       signalPassFailure();

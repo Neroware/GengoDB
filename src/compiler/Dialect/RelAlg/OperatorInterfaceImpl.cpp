@@ -941,6 +941,9 @@ mlir::LogicalResult relalg::SortOp::changeForColumns(lingodb::compiler::dialect:
 mlir::LogicalResult relalg::LimitOp::changeForColumns(lingodb::compiler::dialect::relalg::ColumnNullableChangeInfo& columnInfo) {
    return mlir::success();
 }
+mlir::LogicalResult relalg::OffsetOp::changeForColumns(lingodb::compiler::dialect::relalg::ColumnNullableChangeInfo& columnInfo) {
+   return mlir::success();
+}
 mlir::LogicalResult relalg::RenamingOp::changeForColumns(lingodb::compiler::dialect::relalg::ColumnNullableChangeInfo& columnInfo) {
    auto& colManager = getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
    std::vector<mlir::Attribute> newColDefs;

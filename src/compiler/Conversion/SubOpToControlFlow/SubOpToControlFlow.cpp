@@ -3120,7 +3120,12 @@ class LookupPreAggrHtFragment : public SubOpTupleStreamConsumerConversionPattern
          for (size_t i = 0; i < res.size(); i++) {
             auto convertedType = typeConverter->convertType(res[i].getType());
             if (res[i].getType() != convertedType) {
-               res[i] = rewriter.create<mlir::UnrealizedConversionCastOp>(lookupOp->getLoc(), convertedType, res[i]).getResult(0);
+               if (res[i].getDefiningOp<util::UndefOp>()) {
+                  res[i] = rewriter.create<util::UndefOp>(lookupOp->getLoc(), convertedType);
+               } 
+               else {
+                  res[i] = rewriter.create<mlir::UnrealizedConversionCastOp>(lookupOp->getLoc(), convertedType, res[i]).getResult(0);
+               }
             }
          }
          return res;
@@ -3216,7 +3221,12 @@ class LookupHashMapLowering : public SubOpTupleStreamConsumerConversionPattern<s
          for (size_t i = 0; i < res.size(); i++) {
             auto convertedType = typeConverter->convertType(res[i].getType());
             if (res[i].getType() != convertedType) {
-               res[i] = rewriter.create<mlir::UnrealizedConversionCastOp>(lookupOp->getLoc(), convertedType, res[i]).getResult(0);
+               if (res[i].getDefiningOp<util::UndefOp>()) {
+                  res[i] = rewriter.create<util::UndefOp>(lookupOp->getLoc(), convertedType);
+               } 
+               else {
+                  res[i] = rewriter.create<mlir::UnrealizedConversionCastOp>(lookupOp->getLoc(), convertedType, res[i]).getResult(0);
+               }
             }
          }
          return res;
@@ -5544,6 +5554,42 @@ class UnwrapNullableRefOpLowering : public SubOpConversionPattern<gsubop::Unwrap
       return success();
    }
 };
+class GraphRefCompareOpLowering : public SubOpConversionPattern<gsubop::GraphRefCompareOp> {
+   using SubOpConversionPattern<gsubop::GraphRefCompareOp>::SubOpConversionPattern;
+   LogicalResult matchAndRewrite(gsubop::GraphRefCompareOp op, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
+      auto loc = op.getLoc();
+      auto left = adaptor.getLeft();
+      auto right = adaptor.getRight();
+      auto callCompare = [&]() -> mlir::Value {
+         return op.getIsEdge()
+            ? rt::GraphRefCompare::rels(rewriter, loc)({left, right})[0]
+            : rt::GraphRefCompare::nodes(rewriter, loc)({left, right})[0];
+      };
+      if (!op.getNullable()) {
+         rewriter.replaceOp(op, callCompare());
+         return success();
+      }
+      auto leftValid = rewriter.create<util::IsRefValidOp>(loc, rewriter.getI1Type(), left);
+      auto rightValid = rewriter.create<util::IsRefValidOp>(loc, rewriter.getI1Type(), right);
+      auto trueVal = rewriter.create<mlir::arith::ConstantIntOp>(loc, 1, rewriter.getI1Type());
+      auto isLeftNull = rewriter.create<mlir::arith::XOrIOp>(loc, leftValid, trueVal);
+      auto isRightNull = rewriter.create<mlir::arith::XOrIOp>(loc, rightValid, trueVal);
+      auto isAnyNull = rewriter.create<mlir::arith::OrIOp>(loc, isLeftNull, isRightNull);
+      auto bothNull = rewriter.create<mlir::arith::AndIOp>(loc, isLeftNull, isRightNull);
+      auto result = rewriter.create<mlir::scf::IfOp>(
+         loc, isAnyNull, [&](mlir::OpBuilder& b, mlir::Location loc) {
+            auto zero = rewriter.create<mlir::arith::ConstantIntOp>(loc, 0, 8);
+            auto minus1 = rewriter.create<mlir::arith::ConstantIntOp>(loc, -1, 8);
+            auto one = rewriter.create<mlir::arith::ConstantIntOp>(loc, 1, 8);
+            mlir::Value res = rewriter.create<mlir::arith::SelectOp>(loc, isRightNull, minus1, one);
+            res = rewriter.create<mlir::arith::SelectOp>(loc, bothNull, zero, res);
+            b.create<mlir::scf::YieldOp>(loc, res); }, [&](mlir::OpBuilder& b, mlir::Location loc) {
+            b.create<mlir::scf::YieldOp>(loc, callCompare()); 
+         }).getResult(0);
+      rewriter.replaceOp(op, result);
+      return success();
+   }
+};
 
 class TypedPropertyRefGatherOpLowering : public SubOpTupleStreamConsumerConversionPattern<subop::GatherOp, 2> {
    public:
@@ -5636,6 +5682,7 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    patterns.insertPattern<NullRefOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<IsNullRefOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<UnwrapNullableRefOpLowering>(typeConverter, ctxt);
+   patterns.insertPattern<GraphRefCompareOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<TypedPropertyRefGatherOpLowering>(typeConverter, ctxt);
    patterns.insertPattern<TypedPropertyRefScatterOpLowering>(typeConverter, ctxt);
 

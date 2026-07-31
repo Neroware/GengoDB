@@ -3,6 +3,7 @@
 #include "gengodb/semantics/RdfFileFormat.h"
 
 #include <rdf4cpp/Graph.hpp>
+#include <rdf4cpp/datatypes/xsd/time/Date.hpp>
 #include <rdf4cpp/parser/RDFFileParser.hpp>
 
 #include <cstdio>
@@ -58,8 +59,12 @@ inline int32_t NodeHelper::resolve(const Literal& l) {
                 fixedDouble = fixedHelper.extract<double>(anyValue);
                 data.assign(reinterpret_cast<const char*>(&fixedDouble), sizeof(fixedDouble));
                 break;
+            case RdfDatatypeFixedHelper::Kind::Date:
+                fixedI64 = RdfDatatypeFixedHelper::packDate(fixedHelper.extract<std::pair<rdf4cpp::YearMonthDay, rdf4cpp::OptionalTimezone>>(anyValue));
+                data.assign(reinterpret_cast<const char*>(&fixedI64), sizeof(fixedI64));
+                break;
         }
-    } 
+    }
     else {
         const auto lang = l.language_tag();
         assert(lang.size() <= 0xff && "language tag too long to persist");
@@ -69,38 +74,58 @@ inline int32_t NodeHelper::resolve(const Literal& l) {
         data.append(lex.data(), lex.size());
     }
 
-    LiteralKey key{std::string(datatype.identifier()), data};
-    if (auto it = g->literalNodes.find(key); it != g->literalNodes.end())
+    const int32_t datatypeNode = resolve(datatype);
+    LiteralKey lookupKey{data.data(), data.size(), datatypeNode};
+    if (auto it = g->literalNodes.find(lookupKey); it != g->literalNodes.end())
         return it->second;
-
     int32_t id = g->nodes->insert(l);
     ensureNode();
 
-    int32_t datatypeNode = resolve(datatype);
     uint32_t xsdType = static_cast<uint32_t>(xsd::from_iri(datatype));
     uint32_t value = 0;
+    const char* persistedData = nullptr;
+    size_t persistedLen = 0;
     if (inlined) {
         value = inlineBits;
     } else if (fixedKind) {
         auto& propData = g->storage->storage().getPropData();
         switch (*fixedKind) {
             case RdfDatatypeFixedHelper::Kind::Int64:
-                value = static_cast<uint32_t>(propData.add_i64(fixedI64));
+            case RdfDatatypeFixedHelper::Kind::Date: {
+                const int32_t idx = propData.add_i64(fixedI64);
+                value = static_cast<uint32_t>(idx);
+                persistedData = reinterpret_cast<const char*>(propData.get_i64_ptr(idx));
+                persistedLen = sizeof(int64_t);
                 break;
-            case RdfDatatypeFixedHelper::Kind::UInt64:
-                value = static_cast<uint32_t>(propData.add_ui64(fixedUI64));
+            }
+            case RdfDatatypeFixedHelper::Kind::UInt64: {
+                const int32_t idx = propData.add_ui64(fixedUI64);
+                value = static_cast<uint32_t>(idx);
+                persistedData = reinterpret_cast<const char*>(propData.get_ui64_ptr(idx));
+                persistedLen = sizeof(uint64_t);
                 break;
-            case RdfDatatypeFixedHelper::Kind::Double:
-                value = static_cast<uint32_t>(propData.add_double(fixedDouble));
+            }
+            case RdfDatatypeFixedHelper::Kind::Double: {
+                const int32_t idx = propData.add_double(fixedDouble);
+                value = static_cast<uint32_t>(idx);
+                persistedData = reinterpret_cast<const char*>(propData.get_double_ptr(idx));
+                persistedLen = sizeof(double);
                 break;
+            }
         }
     } else {
         auto [ptr, idx] = g->storage->storage().getPropData().add_blob<xsd::Type::String>(data.size());
         std::memcpy(ptr, data.data(), data.size());
         value = static_cast<uint32_t>(idx);
+        persistedData = reinterpret_cast<const char*>(ptr);
+        persistedLen = data.size();
     }
-    g->storage->storage().addNodeProperty(id, static_cast<uint32_t>(datatypeNode), xsdType, value);
-    g->literalNodes.emplace(std::move(key), id);
+    const auto propId = g->storage->storage().addNodeProperty(id, static_cast<uint32_t>(datatypeNode), xsdType, value);
+    if (inlined) {
+        persistedData = reinterpret_cast<const char*>(&g->storage->storage().prop(propId).value);
+        persistedLen = sizeof(uint32_t);
+    }
+    g->literalNodes.emplace(LiteralKey{persistedData, persistedLen, datatypeNode}, id);
     return id;
 }
 void RdfGraph::addTriple(const IRI& s, const IRI& p, const IRI& o) {
@@ -173,6 +198,7 @@ void RdfGraph::ensureLoaded() {
                 default: return std::string();
             }
         });
+        storage->storage().getMetadata().set_rdf(this);
     }
 }
 void RdfGraph::rebuildLiteralNodeCache() {
@@ -185,36 +211,38 @@ void RdfGraph::rebuildLiteralNodeCache() {
         if (n.payload < 0) continue;
         const auto& p = storage->storage().prop(n.payload);
         const IRI datatype = getIri(static_cast<int32_t>(p.key));
+        const int32_t datatypeNode = static_cast<int32_t>(p.key);
 
-        std::string data;
+        const char* data = nullptr;
+        size_t len = 0;
         if (inlineHelper.isInlined(datatype)) {
-            data.assign(reinterpret_cast<const char*>(&p.value), sizeof(p.value));
-        } 
+            data = reinterpret_cast<const char*>(&p.value);
+            len = sizeof(p.value);
+        }
         else if (const auto fixedKind = fixedHelper.kindOf(datatype)) {
             const auto idx = static_cast<int32_t>(p.value);
             switch (*fixedKind) {
-                case RdfDatatypeFixedHelper::Kind::Int64: {
-                    const int64_t v = propData.get_i64(idx);
-                    data.assign(reinterpret_cast<const char*>(&v), sizeof(v));
+                case RdfDatatypeFixedHelper::Kind::Int64:
+                case RdfDatatypeFixedHelper::Kind::Date:
+                    data = reinterpret_cast<const char*>(propData.get_i64_ptr(idx));
+                    len = sizeof(int64_t);
                     break;
-                }
-                case RdfDatatypeFixedHelper::Kind::UInt64: {
-                    const uint64_t v = propData.get_ui64(idx);
-                    data.assign(reinterpret_cast<const char*>(&v), sizeof(v));
+                case RdfDatatypeFixedHelper::Kind::UInt64:
+                    data = reinterpret_cast<const char*>(propData.get_ui64_ptr(idx));
+                    len = sizeof(uint64_t);
                     break;
-                }
-                case RdfDatatypeFixedHelper::Kind::Double: {
-                    const double v = propData.get_double(idx);
-                    data.assign(reinterpret_cast<const char*>(&v), sizeof(v));
+                case RdfDatatypeFixedHelper::Kind::Double:
+                    data = reinterpret_cast<const char*>(propData.get_double_ptr(idx));
+                    len = sizeof(double);
                     break;
-                }
             }
-        } 
-        else {
-            auto [ptr, len] = propData.get_blob<xsd::Type::String>(static_cast<int32_t>(p.value));
-            data.assign(reinterpret_cast<const char*>(ptr), len);
         }
-        literalNodes.emplace(LiteralKey{std::string(datatype.identifier()), data}, id);
+        else {
+            auto [ptr, blobLen] = propData.get_blob<xsd::Type::String>(static_cast<int32_t>(p.value));
+            data = reinterpret_cast<const char*>(ptr);
+            len = blobLen;
+        }
+        literalNodes.emplace(LiteralKey{data, len, datatypeNode}, id);
     }
 }
 Literal RdfGraph::getLiteral(int32_t id) const {
@@ -244,13 +272,14 @@ Literal RdfGraph::getLiteral(int32_t id) const {
                 lex = std::to_string(propData.get_ui64(idx));
                 break;
             case RdfDatatypeFixedHelper::Kind::Double: {
-                // std::to_string truncates to 6 fractional digits; %.17g is required
-                // for a double to always round-trip exactly through its decimal text.
                 char buf[32];
                 std::snprintf(buf, sizeof(buf), "%.17g", propData.get_double(idx));
                 lex = buf;
                 break;
             }
+            case RdfDatatypeFixedHelper::Kind::Date:
+                lex = std::string(Literal::make_typed_from_value<datatypes::xsd::Date>(RdfDatatypeFixedHelper::unpackDate(propData.get_i64(idx))).lexical_form());
+                break;
         }
         return Literal::make_typed(lex, datatype);
     }
