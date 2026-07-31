@@ -59,9 +59,9 @@ struct Triple {
 };
 
 // Base class for WHERE clause elements.
-// Future ARQ operators (UNION, BIND, …) add new subclasses here.
+// Future ARQ operators (BIND, …) add new subclasses here.
 struct PatternElement {
-   enum class Kind { Graph, Optional, Filter };
+   enum class Kind { Graph, Optional, Filter, Union };
    virtual ~PatternElement() = default;
    virtual Kind kind() const = 0;
 };
@@ -77,6 +77,17 @@ struct GraphPattern : PatternElement {
 struct OptionalPattern : PatternElement {
    std::vector<std::unique_ptr<PatternElement>> patterns;
    Kind kind() const override { return Kind::Optional; }
+};
+
+// SPARQL { ... } UNION { ... } [UNION { ... } ...] — n-ary in the grammar;
+// folded into a left-chain of binary gpm.union ops at
+// translation time (see Translator::buildUnion), since bag-union is
+// associative and nesting shape doesn't affect solution semantics. A variable
+// bound in only one branch is simply unbound (null) on rows from the branch
+// that doesn't bind it.
+struct UnionPattern : PatternElement {
+   std::vector<std::vector<std::unique_ptr<PatternElement>>> branches;
+   Kind kind() const override { return Kind::Union; }
 };
 
 // ------------------------------------------------------------
@@ -566,19 +577,37 @@ class Parser {
          }
 
          // Extension point: raise descriptive error for unsupported ARQ operators
-         for (const char* op : {"UNION","MINUS","SERVICE","BIND","VALUES"}) {
+         for (const char* op : {"MINUS","SERVICE","BIND","VALUES"}) {
             if (kw(op)) throw std::runtime_error(std::string("ARQ operator '") + op + "' is not yet supported");
          }
 
          if (is(TK::LBrace)) {
             // A nested `{ ... }` group is itself a full GroupGraphPattern --
             // SPARQL allows OPTIONAL/FILTER/GRAPH inside it just like at the
-            // top level, not just bare triples. buildPatternGroup already
-            // folds every pattern element into one sequential stream
-            // regardless of original nesting (see its flat loop), so it's
-            // safe to just append this group's elements directly into `out`
-            // rather than tracking the nesting explicitly.
-            parseGroup(out, prefixes, activeGraph);
+            // top level, not just bare triples. Parse it into its own vector
+            // first so a following UNION keyword can be detected (SPARQL's
+            // GroupOrUnionGraphPattern: a `{...}` optionally followed by one
+            // or more `UNION {...}` alternatives).
+            std::vector<std::unique_ptr<sparql::PatternElement>> firstGroup;
+            parseGroup(firstGroup, prefixes, activeGraph);
+            if (kw("UNION")) {
+               auto up = std::make_unique<sparql::UnionPattern>();
+               up->branches.push_back(std::move(firstGroup));
+               while (kw("UNION")) {
+                  advance();
+                  std::vector<std::unique_ptr<sparql::PatternElement>> branch;
+                  parseGroup(branch, prefixes, activeGraph);
+                  up->branches.push_back(std::move(branch));
+               }
+               out.push_back(std::move(up));
+            } else {
+               // No UNION follows -- buildPatternGroup already folds every
+               // pattern element into one sequential stream regardless of
+               // original nesting (see its flat loop), so it's safe to just
+               // append this group's elements directly into `out` rather than
+               // tracking the nesting explicitly.
+               for (auto& elem : firstGroup) out.push_back(std::move(elem));
+            }
             continue;
          }
 
@@ -741,6 +770,18 @@ class Translator {
    std::vector<std::string> allVars; // in order of first appearance
    std::map<std::string, tuples::ColumnDefAttr> varDefs;
 
+   // ColumnManager::createDef(scope, name) is a global cache keyed by the
+   // literal (scope, name) pair -- calling it twice with the same pair
+   // returns the *same* underlying Column, not a fresh one. That's exactly
+   // right for ordinary sequential chaining ("vars" is one flat scope for the
+   // whole query), but breaks for UNION: if both branches introduce a
+   // same-named variable that isn't bound before the union (the normal
+   // SPARQL idiom, e.g. `{?x :p1 ?y} UNION {?x :p2 ?z}`), two
+   // createDef("vars","x") calls would silently collapse onto the identical
+   // Column, defeating branch-local shadowing. buildUnion() points this at a
+   // fresh unique scope for the duration of translating each branch.
+   std::string currentVarScope{"vars"};
+
    // Return (alias, named_graph stream) — creates NamedGraphOp on first use.
    std::pair<std::string, mlir::Value> namedGraph(const std::string& uri) {
       auto it = graphInfo.find(uri);
@@ -770,7 +811,7 @@ class Translator {
       if (term.kind == sparql::Term::Kind::Variable) {
          auto it = varDefs.find(term.value);
          if (it == varDefs.end()) {
-            auto def = colMgr.createDef("vars", term.value);
+            auto def = colMgr.createDef(currentVarScope, term.value);
             def.getColumn().type = gpm::VariableBindingType::get(ctxt);
             varDefs[term.value] = def;
             allVars.push_back(term.value);
@@ -834,6 +875,134 @@ class Translator {
          builder.create<tuples::ReturnOp>(loc, result);
       }
       return optOp.getRes();
+   }
+
+   // Translates a single UNION branch (a nested pattern-element list) against
+   // `inputStream`, under a fresh branch-local variable scope (see
+   // currentVarScope's doc comment) so that a variable first bound in this
+   // branch gets its own Column, independent of whatever the sibling branch
+   // does with the same name.
+   mlir::Value buildUnionBranch(const std::vector<std::unique_ptr<sparql::PatternElement>>& branch, mlir::Value inputStream) {
+      auto savedScope = currentVarScope;
+      currentVarScope = colMgr.getUniqueScope("vars");
+      mlir::Value result = buildPatternGroup(branch, inputStream);
+      currentVarScope = savedScope;
+      return result;
+   }
+
+   // Builds one binary gpm::UnionOp over two ordinary tuple streams. Both
+   // branches are translated against the same `inputStream` (the accumulator
+   // so far, null when the UNION is the first pattern in its group -- each
+   // branch then simply seeds itself from its own named graph, exactly like a
+   // leading BGP does), which is SPARQL's algebra
+   // Join(Ω, Union(P1,P2)) = Union(Join(Ω,P1), Join(Ω,P2)) written down
+   // directly. `left` is either a single pattern-element list (the base case)
+   // or itself built recursively via buildUnionLevel (for n-ary
+   // `{A} UNION {B} UNION {C}` chains, left-folded since bag-union is
+   // associative and nesting shape doesn't affect solution semantics).
+   //
+   // Branch-local variable shadowing: snapshotting varDefs/allVars before each
+   // branch and restoring after ensures a variable first bound in one branch
+   // (not already bound before the union) doesn't leak into the other, or get
+   // silently collapsed onto the same Column as its sibling (see
+   // currentVarScope's doc comment).
+   //
+   // Those two branch-local columns are then merged into one output column per
+   // variable name, which is what the op's `mapping` declares and what
+   // varDefs[name] points at from here on -- so every later reference
+   // (subsequent triples, FILTER, SELECT) resolves to the union's real output
+   // column, with no post-hoc rewriting needed. A variable bound by only one
+   // branch is unbound (null) on the other, hence the UnitAttr source and the
+   // nullable merged type.
+   template <typename BuildLeft>
+   mlir::Value buildUnionLevel(BuildLeft buildLeft,
+                               const std::vector<std::unique_ptr<sparql::PatternElement>>& rightBranch,
+                               mlir::Value inputStream) {
+      auto loc = builder.getUnknownLoc();
+      auto snapshotVarDefs = varDefs;
+      auto snapshotAllVars = allVars;
+
+      mlir::Value left = buildLeft(inputStream);
+      if (!left)
+         throw std::runtime_error("UNION branch contains no supported graph patterns");
+      auto afterLeftVarDefs = varDefs;
+      auto afterLeftAllVars = allVars;
+      // Restore to the pre-union snapshot before translating the right branch
+      // so it doesn't see the left branch's fresh (branch-local) bindings.
+      varDefs = snapshotVarDefs;
+      allVars = snapshotAllVars;
+
+      mlir::Value right = buildUnionBranch(rightBranch, inputStream);
+      if (!right)
+         throw std::runtime_error("UNION branch contains no supported graph patterns");
+      auto afterRightVarDefs = varDefs;
+      auto afterRightAllVars = allVars;
+
+      // Merge: restore to the pre-union snapshot once more (neither branch's
+      // own column leaks as itself), then declare one merged column per
+      // variable name either branch newly bound, in order of first appearance.
+      varDefs = snapshotVarDefs;
+      allVars = snapshotAllVars;
+      std::vector<std::string> mergedNames;
+      for (const auto& branchVars : {afterLeftAllVars, afterRightAllVars}) {
+         for (const auto& name : branchVars) {
+            if (snapshotVarDefs.count(name)) continue;
+            if (std::find(mergedNames.begin(), mergedNames.end(), name) == mergedNames.end())
+               mergedNames.push_back(name);
+         }
+      }
+
+      auto scope = colMgr.getUniqueScope("union");
+      llvm::SmallVector<mlir::Attribute> mapping;
+      for (const auto& name : mergedNames) {
+         auto leftIt = afterLeftVarDefs.find(name);
+         auto rightIt = afterRightVarDefs.find(name);
+         bool inLeft = leftIt != afterLeftVarDefs.end();
+         bool inRight = rightIt != afterRightVarDefs.end();
+         auto* leftCol = inLeft ? leftIt->second.getColumnPtr().get() : nullptr;
+         auto* rightCol = inRight ? rightIt->second.getColumnPtr().get() : nullptr;
+         mlir::Attribute leftEntry = leftCol ? static_cast<mlir::Attribute>(colMgr.createRef(leftCol)) : static_cast<mlir::Attribute>(mlir::UnitAttr::get(ctxt));
+         mlir::Attribute rightEntry = rightCol ? static_cast<mlir::Attribute>(colMgr.createRef(rightCol)) : static_cast<mlir::Attribute>(mlir::UnitAttr::get(ctxt));
+
+         bool nullable = !leftCol || !rightCol;
+         mlir::Type mergedType = (leftCol ? leftCol : rightCol)->type;
+         for (const auto* col : {leftCol, rightCol}) {
+            if (auto nullableType = col ? mlir::dyn_cast<db::NullableType>(col->type) : nullptr) {
+               nullable = true;
+               mergedType = nullableType.getType();
+            }
+         }
+         auto merged = colMgr.createDef(scope, name, mlir::ArrayAttr::get(ctxt, {leftEntry, rightEntry}));
+         merged.getColumn().type = nullable ? db::NullableType::get(ctxt, mergedType) : mergedType;
+         mapping.push_back(merged);
+         varDefs[name] = merged;
+         allVars.push_back(name);
+      }
+
+      return builder.create<gpm::BagOp>(loc, tuples::TupleStreamType::get(ctxt), left, right,
+                                          mlir::ArrayAttr::get(ctxt, mapping))
+         .getRes();
+   }
+
+   // Recursive left-fold: branches[0..idx] unioned together (idx >= 1), each
+   // branch translated against `inputStream`. For idx == 1 this is the base
+   // binary case (branches[0] UNION branches[1]); otherwise the "left" side is
+   // itself the union of all preceding branches.
+   mlir::Value buildUnionUpTo(const sparql::UnionPattern& up, size_t idx, mlir::Value inputStream) {
+      if (idx == 1) {
+         return buildUnionLevel(
+            [this, &up](mlir::Value input) { return buildUnionBranch(up.branches[0], input); },
+            up.branches[1], inputStream);
+      }
+      return buildUnionLevel(
+         [this, &up, idx](mlir::Value input) { return buildUnionUpTo(up, idx - 1, input); },
+         up.branches[idx], inputStream);
+   }
+
+   mlir::Value buildUnion(const sparql::UnionPattern& up, mlir::Value inputStream) {
+      if (up.branches.size() < 2)
+         throw std::runtime_error("UNION requires at least two branches");
+      return buildUnionUpTo(up, up.branches.size() - 1, inputStream);
    }
 
    // ---- FILTER translation ----
@@ -1032,6 +1201,14 @@ class Translator {
             if (!prevStream)
                throw std::runtime_error("FILTER cannot be the first pattern in a query");
             prevStream = buildFilter(fp, prevStream);
+         } else if (elemPtr->kind() == sparql::PatternElement::Kind::Union) {
+            const auto& up = static_cast<const sparql::UnionPattern&>(*elemPtr);
+            // Unlike OPTIONAL/FILTER, UNION *can* be the first pattern in a
+            // query (e.g. `WHERE { {?s ?p ?o} UNION {?s2 ?p2 ?o2} }`) -- each
+            // branch just has no accumulator to join onto yet, exactly like a
+            // top-level GraphPattern's first BGP seeds itself from its own
+            // named graph rather than from `prevStream`.
+            prevStream = buildUnion(up, prevStream);
          }
       }
       return prevStream;
@@ -1053,6 +1230,9 @@ class Translator {
          } else if (elemPtr->kind() == sparql::PatternElement::Kind::Optional) {
             const auto& opt = static_cast<const sparql::OptionalPattern&>(*elemPtr);
             preRegisterGraphs(opt.patterns);
+         } else if (elemPtr->kind() == sparql::PatternElement::Kind::Union) {
+            const auto& up = static_cast<const sparql::UnionPattern&>(*elemPtr);
+            for (const auto& branch : up.branches) preRegisterGraphs(branch);
          }
       }
    }
@@ -1096,7 +1276,12 @@ class Translator {
             if (std::find(allVars.begin(), allVars.end(), vn) == allVars.end())
                throw std::runtime_error("Selected variable ?" + vn + " is not bound in WHERE clause");
             members.push_back(memMgr.createMember("col" + std::to_string(i + 1), db::StringType::get(ctxt)));
-            colRefs.push_back(colMgr.createRef("vars", vn));
+            // Not colMgr.createRef("vars", vn): a variable first bound inside
+            // a UNION branch lives under that branch's unique scope (see
+            // currentVarScope), and is projected out of the union under yet
+            // another one (the merged column gpm.union's mapping defines) --
+            // go through varDefs, which tracks where the name currently lives.
+            colRefs.push_back(colMgr.createRef(varDefs.at(vn).getColumnPtr().get()));
             colNames.push_back(mlir::StringAttr::get(ctxt, vn));
          }
 

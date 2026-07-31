@@ -1,0 +1,11 @@
+PREFIX ex: <http://example.org/>
+
+SELECT ?who ?what
+{
+    GRAPH <file://resources/ttl/coffee.ttl#rdf> {
+        ?who ex:eats ex:sushi .
+        { ?who ex:drinks ?what }
+        UNION
+        { ?who ex:age ?what }
+    }
+}
