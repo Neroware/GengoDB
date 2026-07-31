@@ -32,7 +32,12 @@ ParseResult parseCustRefArr(OpAsmParser& parser, ArrayAttr& attr) {
       return failure();
    }
    for (auto a : parsedAttr) {
+      if (mlir::isa<UnitAttr>(a)) {
+         attributes.push_back(a);
+         continue;
+      }
       SymbolRefAttr parsedSymbolRefAttr = mlir::dyn_cast<SymbolRefAttr>(a);
+      if (!parsedSymbolRefAttr) return failure();
       tuples::ColumnRefAttr attr = getColumnManager(parser).createRef(parsedSymbolRefAttr);
       attributes.push_back(attr);
    }
@@ -50,8 +55,11 @@ void printCustRefArr(OpAsmPrinter& p, mlir::Operation* op, ArrayAttr arrayAttr) 
       } else {
          p << ",";
       }
-      tuples::ColumnRefAttr parsedSymbolRefAttr = mlir::dyn_cast<tuples::ColumnRefAttr>(a);
-      p << parsedSymbolRefAttr.getName();
+      if (auto parsedSymbolRefAttr = mlir::dyn_cast<tuples::ColumnRefAttr>(a)) {
+         p << parsedSymbolRefAttr.getName();
+      } else {
+         p << a;
+      }
    }
    p << "]";
 }

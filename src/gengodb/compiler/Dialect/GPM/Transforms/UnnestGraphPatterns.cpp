@@ -23,9 +23,24 @@ const tuples::Column* getBNodeScopeColumn(mlir::Attribute entry) {
    return &mlir::cast<tuples::ColumnRefAttr>(entry).getColumn();
 }
 tuples::ColumnRefAttr getBNodeScopeRef(mlir::Attribute entry, tuples::ColumnManager& columnManager) {
-   if (auto def = mlir::dyn_cast<tuples::ColumnDefAttr>(entry)) 
+   if (auto def = mlir::dyn_cast<tuples::ColumnDefAttr>(entry))
       return columnManager.createRef(def.getColumnPtr().get());
    return mlir::cast<tuples::ColumnRefAttr>(entry);
+}
+const tuples::Column* resolveThroughRemaps(const ColumnMapper& remaps, const tuples::Column* column) {
+   for (auto it = remaps.find(column); it != remaps.end(); it = remaps.find(column)) {
+      column = it->second;
+   }
+   return column;
+}
+bool isGpmStreamOp(mlir::Operation* op) {
+   return op && (mlir::isa<GraphPatternOp>(op) || mlir::isa<gpm::BagOp, gpm::TriplePatternOp, gpm::NamedGraphOp>(op));
+}
+bool isNestedInGraphPattern(mlir::Operation* op) {
+   for (auto* parent = op->getParentOp(); parent; parent = parent->getParentOp()) {
+      if (mlir::isa<GraphPatternOp>(parent)) return true;
+   }
+   return false;
 }
 
 class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass, mlir::OperationPass<mlir::ModuleOp>> {
@@ -35,80 +50,114 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(UnnestGraphPatternsPass)
 
    void runOnOperation() override {
-      llvm::SmallVector<GraphPatternOp> roots;
+      llvm::SmallVector<std::pair<mlir::Operation*, unsigned>> entries;
       getOperation()->walk([&](mlir::Operation* op) {
-         auto patternOp = mlir::dyn_cast<GraphPatternOp>(op);
-         if (!patternOp) return;
-         if (mlir::isa_and_nonnull<GraphPatternOp>(op->getParentOp())) return;
-         roots.push_back(patternOp);
-      });
-
-      llvm::DenseMap<mlir::Operation*, unsigned> indexOf;
-      for (auto [i, root] : llvm::enumerate(roots)) indexOf[root.getOperation()] = i;
-      llvm::SmallVector<unsigned> parent(roots.size());
-      for (unsigned i = 0; i < roots.size(); ++i) parent[i] = i;
-      auto find = [&](unsigned x) {
-         while (parent[x] != x) {
-            parent[x] = parent[parent[x]];
-            x = parent[x];
+         if (isGpmStreamOp(op) || isNestedInGraphPattern(op)) return;
+         for (auto [i, operand] : llvm::enumerate(op->getOperands())) {
+            if (mlir::isa<tuples::TupleStreamType>(operand.getType()) && isGpmStreamOp(operand.getDefiningOp())) {
+               entries.emplace_back(op, i);
+            }
          }
-         return x;
-      };
-      llvm::SmallPtrSet<mlir::Operation*, 16> rootSet;
-      for (auto root : roots) rootSet.insert(root.getOperation());
-      for (auto [i, root] : llvm::enumerate(roots)) {
-         llvm::SmallPtrSet<mlir::Operation*, 16> visited;
-         if (auto* ancestor = findAncestorRoot(root.getRel(), visited, rootSet)) {
-            unsigned a = find(i), b = find(indexOf[ancestor]);
-            if (a != b) parent[a] = b;
+      });
+      for (auto [consumer, operandIdx] : entries) {
+         insertPoint = consumer;
+         if (auto rewrittenOperand = rewrite(consumer->getOperand(operandIdx))) {
+            consumer->setOperand(operandIdx, rewrittenOperand);
          }
       }
-
-      llvm::MapVector<unsigned, llvm::SmallVector<GraphPatternOp>> components;
-      for (auto [i, root] : llvm::enumerate(roots)) components[find(i)].push_back(root);
-      for (auto& [key, component] : components) {
-         mlir::Value stream;
-         bool first = true;
-         for (auto root : component) {
-            processElement(root, root.getOperation(), stream, first);
+      for (bool erasedAny = true; erasedAny;) {
+         erasedAny = false;
+         llvm::SmallVector<mlir::Operation*> dead;
+         getOperation()->walk([&](mlir::Operation* op) {
+            if (mlir::isa<gpm::NamedGraphOp, relalg::TmpOp>(op) && op->use_empty()) dead.push_back(op);
+         });
+         for (auto* op : dead) {
+            op->erase();
+            erasedAny = true;
          }
       }
    }
 
    private:
-   mlir::Operation* findAncestorRoot(mlir::Value v, llvm::SmallPtrSetImpl<mlir::Operation*>& visited, const llvm::SmallPtrSetImpl<mlir::Operation*>& rootSet) {
+   llvm::DenseMap<mlir::Value, mlir::Value> rewritten;
+   mlir::Operation* insertPoint = nullptr;
+   llvm::StringMap<tuples::ColumnRefAttr>* bnodeScope = nullptr;
+   mlir::Value rewrite(mlir::Value v) {
+      if (!v) return v;
+      if (auto it = rewritten.find(v); it != rewritten.end()) return it->second;
       auto* op = v.getDefiningOp();
-      if (!op || !visited.insert(op).second) return nullptr;
-      if (rootSet.contains(op)) return op;
-      for (auto operand : op->getOperands()) {
-         if (auto* found = findAncestorRoot(operand, visited, rootSet)) return found;
+      if (!op || mlir::isa<gpm::NamedGraphOp>(op)) return {};
+      if (auto triple = mlir::dyn_cast<gpm::TriplePatternOp>(op)) {
+         auto result = rewriteTriple(triple);
+         rewritten[v] = result;
+         return result;
       }
-      return nullptr;
+      mlir::Value result;
+      if (auto patternOp = mlir::dyn_cast<GraphPatternOp>(op)) {
+         result = rewritePattern(patternOp);
+      } 
+      else if (auto unionOp = mlir::dyn_cast<gpm::BagOp>(op)) {
+         result = rewriteUnion(unionOp);
+      } 
+      else {
+         auto* savedInsertPoint = insertPoint;
+         insertPoint = op;
+         bool readsStream = false;
+         bool readsOnlySeeds = true;
+         for (auto& operand : op->getOpOperands()) {
+            if (!mlir::isa<tuples::TupleStreamType>(operand.get().getType())) continue;
+            readsStream = true;
+            if (auto rewrittenOperand = rewrite(operand.get())) {
+               operand.set(rewrittenOperand);
+               readsOnlySeeds = false;
+            }
+         }
+         insertPoint = savedInsertPoint;
+         result = readsStream && readsOnlySeeds ? mlir::Value() : v;
+         rewritten[v] = result;
+         return result;
+      }
+      if (!result) {
+         op->emitOpError("produces no tuple stream to unnest");
+         signalPassFailure();
+         return result;
+      }
+      rewritten[result] = result;
+      op->getResult(0).replaceAllUsesWith(result);
+      op->erase();
+      return result;
    }
-   void processElement(GraphPatternOp patternOp, mlir::Operation* insertBefore, mlir::Value& stream, bool& first) {
+   mlir::Value rewriteTriple(gpm::TriplePatternOp triple) {
+      mlir::Value accumulator = rewrite(triple.getRel());
+      llvm::StringMap<tuples::ColumnRefAttr> ownScope;
+      annotateBNodeScope(triple, bnodeScope ? *bnodeScope : ownScope);
+      isolateTriple(triple, insertPoint);
+      return fold(accumulator, triple.getRes(), gpm::PatternKind::basic, relalg::ColumnSet(), triple.getLoc());
+   }
+   mlir::Value rewritePattern(GraphPatternOp patternOp) {
       auto createdVars = mlir::cast<GPMOperator>(patternOp.getOperation()).getCreatedVariables();
       auto kind = patternOp.getPatternKind();
       auto loc = patternOp.getLoc();
-      mlir::Operation* rawOp = patternOp.getOperation();
-      mlir::Value rel = patternOp.getRel();
-      mlir::Value elementStream = unnestInto(patternOp, insertBefore);
+      mlir::Value accumulator = rewrite(patternOp.getRel());
+      mlir::Value elementStream = rewriteRegion(patternOp.getPattern());
       ColumnMapper nestedRemaps;
       llvm::SmallPtrSet<mlir::Operation*, 16> visitedRemaps;
       collectOuterJoinRemaps(elementStream, visitedRemaps, nestedRemaps);
       relalg::ColumnSet liveCreatedVars;
       for (const auto* column : createdVars) {
-         const tuples::Column* resolved = column;
-         for (auto it = nestedRemaps.find(resolved); it != nestedRemaps.end(); it = nestedRemaps.find(resolved)) {
-            resolved = it->second;
-         }
-         liveCreatedVars.insert(resolved);
+         liveCreatedVars.insert(resolveThroughRemaps(nestedRemaps, column));
       }
-      foldIntoAccumulator(stream, first, elementStream, kind, liveCreatedVars, insertBefore, loc);
-      rawOp->getResult(0).replaceAllUsesWith(stream);
-      rawOp->erase();
-      if (auto* relDefOp = rel.getDefiningOp()) {
-         if (relDefOp->use_empty()) relDefOp->erase();
-      }
+      return fold(accumulator, elementStream, kind, liveCreatedVars, loc);
+   }
+   mlir::Value rewriteRegion(mlir::Region& region) {
+      auto* terminator = region.front().getTerminator();
+      if (terminator->getNumOperands() == 0) return {};
+      llvm::StringMap<tuples::ColumnRefAttr> scope;
+      auto* savedScope = bnodeScope;
+      bnodeScope = &scope;
+      mlir::Value result = rewrite(terminator->getOperand(0));
+      bnodeScope = savedScope;
+      return result;
    }
    void collectOuterJoinRemaps(mlir::Value v, llvm::SmallPtrSet<mlir::Operation*, 16>& visited, ColumnMapper& remaps) {
       auto* op = v.getDefiningOp();
@@ -125,31 +174,154 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
             }
          }
       }
+      if (auto unionOp = mlir::dyn_cast<relalg::UnionOp>(op)) {
+         for (auto mappingAttr : unionOp.getMapping()) {
+            auto colDef = mlir::cast<tuples::ColumnDefAttr>(mappingAttr);
+            auto fromExisting = mlir::cast<mlir::ArrayAttr>(colDef.getFromExisting());
+            for (auto entry : fromExisting) {
+               if (auto ref = mlir::dyn_cast<tuples::ColumnRefAttr>(entry)) {
+                  remaps[&ref.getColumn()] = &colDef.getColumn();
+               }
+            }
+         }
+      }
       for (auto operand : op->getOperands()) {
          collectOuterJoinRemaps(operand, visited, remaps);
       }
    }
-   mlir::Value unnestInto(GraphPatternOp patternOp, mlir::Operation* insertBefore) {
-      llvm::StringMap<tuples::ColumnRefAttr> bnodeScope;
-      mlir::Value stream;
-      bool first = true;
-      for (auto& op : llvm::make_early_inc_range(patternOp.getPattern().front().without_terminator())) {
-         if (auto triple = mlir::dyn_cast<gpm::TriplePatternOp>(&op)) {
-            annotateBNodeScope(triple, bnodeScope);
-            isolateTriple(triple, insertBefore);
-            mlir::Value elementStream = triple.getRes();
-            foldIntoAccumulator(stream, first, elementStream, gpm::PatternKind::basic, relalg::ColumnSet(), insertBefore, triple.getLoc());
-         } 
-         else if (auto nested = mlir::dyn_cast<GraphPatternOp>(&op)) {
-            processElement(nested, insertBefore, stream, first);
-         } 
-         else {
-            op.emitOpError("unnesting of this operator nested inside a graph pattern is not supported");
-            signalPassFailure();
-            return stream;
+   relalg::ColumnSet producedColumns(mlir::Value v) {
+      llvm::SmallPtrSet<mlir::Operation*, 16> visited;
+      return producedColumns(v, visited);
+   }
+   relalg::ColumnSet producedColumns(mlir::Value v, llvm::SmallPtrSetImpl<mlir::Operation*>& visited) {
+      relalg::ColumnSet result;
+      auto* op = v.getDefiningOp();
+      if (!op || !visited.insert(op).second) return result;
+      auto insertMapping = [&](mlir::ArrayAttr mapping) {
+         for (auto attr : mapping) result.insert(mlir::cast<tuples::ColumnDefAttr>(attr).getColumnPtr().get());
+      };
+      if (auto triple = mlir::dyn_cast<gpm::TriplePatternOp>(op)) {
+         result.insert(triple.getCreatedColumns());
+         return result;
+      }
+      if (auto unionOp = mlir::dyn_cast<relalg::UnionOp>(op)) {
+         insertMapping(unionOp.getMapping());
+         return result;
+      }
+      if (auto outerJoin = mlir::dyn_cast<relalg::OuterJoinOp>(op)) {
+         insertMapping(outerJoin.getMapping());
+         result.insert(producedColumns(outerJoin.getLeft(), visited));
+         return result;
+      }
+      if (auto antiSemiJoin = mlir::dyn_cast<relalg::AntiSemiJoinOp>(op)) {
+         result.insert(producedColumns(antiSemiJoin.getLeft(), visited));
+         return result;
+      }
+      for (auto operand : op->getOperands()) {
+         if (mlir::isa<tuples::TupleStreamType>(operand.getType())) {
+            result.insert(producedColumns(operand, visited));
          }
       }
-      return stream;
+      return result;
+   }
+   mlir::Value rewriteUnion(gpm::BagOp bagOp) {
+      auto* ctxt = bagOp.getContext();
+      auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      auto loc = bagOp.getLoc();
+
+      mlir::Value leftStream = rewrite(bagOp.getLeft());
+      mlir::Value rightStream = rewrite(bagOp.getRight());
+      if (!leftStream || !rightStream) {
+         bagOp.emitOpError("both branches must contain at least one pattern");
+         signalPassFailure();
+         return {};
+      }
+      ColumnMapper leftRemaps, rightRemaps;
+      {
+         llvm::SmallPtrSet<mlir::Operation*, 16> visited;
+         collectOuterJoinRemaps(leftStream, visited, leftRemaps);
+      }
+      {
+         llvm::SmallPtrSet<mlir::Operation*, 16> visited;
+         collectOuterJoinRemaps(rightStream, visited, rightRemaps);
+      }
+
+      llvm::SmallVector<mlir::Attribute> mappingEntries;
+      relalg::ColumnSet declared;
+      for (auto attr : bagOp.getMapping()) {
+         auto colDef = mlir::cast<tuples::ColumnDefAttr>(attr);
+         auto fromExisting = mlir::cast<mlir::ArrayAttr>(colDef.getFromExisting());
+         bool nullable = false;
+         mlir::Type mergedType;
+         auto resolveSide = [&](mlir::Attribute side, const ColumnMapper& remaps) -> mlir::Attribute {
+            auto ref = mlir::dyn_cast<tuples::ColumnRefAttr>(side);
+            if (!ref) {
+               nullable = true;
+               return side;
+            }
+            const auto* resolved = resolveThroughRemaps(remaps, &ref.getColumn());
+            declared.insert(resolved);
+            mergedType = resolved->type;
+            if (auto nullableType = mlir::dyn_cast<db::NullableType>(mergedType)) {
+               nullable = true;
+               mergedType = nullableType.getType();
+            }
+            return resolved == &ref.getColumn() ? side : static_cast<mlir::Attribute>(columnManager.createRef(resolved));
+         };
+         auto leftEntry = resolveSide(fromExisting[0], leftRemaps);
+         auto rightEntry = resolveSide(fromExisting[1], rightRemaps);
+         auto newDef = columnManager.createDef(colDef.getColumnPtr().get(), mlir::ArrayAttr::get(ctxt, {leftEntry, rightEntry}));
+         newDef.getColumn().type = nullable ? db::NullableType::get(ctxt, mergedType) : mergedType;
+         mappingEntries.push_back(newDef);
+      }
+
+      relalg::ColumnSet leftProduced = producedColumns(leftStream);
+      relalg::ColumnSet rightProduced = producedColumns(rightStream);
+
+      auto passthroughScope = columnManager.getUniqueScope("union");
+      ColumnMapper passthroughColMap;
+      for (const auto* column : leftProduced) {
+         if (!rightProduced.contains(column) || declared.contains(column)) continue;
+         auto ref = columnManager.createRef(column);
+         auto newDef = columnManager.createDef(passthroughScope, columnManager.getName(column).second, mlir::ArrayAttr::get(ctxt, {ref, ref}));
+         newDef.getColumn().type = column->type;
+         mappingEntries.push_back(newDef);
+         passthroughColMap[column] = &newDef.getColumn();
+      }
+      llvm::MapVector<const tuples::Column*, std::pair<tuples::ColumnRefAttr, tuples::ColumnRefAttr>> bindingsByOuterCol;
+      {
+         auto pairs = ensureBindingsColumns(leftStream, loc, [&](const tuples::Column* c) { return !leftProduced.contains(c); });
+         for (auto& pair : pairs) bindingsByOuterCol[&pair.outerRef.getColumn()].first = pair.bindingsRef;
+      }
+      {
+         auto pairs = ensureBindingsColumns(rightStream, loc, [&](const tuples::Column* c) { return !rightProduced.contains(c); });
+         for (auto& pair : pairs) bindingsByOuterCol[&pair.outerRef.getColumn()].second = pair.bindingsRef;
+      }
+      for (auto& [outerCol, sides] : bindingsByOuterCol) {
+         auto leftBindingsRef = sides.first;
+         auto rightBindingsRef = sides.second;
+         auto bindingsScope = columnManager.getUniqueScope("union_bindings");
+         auto name = columnManager.getName(outerCol).second;
+         mlir::Attribute leftEntry = leftBindingsRef ? static_cast<mlir::Attribute>(leftBindingsRef) : static_cast<mlir::Attribute>(mlir::UnitAttr::get(ctxt));
+         mlir::Attribute rightEntry = rightBindingsRef ? static_cast<mlir::Attribute>(rightBindingsRef) : static_cast<mlir::Attribute>(mlir::UnitAttr::get(ctxt));
+         auto fromExisting = mlir::ArrayAttr::get(ctxt, {leftEntry, rightEntry});
+         auto newDef = columnManager.createDef(bindingsScope, name, fromExisting);
+         mlir::Type newType = (leftBindingsRef ? leftBindingsRef : rightBindingsRef).getColumn().type;
+         if ((!leftBindingsRef || !rightBindingsRef) && !mlir::isa<db::NullableType>(newType)) {
+            newType = db::NullableType::get(ctxt, newType);
+         }
+         newDef.getColumn().type = newType;
+         mappingEntries.push_back(newDef);
+      }
+
+      mlir::OpBuilder builder(ctxt);
+      builder.setInsertionPoint(insertPoint);
+      auto relUnion = builder.create<relalg::UnionOp>(loc, relalg::SetSemanticAttr::get(ctxt, relalg::SetSemantic::all), leftStream, rightStream, mlir::ArrayAttr::get(ctxt, mappingEntries));
+      llvm::SmallPtrSet<mlir::Operation*, 32> preMergeOps;
+      collectSubtreeOps(leftStream, preMergeOps);
+      collectSubtreeOps(rightStream, preMergeOps);
+      remapColumnsEverywhere(relUnion.getOperation(), passthroughColMap, &preMergeOps);
+      return relUnion.getResult();
    }
    void isolateTriple(gpm::TriplePatternOp triple, mlir::Operation* insertBefore) {
       auto* ctxt = triple.getContext();
@@ -164,36 +336,30 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       triple.getRelMutable().set(namedGraph.getRes());
       triple->moveBefore(insertBefore);
    }
-   void foldIntoAccumulator(mlir::Value& stream, bool& first, mlir::Value elementStream, gpm::PatternKind elementKind, const relalg::ColumnSet& elementCreatedVars, mlir::Operation* insertBefore, mlir::Location loc) {
-      if (first) {
-         stream = elementStream;
-         first = false;
-         return;
-      }
-      mlir::OpBuilder builder(insertBefore->getContext());
-      builder.setInsertionPoint(insertBefore);
+   mlir::Value fold(mlir::Value accumulator, mlir::Value elementStream, gpm::PatternKind elementKind, const relalg::ColumnSet& elementCreatedVars, mlir::Location loc) {
+      if (!accumulator) return elementStream;
+      mlir::OpBuilder builder(insertPoint->getContext());
+      builder.setInsertionPoint(insertPoint);
       auto streamType = tuples::TupleStreamType::get(builder.getContext());
       if (elementKind == gpm::PatternKind::optional) {
          ColumnMapper nullableColMap;
          auto mapping = buildNullableMapping(builder, elementCreatedVars, nullableColMap);
-         auto join = builder.create<relalg::OuterJoinOp>(loc, streamType, stream, elementStream, mapping);
+         auto join = builder.create<relalg::OuterJoinOp>(loc, streamType, accumulator, elementStream, mapping);
          join.initPredicate();
-         addSharedVariablePredicate(join, stream, elementStream, loc);
-         stream = join.getResult();
+         addSharedVariablePredicate(join, accumulator, elementStream, loc);
          remapColumnsEverywhere(join.getOperation(), nullableColMap);
+         return join.getResult();
       }
-      else if (elementKind == gpm::PatternKind::minus) {
-         auto join = builder.create<relalg::AntiSemiJoinOp>(loc, streamType, stream, elementStream);
+      if (elementKind == gpm::PatternKind::minus) {
+         auto join = builder.create<relalg::AntiSemiJoinOp>(loc, streamType, accumulator, elementStream);
          join.initPredicate();
-         addSharedVariablePredicate(join, stream, elementStream, loc);
-         stream = join.getResult();
+         addSharedVariablePredicate(join, accumulator, elementStream, loc);
+         return join.getResult();
       }
-      else {
-         auto join = builder.create<relalg::InnerJoinOp>(loc, streamType, stream, elementStream);
-         join.initPredicate();
-         addSharedVariablePredicate(join, stream, elementStream, loc);
-         stream = join.getResult();
-      }
+      auto join = builder.create<relalg::InnerJoinOp>(loc, streamType, accumulator, elementStream);
+      join.initPredicate();
+      addSharedVariablePredicate(join, accumulator, elementStream, loc);
+      return join.getResult();
    }
    relalg::ColumnSet collectTripleVariables(mlir::Value v, llvm::SmallPtrSet<mlir::Operation*, 16>& visited) {
       relalg::ColumnSet result;
@@ -215,6 +381,14 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          result.insert(collectTripleVariables(outerJoin.getLeft(), visited));
          return result;
       }
+      if (auto unionOp = mlir::dyn_cast<relalg::UnionOp>(op)) {
+         for (auto mappingAttr : unionOp.getMapping()) {
+            result.insert(&mlir::cast<tuples::ColumnDefAttr>(mappingAttr).getColumn());
+         }
+         result.insert(collectTripleVariables(unionOp.getLeft(), visited));
+         result.insert(collectTripleVariables(unionOp.getRight(), visited));
+         return result;
+      }
       for (auto operand : op->getOperands()) {
          result.insert(collectTripleVariables(operand, visited));
       }
@@ -234,16 +408,18 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          collectTriples(operand, visited, result);
       }
    }
-   void addSharedVariablePredicate(PredicateOperator join, mlir::Value left, mlir::Value right, mlir::Location loc) {
-      auto* ctxt = join.getOperation()->getContext();
+   struct BindingPair {
+      tuples::ColumnRefAttr outerRef;
+      tuples::ColumnRefAttr bindingsRef;
+   };
+   llvm::SmallVector<BindingPair> ensureBindingsColumns(mlir::Value right, mlir::Location loc, llvm::function_ref<bool(const tuples::Column*)> needsBindings) {
+      auto* ctxt = right.getContext();
       auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-      llvm::SmallPtrSet<mlir::Operation*, 16> visitedLeft;
-      relalg::ColumnSet leftVars = collectTripleVariables(left, visitedLeft);
       llvm::SmallPtrSet<mlir::Operation*, 16> visitedRight;
       llvm::SmallVector<gpm::TriplePatternOp> rightTriples;
       collectTriples(right, visitedRight, rightTriples);
 
-      llvm::SmallVector<mlir::Attribute> leftHash, rightHash;
+      llvm::SmallVector<BindingPair> result;
       for (auto triple : rightTriples) {
          auto existingBindings = triple->getAttrOfType<mlir::DictionaryAttr>("bindings");
          llvm::SmallVector<mlir::NamedAttribute> bindings;
@@ -252,22 +428,22 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          }
          auto bnodeScope = triple->getAttrOfType<mlir::DictionaryAttr>("bnodeScope");
          for (auto [position, term] : {std::pair{"s", triple.getS()}, std::pair{"p", triple.getP()}, std::pair{"o", triple.getO()}}) {
-            tuples::ColumnRefAttr leftRef;
+            tuples::ColumnRefAttr outerRef;
             if (auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term)) {
                if (!varTerm.hasBinding()) continue;
-               leftRef = varTerm.getBindingReference();
+               outerRef = varTerm.getBindingReference();
             }
             else if (auto bnodeTerm = mlir::dyn_cast<gpm::BNodeTermAttr>(term)) {
                if (!bnodeScope) continue;
                auto entry = bnodeScope.get(bnodeTerm.getLocalId().getValue());
                if (!entry) continue;
-               leftRef = getBNodeScopeRef(entry, columnManager);
+               outerRef = getBNodeScopeRef(entry, columnManager);
             }
             else {
                continue;
             }
-            const auto* column = &leftRef.getColumn();
-            if (!leftVars.contains(column)) continue;
+            const auto* column = &outerRef.getColumn();
+            if (!needsBindings(column)) continue;
 
             tuples::ColumnRefAttr newRef;
             if (existingBindings) {
@@ -276,7 +452,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
                }
             }
             if (!newRef) {
-               auto fromExisting = mlir::ArrayAttr::get(ctxt, {leftRef});
+               auto fromExisting = mlir::ArrayAttr::get(ctxt, {outerRef});
                auto newDef = columnManager.createDef(columnManager.getUniqueScope("bindings"), position, fromExisting);
                newDef.getColumn().type = column->type;
                newRef = columnManager.createRef(newDef.getColumnPtr().get());
@@ -284,28 +460,57 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
                llvm::SmallPtrSet<mlir::Operation*, 16> visitedStale;
                fixStaleTripleColumnReferences(right, triple.getRes(), column, newRef, visitedStale);
             }
-
-            join.addPredicate([&](mlir::Value tuple, mlir::OpBuilder& builder) -> mlir::Value {
-               mlir::Value lhsVal = builder.create<tuples::GetColumnOp>(loc, leftRef.getColumn().type, leftRef, tuple);
-               mlir::Value rhsVal = builder.create<tuples::GetColumnOp>(loc, newRef.getColumn().type, newRef, tuple);
-               return builder.create<gpm::IdentifiersEqualOp>(loc, builder.getI1Type(), lhsVal, rhsVal);
-            });
-            leftHash.push_back(leftRef);
-            rightHash.push_back(newRef);
+            result.push_back({outerRef, newRef});
          }
          if (!bindings.empty()) {
             triple->setAttr("bindings", mlir::DictionaryAttr::get(ctxt, bindings));
          }
       }
-      if (leftHash.empty()) return;
+      return result;
+   }
+   void addSharedVariablePredicate(PredicateOperator join, mlir::Value left, mlir::Value right, mlir::Location loc) {
+      auto* ctxt = join.getOperation()->getContext();
+      auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      llvm::SmallPtrSet<mlir::Operation*, 16> visitedLeft;
+      relalg::ColumnSet leftVars = collectTripleVariables(left, visitedLeft);
+      auto pairs = ensureBindingsColumns(right, loc, [&](const tuples::Column* c) { return leftVars.contains(c); });
+      if (pairs.empty()) return;
+
+      ColumnMapper unionRemaps;
+      {
+         llvm::SmallPtrSet<mlir::Operation*, 16> visited;
+         collectOuterJoinRemaps(right, visited, unionRemaps);
+      }
+      auto resolveThroughUnion = [&](tuples::ColumnRefAttr ref) {
+         const tuples::Column* col = &ref.getColumn();
+         for (auto it = unionRemaps.find(col); it != unionRemaps.end(); it = unionRemaps.find(col)) {
+            col = it->second;
+         }
+         return col == &ref.getColumn() ? ref : columnManager.createRef(col);
+      };
+
+      llvm::SmallVector<mlir::Attribute> leftHash, rightHash;
+      bool anyThroughUnion = false;
+      for (auto& pair : pairs) {
+         auto bindingsRef = resolveThroughUnion(pair.bindingsRef);
+         if (&bindingsRef.getColumn() != &pair.bindingsRef.getColumn()) anyThroughUnion = true;
+         join.addPredicate([&](mlir::Value tuple, mlir::OpBuilder& builder) -> mlir::Value {
+            mlir::Value lhsVal = builder.create<tuples::GetColumnOp>(loc, pair.outerRef.getColumn().type, pair.outerRef, tuple);
+            mlir::Value rhsVal = builder.create<tuples::GetColumnOp>(loc, bindingsRef.getColumn().type, bindingsRef, tuple);
+            return builder.create<gpm::IdentifiersEqualOp>(loc, builder.getI1Type(), lhsVal, rhsVal);
+         });
+         leftHash.push_back(pair.outerRef);
+         rightHash.push_back(bindingsRef);
+      }
+      if (anyThroughUnion) return;
       join->setAttr("leftHash", mlir::ArrayAttr::get(ctxt, leftHash));
       join->setAttr("rightHash", mlir::ArrayAttr::get(ctxt, rightHash));
       join->setAttr("impl", mlir::StringAttr::get(ctxt, "hash"));
       join->setAttr("useHashJoin", mlir::UnitAttr::get(ctxt));
       llvm::SmallVector<mlir::Attribute> nullsEqual(leftHash.size(), mlir::IntegerAttr::get(mlir::IntegerType::get(ctxt, 8), 0));
       join->setAttr("nullsEqual", mlir::ArrayAttr::get(ctxt, nullsEqual));
-      // A special case of outer joining for SPARQL semantics. The outer join matches 'null' keys with any concrete value.
       llvm::SmallVector<mlir::Attribute> nullMatchesAll(leftHash.size(), mlir::IntegerAttr::get(mlir::IntegerType::get(ctxt, 8), 1));
+      // Special outer join semantics for null (unbound) handling
       join->setAttr("nullMatchesAll", mlir::ArrayAttr::get(ctxt, nullMatchesAll));
    }
    void fixStaleTripleColumnReferences(mlir::Value subtreeRoot, mlir::Value tripleResult, const tuples::Column* oldColumn, tuples::ColumnRefAttr newRef, llvm::SmallPtrSetImpl<mlir::Operation*>& visited) {
@@ -404,11 +609,18 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       }
       return attr;
    }
-   void remapColumnsEverywhere(mlir::Operation* skip, const ColumnMapper& colMap) {
+   void collectSubtreeOps(mlir::Value v, llvm::SmallPtrSetImpl<mlir::Operation*>& ops) {
+      auto* op = v.getDefiningOp();
+      if (!op || ops.contains(op)) return;
+      op->walk([&](mlir::Operation* nested) { ops.insert(nested); });
+      for (auto operand : op->getOperands()) collectSubtreeOps(operand, ops);
+   }
+   void remapColumnsEverywhere(mlir::Operation* skip, const ColumnMapper& colMap, const llvm::SmallPtrSetImpl<mlir::Operation*>* exclude = nullptr) {
       if (colMap.empty()) return;
       auto& columnManager = skip->getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
       getOperation()->walk([&](mlir::Operation* op) {
          if (op == skip) return;
+         if (exclude && exclude->contains(op)) return;
          bool changed = false;
          llvm::SmallVector<mlir::NamedAttribute> newAttrs;
          for (auto namedAttr : op->getAttrDictionary()) {

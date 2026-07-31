@@ -47,6 +47,7 @@ ParseResult parseCustRefArr(OpAsmParser& parser, ArrayAttr& attr) {
     attr = ArrayAttr::get(parser.getBuilder().getContext(), attributes);
     return success();
 }
+
 void printCustRefArr(OpAsmPrinter& p, mlir::Operation* op, ArrayAttr arrayAttr) {
     p << "[";
     std::vector<Attribute> attributes;
@@ -54,14 +55,12 @@ void printCustRefArr(OpAsmPrinter& p, mlir::Operation* op, ArrayAttr arrayAttr) 
     for (auto a : arrayAttr) {
         if (first) {
             first = false;
-        } 
-        else {
+        } else {
             p << ",";
         }
         if (auto parsedSymbolRefAttr = mlir::dyn_cast<tuples::ColumnRefAttr>(a)) {
             p << parsedSymbolRefAttr.getName();
-        } 
-        else {
+        } else {
             p << a;
         }
     }
