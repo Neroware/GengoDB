@@ -16,13 +16,13 @@ using namespace relalg;
 using namespace tuples;
 
 operator_list getChildOperators(mlir::Operation* parent) {
-   operator_list children;
-   for (auto operand : parent->getOperands()) {
-      if (auto childOperator = mlir::dyn_cast_or_null<GPMOperator>(operand.getDefiningOp())) {
-         children.push_back(childOperator);
-      }
-   }
-   return children;
+    operator_list children;
+    for (auto operand : parent->getOperands()) {
+        if (auto childOperator = mlir::dyn_cast_or_null<GPMOperator>(operand.getDefiningOp())) {
+            children.push_back(childOperator);
+        }
+    }
+    return children;
 }
 ColumnSet collectColumns(operator_list operators, std::function<relalg::ColumnSet(GPMOperator)> fn) {
     ColumnSet collected;
@@ -39,10 +39,10 @@ namespace gengodb::compiler::dialect::gpm::detail {
 using namespace lingodb::compiler::dialect::relalg;
 inline auto filterVariableTerms(mlir::Operation* op, bool isBound) {
     return llvm::make_filter_range(
-      op->getAttrs(), [isBound](mlir::NamedAttribute attr) {
-        auto v = mlir::dyn_cast<VariableTermAttr>(attr.getValue());
-        return v && (v.hasBinding() == isBound);
-      });
+        op->getAttrs(), [isBound](mlir::NamedAttribute attr) {
+            auto v = mlir::dyn_cast<VariableTermAttr>(attr.getValue());
+            return v && (v.hasBinding() == isBound);
+        });
 }
 ColumnSet getCreatedVariables(mlir::Operation* op) {
     ColumnSet columns;
@@ -72,34 +72,69 @@ ColumnSet getAvailableVariables(mlir::Operation* op) {
    return collected;
 }
 void moveSubTreeBefore(mlir::Operation* op, mlir::Operation* before) {
-   auto tree = mlir::dyn_cast_or_null<Operator>(op);
-   if (tree->isBeforeInBlock(before)) {
-      return;
-   }
-   tree->moveBefore(before);
-   for (auto child : tree.getChildren()) {
-      moveSubTreeBefore(child, tree);
-   }
+    auto tree = mlir::dyn_cast_or_null<Operator>(op);
+    if (tree->isBeforeInBlock(before)) {
+        return;
+    }
+    tree->moveBefore(before);
+    for (auto child : tree.getChildren()) {
+        moveSubTreeBefore(child, tree);
+    }
 }
 
 llvm::SmallVector<std::tuple<mlir::Attribute, mlir::Attribute, mlir::Attribute>, 16> getPatternTriples(mlir::Operation* op) {
-   llvm::SmallVector<std::tuple<mlir::Attribute, mlir::Attribute, mlir::Attribute>, 16> result;
-   auto patternOp = mlir::cast<GraphPatternOp>(op);
-   patternOp.getPattern().walk([&](gengodb::compiler::dialect::gpm::TriplePatternOp triple) {
-      result.push_back(std::make_tuple(triple.getS(), triple.getP(), triple.getO()));
-   });
-   return result;
+    llvm::SmallVector<std::tuple<mlir::Attribute, mlir::Attribute, mlir::Attribute>, 16> result;
+    auto patternOp = mlir::cast<GraphPatternOp>(op);
+    patternOp.getPattern().walk([&](gengodb::compiler::dialect::gpm::TriplePatternOp triple) {
+        result.push_back(std::make_tuple(triple.getS(), triple.getP(), triple.getO()));
+    });
+    return result;
+}
+
+inline bool isAllowedGraphPatternBodyOp(const mlir::Operation& nested) {
+    return mlir::isa<gengodb::compiler::dialect::gpm::TriplePatternOp,
+        gengodb::compiler::dialect::gpm::BasicGraphPatternOp,
+        gengodb::compiler::dialect::gpm::OptionalGraphPatternOp,
+        gengodb::compiler::dialect::gpm::BagOp, 
+        tuples::ReturnOp>(nested);
 }
 
 mlir::LogicalResult verifyGraphPatternBody(mlir::Operation* op) {
-   auto patternOp = mlir::cast<GraphPatternOp>(op);
-   bool valid = std::all_of(patternOp.getPattern().getOps().begin(), patternOp.getPattern().getOps().end(), [](const mlir::Operation& nested) {
-      return mlir::isa<gengodb::compiler::dialect::gpm::TriplePatternOp, gengodb::compiler::dialect::gpm::BasicGraphPatternOp, gengodb::compiler::dialect::gpm::OptionalGraphPatternOp, tuples::ReturnOp>(nested);
-   });
-   if (!valid) {
-      return op->emitOpError("A graph pattern must only contain triples or nested graph patterns.");
-   }
-   return mlir::success();
+    auto patternOp = mlir::cast<GraphPatternOp>(op);
+    bool valid = std::all_of(patternOp.getPattern().getOps().begin(), patternOp.getPattern().getOps().end(), isAllowedGraphPatternBodyOp);
+    if (!valid) {
+        return op->emitOpError("A graph pattern must only contain triples or nested graph patterns.");
+    }
+    return mlir::success();
+}
+
+mlir::LogicalResult verifyUnionMapping(mlir::Operation* op, mlir::ArrayAttr mapping) {
+    for (mlir::Attribute attr : mapping) {
+        auto colDef = mlir::dyn_cast<ColumnDefAttr>(attr);
+        if (!colDef) {
+            return op->emitOpError("mapping entries must be column definitions");
+        }
+        auto fromExisting = mlir::dyn_cast_or_null<mlir::ArrayAttr>(colDef.getFromExisting());
+        if (!fromExisting || fromExisting.size() != 2) {
+            return op->emitOpError("every mapping entry must be defined from exactly two (left, right) sources");
+        }
+        unsigned unitSides = 0;
+        for (mlir::Attribute side : fromExisting) {
+            if (mlir::isa<mlir::UnitAttr>(side)) {
+                unitSides++;
+            } 
+            else if (!mlir::isa<ColumnRefAttr>(side)) {
+                return op->emitOpError("a mapping entry's source must be a column reference or unit");
+            }
+        }
+        if (unitSides == 2) {
+            return op->emitOpError("a mapping entry must be bound by at least one branch");
+        }
+        if (unitSides == 1 && !mlir::isa<lingodb::compiler::dialect::db::NullableType>(colDef.getColumn().type)) {
+            return op->emitOpError("a mapping entry bound by only one branch must be nullable");
+        }
+    }
+    return mlir::success();
 }
 
 } // namespace gengodb::compiler::dialect::gpm::detail
@@ -230,6 +265,38 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::OptionalGraphPatternOp::getAv
     return available;
 }
 bool gpm::OptionalGraphPatternOp::canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column) {
+    return lingodb::compiler::dialect::relalg::detail::canColumnReach(getOperation(), source, target, column);
+}
+
+lingodb::compiler::dialect::relalg::ColumnSet gpm::BagOp::getCreatedVariables() {
+    return getCreatedColumns();
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::BagOp::getUsedVariables() {
+    return getUsedColumns();
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::BagOp::getCreatedColumns() {
+    lingodb::compiler::dialect::relalg::ColumnSet res;
+    for (auto attr : getMapping()) {
+        res.insert(mlir::cast<tuples::ColumnDefAttr>(attr).getColumnPtr().get());
+    }
+    return res;
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::BagOp::getUsedColumns() {
+    lingodb::compiler::dialect::relalg::ColumnSet used;
+    for (auto attr : getMapping()) {
+        auto fromExisting = mlir::cast<mlir::ArrayAttr>(mlir::cast<tuples::ColumnDefAttr>(attr).getFromExisting());
+        for (auto side : fromExisting) {
+            if (auto ref = mlir::dyn_cast<tuples::ColumnRefAttr>(side)) {
+                used.insert(ref.getColumnPtr().get());
+            }
+        }
+    }
+    return used;
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::BagOp::getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache&) {
+    return getCreatedColumns();
+}
+bool gpm::BagOp::canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column) {
     return lingodb::compiler::dialect::relalg::detail::canColumnReach(getOperation(), source, target, column);
 }
 
