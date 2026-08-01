@@ -441,6 +441,7 @@ class RelAlg_BinarySetOp<string mnemonic> : RelAlg_Op<mnemonic,
 
 def UnionOp : RelAlg_BinarySetOp<"union"> {
     let summary = "union operation";
+    let hasVerifier = 1;
 }
 
 def IntersectOp : RelAlg_BinarySetOp<"intersect"> {

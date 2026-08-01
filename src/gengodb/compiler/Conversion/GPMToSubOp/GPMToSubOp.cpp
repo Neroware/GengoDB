@@ -543,6 +543,29 @@ static void refreshNullableTypes(ModuleOp module) {
          defAttr.getColumn().type = newType;
       }
    });
+   module.walk([&](relalg::UnionOp unionOp) {
+      for (mlir::Attribute attr : unionOp.getMapping()) {
+         auto defAttr = mlir::cast<tuples::ColumnDefAttr>(attr);
+         auto fromExisting = mlir::cast<mlir::ArrayAttr>(defAttr.getFromExisting());
+         bool nullable = false;
+         mlir::Type mergedType;
+         for (mlir::Attribute side : fromExisting) {
+            auto sourceRef = mlir::dyn_cast<tuples::ColumnRefAttr>(side);
+            if (!sourceRef) {
+               nullable = true;
+               continue;
+            }
+            mlir::Type sideType = sourceRef.getColumn().type;
+            if (auto nullableType = mlir::dyn_cast<db::NullableType>(sideType)) {
+               nullable = true;
+               sideType = nullableType.getType();
+            }
+            if (!mergedType) mergedType = sideType;
+         }
+         if (!mergedType) continue;
+         defAttr.getColumn().type = nullable ? db::NullableType::get(module->getContext(), mergedType) : mergedType;
+      }
+   });
 }
 
 void GPMToSubOpLoweringPass::runOnOperation() {

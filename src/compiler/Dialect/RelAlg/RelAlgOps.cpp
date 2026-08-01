@@ -367,6 +367,27 @@ void relalg::BaseTableOp::print(OpAsmPrinter& p) {
    }
    return mlir::success();
 }
+::mlir::LogicalResult relalg::UnionOp::verify() {
+   for (mlir::Attribute attr : getMapping()) {
+      auto colDef = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(attr);
+      if (!colDef) {
+         emitError("union mapping entries must be column definitions");
+         return mlir::failure();
+      }
+      auto fromExisting = mlir::dyn_cast_or_null<mlir::ArrayAttr>(colDef.getFromExisting());
+      if (!fromExisting || fromExisting.size() != 2) {
+         emitError("union mapping entry must reference exactly one column per side (a UnitAttr placeholder if missing)");
+         return mlir::failure();
+      }
+      bool leftPresent = mlir::isa<tuples::ColumnRefAttr>(fromExisting[0]);
+      bool rightPresent = mlir::isa<tuples::ColumnRefAttr>(fromExisting[1]);
+      if ((!leftPresent || !rightPresent) && !mlir::isa<db::NullableType>(colDef.getColumn().type)) {
+         emitError("union mapping entry missing on one side must have a nullable output column type");
+         return mlir::failure();
+      }
+   }
+   return mlir::success();
+}
 
 ::mlir::ParseResult relalg::NestedOp::parse(::mlir::OpAsmParser& parser, ::mlir::OperationState& result) {
    llvm::SmallVector<mlir::OpAsmParser::UnresolvedOperand> inputs;
