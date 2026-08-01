@@ -473,6 +473,12 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       return success();
    }
 };
+// TODO move into custom pass
+static bool isStaleRefOperand(mlir::Value operand) {
+   auto getColOp = mlir::dyn_cast_or_null<tuples::GetColumnOp>(operand.getDefiningOp());
+   if (!getColOp) return false;
+   return getColOp.getAttr().getColumn().type != operand.getType();
+}
 class GpmIdentifiersEqualLowering : public OpConversionPattern<gpm::IdentifiersEqualOp> {
    public:
    using OpConversionPattern<gpm::IdentifiersEqualOp>::OpConversionPattern;
@@ -490,12 +496,6 @@ class GpmIdentifiersEqualLowering : public OpConversionPattern<gpm::IdentifiersE
       return success();
    }
 };
-
-static bool isStaleRefOperand(mlir::Value operand) {
-   auto getColOp = mlir::dyn_cast_or_null<tuples::GetColumnOp>(operand.getDefiningOp());
-   if (!getColOp) return false;
-   return getColOp.getAttr().getColumn().type != operand.getType();
-}
 static mlir::Value refreshStaleRefOperand(mlir::Value operand, ConversionPatternRewriter& rewriter) {
    auto getColOp = mlir::dyn_cast_or_null<tuples::GetColumnOp>(operand.getDefiningOp());
    if (!getColOp) return operand;
@@ -532,58 +532,59 @@ class XsdLiteralOfRefRefreshLowering : public OpConversionPattern<xsd::LiteralOf
    }
 };
 
-static void refreshNullableTypes(ModuleOp module) {
-   module.walk([&](relalg::OuterJoinOp outerJoinOp) {
-      for (mlir::Attribute attr : outerJoinOp.getMapping()) {
-         auto defAttr = mlir::cast<tuples::ColumnDefAttr>(attr);
-         auto fromExisting = mlir::cast<mlir::ArrayAttr>(defAttr.getFromExisting());
-         auto sourceRef = mlir::cast<tuples::ColumnRefAttr>(fromExisting[0]);
-         mlir::Type innerType = sourceRef.getColumn().type;
-         mlir::Type newType = mlir::isa<db::NullableType>(innerType) ? innerType : db::NullableType::get(module->getContext(), innerType);
-         defAttr.getColumn().type = newType;
-      }
-   });
-   module.walk([&](relalg::UnionOp unionOp) {
-      for (mlir::Attribute attr : unionOp.getMapping()) {
-         auto defAttr = mlir::cast<tuples::ColumnDefAttr>(attr);
-         auto fromExisting = mlir::cast<mlir::ArrayAttr>(defAttr.getFromExisting());
-         bool nullable = false;
-         mlir::Type mergedType;
-         for (mlir::Attribute side : fromExisting) {
-            auto sourceRef = mlir::dyn_cast<tuples::ColumnRefAttr>(side);
-            if (!sourceRef) {
-               nullable = true;
-               continue;
-            }
-            mlir::Type sideType = sourceRef.getColumn().type;
-            if (auto nullableType = mlir::dyn_cast<db::NullableType>(sideType)) {
-               nullable = true;
-               sideType = nullableType.getType();
-            }
-            if (!mergedType) mergedType = sideType;
+static void refreshOuterJoinMappingTypes(relalg::OuterJoinOp outerJoinOp) {
+   for (mlir::Attribute attr : outerJoinOp.getMapping()) {
+      auto defAttr = mlir::cast<tuples::ColumnDefAttr>(attr);
+      auto fromExisting = mlir::cast<mlir::ArrayAttr>(defAttr.getFromExisting());
+      auto sourceRef = mlir::cast<tuples::ColumnRefAttr>(fromExisting[0]);
+      mlir::Type innerType = sourceRef.getColumn().type;
+      mlir::Type newType = mlir::isa<db::NullableType>(innerType) ? innerType : db::NullableType::get(outerJoinOp.getContext(), innerType);
+      defAttr.getColumn().type = newType;
+   }
+}
+static void refreshUnionMappingTypes(relalg::UnionOp unionOp) {
+   for (mlir::Attribute attr : unionOp.getMapping()) {
+      auto defAttr = mlir::cast<tuples::ColumnDefAttr>(attr);
+      auto fromExisting = mlir::cast<mlir::ArrayAttr>(defAttr.getFromExisting());
+      bool nullable = false;
+      mlir::Type mergedType;
+      for (mlir::Attribute side : fromExisting) {
+         auto sourceRef = mlir::dyn_cast<tuples::ColumnRefAttr>(side);
+         if (!sourceRef) {
+            nullable = true;
+            continue;
          }
-         if (!mergedType) continue;
-         defAttr.getColumn().type = nullable ? db::NullableType::get(module->getContext(), mergedType) : mergedType;
+         mlir::Type sideType = sourceRef.getColumn().type;
+         if (auto nullableType = mlir::dyn_cast<db::NullableType>(sideType)) {
+            nullable = true;
+            sideType = nullableType.getType();
+         }
+         if (!mergedType) mergedType = sideType;
+      }
+      if (!mergedType) continue;
+      defAttr.getColumn().type = nullable ? db::NullableType::get(unionOp.getContext(), mergedType) : mergedType;
+   }
+}
+static void refreshNullableTypes(ModuleOp module) {
+   module.walk([&](mlir::Operation* op) {
+      if (auto outerJoinOp = mlir::dyn_cast<relalg::OuterJoinOp>(op)) {
+         refreshOuterJoinMappingTypes(outerJoinOp);
+      } 
+      else if (auto unionOp = mlir::dyn_cast<relalg::UnionOp>(op)) {
+         refreshUnionMappingTypes(unionOp);
       }
    });
 }
 
-void GPMToSubOpLoweringPass::runOnOperation() {
-   auto module = getOperation();
-   getContext().getLoadedDialect<util::UtilDialect>()->getFunctionHelper().setParentModule(module);
-
-   // Define Conversion Target
-   ConversionTarget target(getContext());
+static void addCommonLegalDialects(ConversionTarget& target) {
    target.addLegalDialect<gpu::GPUDialect>();
    target.addLegalDialect<async::AsyncDialect>();
    target.addLegalOp<ModuleOp>();
    target.addLegalOp<UnrealizedConversionCastOp>();
-   target.addIllegalDialect<gpm::GPMDialect>();
    target.addLegalDialect<subop::SubOperatorDialect>();
    target.addLegalDialect<gsubop::GraphSubOpDialect>();
    target.addLegalDialect<db::DBDialect>();
    target.addLegalDialect<lingodb::compiler::dialect::arrow::ArrowDialect>();
-
    target.addLegalDialect<relalg::RelAlgDialect>();
    target.addLegalDialect<tuples::TupleStreamDialect>();
    target.addLegalDialect<func::FuncDialect>();
@@ -593,38 +594,64 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    target.addLegalDialect<scf::SCFDialect>();
    target.addLegalDialect<util::UtilDialect>();
    target.addLegalDialect<xsd::XSDDialect>();
-   target.addDynamicallyLegalOp<xsd::CompareOp>([](xsd::CompareOp op) {
-      return !isStaleRefOperand(op.getLhs()) && !isStaleRefOperand(op.getRhs());
-   });
-   target.addDynamicallyLegalOp<xsd::CompareLiteralOp>([](xsd::CompareLiteralOp op) {
-      return !isStaleRefOperand(op.getLhs());
-   });
-   target.addDynamicallyLegalOp<xsd::LiteralOfRefOp>([](xsd::LiteralOfRefOp op) {
-      return !isStaleRefOperand(op.getRef());
-   });
+}
+
+void GPMToSubOpLoweringPass::runOnOperation() {
+   auto module = getOperation();
+   getContext().getLoadedDialect<util::UtilDialect>()->getFunctionHelper().setParentModule(module);
 
    TypeConverter typeConverter;
    typeConverter.addConversion([](tuples::TupleStreamType t) { return t; });
    typeConverter.addConversion([](mlir::Type t) { return t; });
    auto* ctxt = &getContext();
    ctxt->loadDialect<gsubop::GraphSubOpDialect>();
-   RewritePatternSet patterns(ctxt);
 
    NamedGraphMapper graphs;
    ExternalGraphMapper externalGraphs;
 
-   patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs, externalGraphs);
-   patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs);
-   patterns.insert<GpmIdentifiersEqualLowering>(typeConverter, ctxt);
-   patterns.insert<XsdCompareRefreshLowering>(typeConverter, ctxt);
-   patterns.insert<XsdCompareLiteralRefreshLowering>(typeConverter, ctxt);
-   patterns.insert<XsdLiteralOfRefRefreshLowering>(typeConverter, ctxt);
+   {
+      ConversionTarget target(getContext());
+      addCommonLegalDialects(target);
+      target.addLegalDialect<gpm::GPMDialect>();
+      target.addIllegalOp<gpm::NamedGraphOp, gpm::TriplePatternOp>();
 
-   if (failed(applyFullConversion(module, target, std::move(patterns)))) {
-      signalPassFailure();
-      return;
+      RewritePatternSet patterns(ctxt);
+      patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs, externalGraphs);
+      patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs);
+
+      if (failed(applyFullConversion(module, target, std::move(patterns)))) {
+         signalPassFailure();
+         return;
+      }
    }
+
    refreshNullableTypes(module);
+
+   {
+      ConversionTarget target(getContext());
+      addCommonLegalDialects(target);
+      target.addIllegalDialect<gpm::GPMDialect>();
+      target.addDynamicallyLegalOp<xsd::CompareOp>([](xsd::CompareOp op) {
+         return !isStaleRefOperand(op.getLhs()) && !isStaleRefOperand(op.getRhs());
+      });
+      target.addDynamicallyLegalOp<xsd::CompareLiteralOp>([](xsd::CompareLiteralOp op) {
+         return !isStaleRefOperand(op.getLhs());
+      });
+      target.addDynamicallyLegalOp<xsd::LiteralOfRefOp>([](xsd::LiteralOfRefOp op) {
+         return !isStaleRefOperand(op.getRef());
+      });
+
+      RewritePatternSet patterns(ctxt);
+      patterns.insert<GpmIdentifiersEqualLowering>(typeConverter, ctxt);
+      patterns.insert<XsdCompareRefreshLowering>(typeConverter, ctxt);
+      patterns.insert<XsdCompareLiteralRefreshLowering>(typeConverter, ctxt);
+      patterns.insert<XsdLiteralOfRefRefreshLowering>(typeConverter, ctxt);
+
+      if (failed(applyFullConversion(module, target, std::move(patterns)))) {
+         signalPassFailure();
+         return;
+      }
+   }
 }
 } // namespace
 std::unique_ptr<mlir::Pass>

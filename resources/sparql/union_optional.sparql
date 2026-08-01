@@ -11,3 +11,4 @@ SELECT ?who ?what ?age
         }
     }
 }
+ORDER BY ?what
