@@ -6,7 +6,7 @@
 
 
 # GengoDB
-GengoDB is a fork of [LingoDB](https://www.lingo-db.com), a cutting-edge data processing system that leverages compiler technology to achieve unprecedented flexibility and extensibility without sacrificing performance. THis project extends the existing relational model by RDF knowledge graphs and a SPARQL frontend, powered by a native property graph runtime and declarative sub-operators for universal graph state processing.
+GengoDB is a fork of [LingoDB](https://www.lingo-db.com), a cutting-edge data processing system that leverages compiler technology to achieve unprecedented flexibility and extensibility without sacrificing performance. This project extends the existing relational model by RDF knowledge graphs and a SPARQL frontend, powered by a native property graph runtime and declarative sub-operators for universal graph state processing.
 
 # Getting Started
 We refer to LingoDB's [documentation website](https://www.lingo-db.com/docs/) for set-up instructions.
@@ -14,7 +14,9 @@ We refer to LingoDB's [documentation website](https://www.lingo-db.com/docs/) fo
 2. Install [rdf4cpp 0.1.13](https://github.com/tentris/rdf4cpp/releases/tag/v0.1.13).
 3. Use the too `gen-rdf-catalog` to generate the `db.lingodb` from Turtle files.
 4. Run SPARQL queries with `run-sparql <SPARQL_FILE> <DB_DIR>`.
-We also provide a Dockerfile with all rewuired dependencies:
+
+We also provide a Dockerfile with all required dependencies:
+
 1. Run `build.sh` to build the Docker image.
 2. Run `eval "$(ssh-agent -s) && ssh-add <SSH_KEY>`.
 3. Run `run.sh` to launch a dev container.
@@ -29,7 +31,7 @@ This project is an extension of LingoDB for scientific purposes. Its goal is to 
 As of now, we work towards implementing all required functionality for the [Berlin SPARQL Benchmark (BSBM)](http://wbsg.informatik.uni-mannheim.de/bizer/berlinsparqlbenchmark/) to finally get proper numbers out!
 - Making the BSBM queries runnable.
 - Indexing of bound variables in triple patterns to avoid expensive joins.
-- `Variant` dialect expressing variant typing for RDF term bindings (currently variables can only be bound to graph node refs)
+- `Variant` dialect expressing variant typing for RDF term bindings and type inference (currently variables can only be bound to graph node refs).
 
 ## Future work
 The following future work is currently considered/planned:
