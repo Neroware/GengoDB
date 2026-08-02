@@ -57,6 +57,13 @@ class CreateInFlightOps : public mlir::RewritePattern {
                 mapper.map(op->getOperand(1), inFlight.getRes());
             }
         }
+        else if (auto tmpOp = mlir::dyn_cast_or_null<relalg::TmpOp>(op)) {
+            auto producer = tmpOp.getRel().getDefiningOp();
+            if (isRelalg(producer))
+                return mlir::failure();
+            auto inFlight = rewriter.create<relalg::InFlightOp>(op->getLoc(), tmpOp.getRel(), computeColumns(producer));
+            mapper.map(op->getOperand(0), inFlight.getRes());
+        }
         else {
             return mlir::failure();
         }

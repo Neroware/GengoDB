@@ -662,6 +662,13 @@ static mlir::Value mapColsToNull(mlir::Value stream, mlir::OpBuilder& rewriter, 
    mapOp.getFn().push_back(mapBlock);
    return mapOp.getResult();
 }
+static bool isGraphRefType(mlir::Type type) {
+   return mlir::isa<gsubop::NodeRefType>(type) || mlir::isa<gsubop::EdgeRefType>(type) || mlir::isa<gsubop::PropertyRefType>(type);
+}
+static bool isNullableGraphRefType(mlir::Type type) {
+   auto nullable = mlir::dyn_cast<db::NullableType>(type);
+   return nullable && (mlir::isa<gsubop::NodeRefType>(nullable.getType()) || mlir::isa<gsubop::EdgeRefType>(nullable.getType()));
+}
 static mlir::Value mapColsToNullable(mlir::Value stream, mlir::OpBuilder& rewriter, mlir::Location loc, mlir::ArrayAttr mapping, size_t exisingOffset = 0, relalg::ColumnSet excluded = {}) {
    auto& colManager = rewriter.getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
    std::vector<mlir::Attribute> defAttrs;
@@ -671,11 +678,26 @@ static mlir::Value mapColsToNullable(mlir::Value stream, mlir::OpBuilder& rewrit
       for (mlir::Attribute attr : mapping) {
          auto relationDefAttr = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(attr);
          auto* defAttr = &relationDefAttr.getColumn();
-         auto fromExisting = mlir::cast<tuples::ColumnRefAttr>(mlir::cast<mlir::ArrayAttr>(relationDefAttr.getFromExisting())[exisingOffset]);
+         auto fromExisting = mlir::dyn_cast_or_null<tuples::ColumnRefAttr>(mlir::cast<mlir::ArrayAttr>(relationDefAttr.getFromExisting())[exisingOffset]);
+         if (!fromExisting) {
+            mlir::Value value = rewriter.create<db::NullOp>(loc, defAttr->type);
+            res.push_back(value);
+            defAttrs.push_back(colManager.createDef(defAttr));
+            continue;
+         }
          if (excluded.contains(&fromExisting.getColumn())) continue;
          mlir::Value value = helper.access(fromExisting, loc);
          if (fromExisting.getColumn().type != defAttr->type) {
-            mlir::Value tmp = rewriter.create<db::AsNullableOp>(loc, defAttr->type, value);
+            mlir::Value tmp;
+            if (isNullableGraphRefType(value.getType())) {
+               tmp = value;
+            }
+            else if (isGraphRefType(value.getType())) {
+               tmp = rewriter.create<gsubop::WrapNullableRefOp>(loc, db::NullableType::get(rewriter.getContext(), value.getType()), value);
+            }
+            else {
+               tmp = rewriter.create<db::AsNullableOp>(loc, defAttr->type, value);
+            }
             value = tmp;
          }
          res.push_back(value);

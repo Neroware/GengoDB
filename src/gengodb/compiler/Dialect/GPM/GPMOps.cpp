@@ -17,45 +17,54 @@ using namespace gengodb::compiler::dialect;
 namespace {
 using namespace lingodb::compiler::dialect;
 tuples::ColumnManager& getColumnManager(::mlir::OpAsmParser& parser) {
-   return parser.getBuilder().getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+    return parser.getBuilder().getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
 }
 ParseResult parseCustRef(OpAsmParser& parser, tuples::ColumnRefAttr& attr) {
-   ::mlir::SymbolRefAttr parsedSymbolRefAttr;
-   if (parser.parseAttribute(parsedSymbolRefAttr, parser.getBuilder().getType<::mlir::NoneType>())) { return failure(); }
-   attr = getColumnManager(parser).createRef(parsedSymbolRefAttr);
-   return success();
+    ::mlir::SymbolRefAttr parsedSymbolRefAttr;
+    if (parser.parseAttribute(parsedSymbolRefAttr, parser.getBuilder().getType<::mlir::NoneType>())) { return failure(); }
+    attr = getColumnManager(parser).createRef(parsedSymbolRefAttr);
+    return success();
 }
 void printCustRef(OpAsmPrinter& p, mlir::Operation* op, tuples::ColumnRefAttr attr) {
-   p << attr.getName();
+    p << attr.getName();
 }
 ParseResult parseCustRefArr(OpAsmParser& parser, ArrayAttr& attr) {
-   ArrayAttr parsedAttr;
-   std::vector<Attribute> attributes;
-   if (parser.parseAttribute(parsedAttr, parser.getBuilder().getType<::mlir::NoneType>())) {
-      return failure();
-   }
-   for (auto a : parsedAttr) {
-      SymbolRefAttr parsedSymbolRefAttr = mlir::dyn_cast<SymbolRefAttr>(a);
-      tuples::ColumnRefAttr attr = getColumnManager(parser).createRef(parsedSymbolRefAttr);
-      attributes.push_back(attr);
-   }
-   attr = ArrayAttr::get(parser.getBuilder().getContext(), attributes);
-   return success();
+    ArrayAttr parsedAttr;
+    std::vector<Attribute> attributes;
+    if (parser.parseAttribute(parsedAttr, parser.getBuilder().getType<::mlir::NoneType>())) {
+        return failure();
+    }
+    for (auto a : parsedAttr) {
+        if (mlir::isa<UnitAttr>(a)) {
+            attributes.push_back(a);
+            continue;
+        }
+        SymbolRefAttr parsedSymbolRefAttr = mlir::dyn_cast<SymbolRefAttr>(a);
+        if (!parsedSymbolRefAttr) return failure();
+        tuples::ColumnRefAttr attr = getColumnManager(parser).createRef(parsedSymbolRefAttr);
+        attributes.push_back(attr);
+    }
+    attr = ArrayAttr::get(parser.getBuilder().getContext(), attributes);
+    return success();
 }
+
 void printCustRefArr(OpAsmPrinter& p, mlir::Operation* op, ArrayAttr arrayAttr) {
-   p << "[";
-   std::vector<Attribute> attributes;
-   bool first = true;
-   for (auto a : arrayAttr) {
-      if (first) {
-         first = false;
-      } else {
-         p << ",";
-      }
-      tuples::ColumnRefAttr parsedSymbolRefAttr = mlir::dyn_cast<tuples::ColumnRefAttr>(a);
-      p << parsedSymbolRefAttr.getName();
-   }
-   p << "]";
+    p << "[";
+    std::vector<Attribute> attributes;
+    bool first = true;
+    for (auto a : arrayAttr) {
+        if (first) {
+            first = false;
+        } else {
+            p << ",";
+        }
+        if (auto parsedSymbolRefAttr = mlir::dyn_cast<tuples::ColumnRefAttr>(a)) {
+            p << parsedSymbolRefAttr.getName();
+        } else {
+            p << a;
+        }
+    }
+    p << "]";
 }
 ParseResult parseBinding(OpAsmParser& parser, mlir::Attribute& result) {
     SymbolRefAttr attrSymbolAttr;
@@ -81,38 +90,68 @@ ParseResult parseBinding(OpAsmParser& parser, mlir::Attribute& result) {
     return success();
 }
 ParseResult parseCustDef(OpAsmParser& parser, tuples::ColumnDefAttr& attr) {
-   SymbolRefAttr attrSymbolAttr;
-   if (parser.parseAttribute(attrSymbolAttr, parser.getBuilder().getType<::mlir::NoneType>())) { return failure(); }
-   std::string attrName(attrSymbolAttr.getLeafReference().getValue());
-   if (parser.parseLParen()) { return failure(); }
-   DictionaryAttr dictAttr;
-   if (parser.parseAttribute(dictAttr)) { return failure(); }
-   mlir::ArrayAttr fromExisting;
-   if (parser.parseRParen()) { return failure(); }
-   if (parser.parseOptionalEqual().succeeded()) {
-      if (parseCustRefArr(parser, fromExisting)) {
-         return failure();
-      }
-   }
-   parser.getContext()->getOrLoadDialect<tuples::TupleStreamDialect>();
-   attr = getColumnManager(parser).createDef(attrSymbolAttr, fromExisting);
-   auto propType = mlir::dyn_cast<TypeAttr>(dictAttr.get("type")).getValue();
-   attr.getColumn().type = propType;
-   return success();
+    SymbolRefAttr attrSymbolAttr;
+    if (parser.parseAttribute(attrSymbolAttr, parser.getBuilder().getType<::mlir::NoneType>())) { return failure(); }
+    std::string attrName(attrSymbolAttr.getLeafReference().getValue());
+    if (parser.parseLParen()) { return failure(); }
+    DictionaryAttr dictAttr;
+    if (parser.parseAttribute(dictAttr)) { return failure(); }
+    mlir::ArrayAttr fromExisting;
+    if (parser.parseRParen()) { return failure(); }
+    if (parser.parseOptionalEqual().succeeded()) {
+        if (parseCustRefArr(parser, fromExisting)) {
+            return failure();
+        }
+    }
+    parser.getContext()->getOrLoadDialect<tuples::TupleStreamDialect>();
+    attr = getColumnManager(parser).createDef(attrSymbolAttr, fromExisting);
+    auto propType = mlir::dyn_cast<TypeAttr>(dictAttr.get("type")).getValue();
+    attr.getColumn().type = propType;
+    return success();
 }
 void printCustDef(OpAsmPrinter& p, mlir::Operation* op, tuples::ColumnDefAttr attr) {
-   p << attr.getName();
-   std::vector<mlir::NamedAttribute> relAttrDefProps;
-   MLIRContext* context = attr.getContext();
-   const tuples::Column& relationalAttribute = attr.getColumn();
-   relAttrDefProps.push_back({mlir::StringAttr::get(context, "type"), mlir::TypeAttr::get(relationalAttribute.type)});
-   p << "(" << mlir::DictionaryAttr::get(context, relAttrDefProps) << ")";
-   Attribute fromExisting = attr.getFromExisting();
-   if (fromExisting) {
-      ArrayAttr fromExistingArr = mlir::dyn_cast_or_null<ArrayAttr>(fromExisting);
-      p << "=";
-      printCustRefArr(p, op, fromExistingArr);
-   }
+    p << attr.getName();
+    std::vector<mlir::NamedAttribute> relAttrDefProps;
+    MLIRContext* context = attr.getContext();
+    const tuples::Column& relationalAttribute = attr.getColumn();
+    relAttrDefProps.push_back({mlir::StringAttr::get(context, "type"), mlir::TypeAttr::get(relationalAttribute.type)});
+    p << "(" << mlir::DictionaryAttr::get(context, relAttrDefProps) << ")";
+    Attribute fromExisting = attr.getFromExisting();
+    if (fromExisting) {
+        ArrayAttr fromExistingArr = mlir::dyn_cast_or_null<ArrayAttr>(fromExisting);
+        p << "=";
+        printCustRefArr(p, op, fromExistingArr);
+    }
+}
+ParseResult parseCustAttrMapping(OpAsmParser& parser, ArrayAttr& res) {
+    if (parser.parseKeyword("mapping") || parser.parseColon() || parser.parseLBrace()) return failure();
+    std::vector<mlir::Attribute> mapping;
+    while (true) {
+        if (!parser.parseOptionalRBrace()) { break; }
+        tuples::ColumnDefAttr attrDefAttr;
+        if (parseCustDef(parser, attrDefAttr)) {
+            return failure();
+        }
+        mapping.push_back(attrDefAttr);
+        if (!parser.parseOptionalComma()) { continue; }
+        if (parser.parseRBrace()) { return failure(); }
+        break;
+    }
+    res = mlir::ArrayAttr::get(parser.getBuilder().getContext(), mapping);
+    return success();
+}
+void printCustAttrMapping(OpAsmPrinter& p, mlir::Operation* op, Attribute mapping) {
+    p << " mapping: {";
+    auto first = true;
+    for (auto attr : mlir::cast<ArrayAttr>(mapping)) {
+        if (first) {
+            first = false;
+        } else {
+            p << ", ";
+        }
+        printCustDef(p, op, mlir::cast<tuples::ColumnDefAttr>(attr));
+    }
+    p << "}";
 }
 ParseResult parseTerm(OpAsmParser& parser, mlir::Attribute& attr) {
     auto ctxt = parser.getContext();
@@ -167,43 +206,43 @@ void printTerm(OpAsmPrinter& p, mlir::Operation* op, mlir::Attribute attr) {
         });
 }
 ParseResult parseCustRegion(OpAsmParser& parser, Region& result) {
-   OpAsmParser::Argument predArgument;
-   SmallVector<OpAsmParser::Argument, 4> regionArgs;
-   SmallVector<Type, 4> argTypes;
-   if (parser.parseLParen()) {
-      return failure();
-   }
-   while (true) {
-      Type predArgType;
-      if (!parser.parseOptionalRParen()) {
-         break;
-      }
-      if (parser.parseArgument(predArgument) || parser.parseColonType(predArgType)) {
-         return failure();
-      }
-      predArgument.type = predArgType;
-      regionArgs.push_back(predArgument);
-      if (!parser.parseOptionalComma()) { continue; }
-      if (parser.parseRParen()) { return failure(); }
-      break;
-   }
+    OpAsmParser::Argument predArgument;
+    SmallVector<OpAsmParser::Argument, 4> regionArgs;
+    SmallVector<Type, 4> argTypes;
+    if (parser.parseLParen()) {
+        return failure();
+    }
+    while (true) {
+        Type predArgType;
+        if (!parser.parseOptionalRParen()) {
+            break;
+        }
+        if (parser.parseArgument(predArgument) || parser.parseColonType(predArgType)) {
+            return failure();
+        }
+        predArgument.type = predArgType;
+        regionArgs.push_back(predArgument);
+        if (!parser.parseOptionalComma()) { continue; }
+        if (parser.parseRParen()) { return failure(); }
+        break;
+    }
 
-   if (parser.parseRegion(result, regionArgs)) return failure();
-   return success();
+    if (parser.parseRegion(result, regionArgs)) return failure();
+    return success();
 }
 void printCustRegion(OpAsmPrinter& p, Operation* op, Region& r) {
-   p << "(";
-   bool first = true;
-   for (auto arg : r.front().getArguments()) {
-      if (first) {
-         first = false;
-      } else {
-         p << ",";
-      }
-      p << arg << ": " << arg.getType();
-   }
-   p << ")";
-   p.printRegion(r, false, true);
+    p << "(";
+    bool first = true;
+    for (auto arg : r.front().getArguments()) {
+        if (first) {
+            first = false;
+        } else {
+            p << ",";
+        }
+        p << arg << ": " << arg.getType();
+    }
+    p << ")";
+    p.printRegion(r, false, true);
 }
 } // namespace
 
@@ -234,6 +273,9 @@ void printCustRegion(OpAsmPrinter& p, Operation* op, Region& r) {
 }
 ::mlir::LogicalResult gpm::OptionalGraphPatternOp::verify() {
     return gpm::detail::verifyGraphPatternBody(getOperation());
+}
+::mlir::LogicalResult gpm::BagOp::verify() {
+    return gpm::detail::verifyUnionMapping(getOperation(), getMapping());
 }
 
 #define GET_OP_CLASSES

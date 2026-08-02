@@ -506,7 +506,8 @@ class Pushdown : public mlir::PassWrapper<Pushdown, mlir::OperationPass<mlir::fu
                           std::unordered_map<const tuples::Column*, const tuples::Column*> colMapping;
                           for (auto mappingAttr : unionOp.getMapping()) {
                              auto columnDefAttr = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(mappingAttr);
-                             auto columnRefAttr = mlir::cast<tuples::ColumnRefAttr>(mlir::cast<mlir::ArrayAttr>(columnDefAttr.getFromExisting())[i]);
+                             auto columnRefAttr = mlir::dyn_cast_or_null<tuples::ColumnRefAttr>(mlir::cast<mlir::ArrayAttr>(columnDefAttr.getFromExisting())[i]);
+                             if (!columnRefAttr) continue;
                              colMapping[&columnDefAttr.getColumn()] = &columnRefAttr.getColumn();
                           }
                           auto& colManager = unionOp.getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();

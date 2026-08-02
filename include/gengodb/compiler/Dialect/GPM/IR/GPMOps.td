@@ -87,6 +87,23 @@ def OptionalGraphPatternOp : GPM_Op<"optional_graph_pattern", [Pure,GPMOperator,
   let hasVerifier = 1;
 }
 
+def BagOp : GPM_Op<"bag", [Pure,GPMOperator,Operator,BinaryOperator]> {
+  let summary = "graph pattern binding union bag";
+  let arguments = (ins TupleStream:$left, TupleStream:$right, ArrayAttr:$mapping);
+  let results = (outs TupleStream:$res);
+  let assemblyFormat = [{  $left `,` $right custom<CustAttrMapping>($mapping) attr-dict  }];
+  let extraClassDeclaration = [{
+    lingodb::compiler::dialect::relalg::ColumnSet getBoundVariables() { return getUsedVariables(); }
+    lingodb::compiler::dialect::relalg::ColumnSet getCreatedVariables();
+    lingodb::compiler::dialect::relalg::ColumnSet getUsedVariables();
+    lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
+    bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
+  }];
+  let hasVerifier = 1;
+}
+
 def IdentifiersEqualOp : GPM_Op<"identifiers_equal", [Pure]> {
   let summary = "identifier equality check";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);
