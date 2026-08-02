@@ -53,6 +53,12 @@ int8_t XsdRuntime::compareNodeNode(PropertyGraph::NodeEntry* lhs, PropertyGraph:
     const RdfGraph* rhsGraph = owningRdfGraph(rhs);
     int32_t lhsId = GraphStorage::nodeId(reinterpret_cast<uint8_t*>(lhs));
     int32_t rhsId = GraphStorage::nodeId(reinterpret_cast<uint8_t*>(rhs));
+    if (lhsGraph->getNodeType(lhsId) == gengodb::semantics::RDFNodeType::IRI && 
+        rhsGraph->getNodeType(rhsId) == gengodb::semantics::RDFNodeType::IRI) {
+            if (predicate == 0) return lhsId == rhsId;
+            if (predicate == 1) return lhsId != rhsId;
+            else return -1;
+    }
     if (lhsGraph->getNodeType(lhsId) != gengodb::semantics::RDFNodeType::Literal ||
         rhsGraph->getNodeType(rhsId) != gengodb::semantics::RDFNodeType::Literal) {
         return -1;

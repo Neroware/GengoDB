@@ -79,3 +79,10 @@ ex:eats ex:type ex:relation .
 ex:steve ex:eats _:food0 .
 _:food0 ex:portions "100"^^xsd:int .
 _:food0 ex:portions "101"^^xsd:int .
+
+# --- triangles ---
+ex:a ex:rel ex:b .
+ex:b ex:rel ex:c .
+ex:c ex:rel ex:a .
+ex:a ex:rel ex:a .
+ex:b ex:rel ex:a .
