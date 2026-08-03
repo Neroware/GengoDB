@@ -1,0 +1,88 @@
+@prefix ex: <http://example.org/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+# --- core "who drinks what" facts (used by test.sparql) ---
+ex:bob ex:drinks ex:coffee .
+ex:bob ex:drinks "Coffee"^^xsd:string .
+ex:bob ex:drinks _:drink1 .
+ex:bob ex:drinks _:drink2 .
+ex:coffee ex:asksForMore ex:coffee .
+
+# --- inlined literal types: <=4 bytes, stored directly in the property value ---
+ex:bob ex:age "30"^^xsd:int .
+ex:bob ex:awake "true"^^xsd:boolean .
+ex:bob ex:temperatureOffset "-5"^^xsd:byte .
+ex:bob ex:queuePosition "300"^^xsd:short .
+ex:bob ex:roomTemperature "21.5"^^xsd:float .
+ex:bob ex:tableNumber "12"^^xsd:unsignedByte .
+ex:bob ex:visitCount "1200"^^xsd:unsignedInt .
+ex:bob ex:membershipTier "3"^^xsd:unsignedShort .
+
+# --- variable-size literal types: stored in the blob table ---
+ex:bob ex:name "Bob"^^xsd:string .
+ex:bob ex:nickname "Bobby"@en .
+ex:bob ex:nickname "Bobbi"@de .
+ex:bob ex:customerId "123456789012345678901234567890"^^xsd:integer .
+
+# --- fixed 8-byte literal types: stored in PropertyData's i64/ui64/double vectors ---
+ex:bob ex:birthday "1999-11-04"^^xsd:date .
+ex:bob ex:accountBalance "-987654321012345"^^xsd:long .
+ex:bob ex:loyaltyPoints "18446744073709551615"^^xsd:unsignedLong .
+ex:bob ex:favoriteRating "4.75"^^xsd:double .
+
+ex:coffee ex:temp "65"^^xsd:int .
+ex:coffee ex:strong "true"^^xsd:boolean .
+ex:coffee ex:description "Dark Roast"^^xsd:string .
+ex:coffee ex:price "3.50"^^xsd:double .
+ex:coffee ex:batchId "987654321098765"^^xsd:long .
+ex:coffee ex:brewRatio "3.14159265358979311600"^^xsd:double .
+
+ex:bob ex:cup _:cup1 .
+
+_:cup1 ex:contains ex:coffee .
+_:cup1 ex:size "1"^^xsd:int .
+_:cup1 ex:clean "true"^^xsd:boolean .
+
+_:sip1 ex:who ex:bob .
+_:sip1 ex:what ex:coffee .
+_:sip1 ex:count "3"^^xsd:int .
+
+# --- more drinks ---
+ex:bob ex:drinks ex:tea .
+ex:bob ex:drinks ex:soda .
+ex:bob ex:drinks ex:beer .
+
+# --- food, including an IRI-object shared across subjects (ex:sushi) ---
+ex:bob ex:eats ex:steak .
+ex:bob ex:eats ex:egg .
+ex:bob ex:eats ex:sushi .
+ex:steve ex:eats ex:sushi .
+
+# --- dedup checks: same (datatype, value) reused across different subjects,
+#     across every storage tier, should collapse onto the same literal node ---
+ex:steve ex:name "Bob"^^xsd:string .
+ex:steve ex:nickname "Bobby"@en .
+ex:steve ex:favoriteRating "4.75"^^xsd:double .
+ex:steve ex:loyaltyPoints "18446744073709551615"^^xsd:unsignedLong .
+
+# --- items that are both eaten and drunk ---
+ex:bob ex:eats ex:soup .
+ex:bob ex:drinks ex:soup .
+ex:bob ex:eats ex:miso .
+ex:bob ex:drinks ex:miso .
+
+# --- relation metadata ---
+ex:drinks ex:type ex:relation .
+ex:eats ex:type ex:relation .
+
+# --- distinct literal values on the same blank node ---
+ex:steve ex:eats _:food0 .
+_:food0 ex:portions "100"^^xsd:int .
+_:food0 ex:portions "101"^^xsd:int .
+
+# --- triangles ---
+ex:a ex:rel ex:b .
+ex:b ex:rel ex:c .
+ex:c ex:rel ex:a .
+ex:a ex:rel ex:a .
+ex:b ex:rel ex:a .

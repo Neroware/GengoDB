@@ -1,0 +1,10 @@
+PREFIX ex: <http://example.org/>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+SELECT ?who ?what ?age
+{
+    GRAPH <file://resources/ttl/coffee.ttl#rdf> {
+        ?who ex:eats ?what .
+        OPTIONAL { ?who ex:age ?age . }
+    }
+}
