@@ -16,7 +16,7 @@ add_executable(tester
         utility/TestHyperLogLog.cpp
         execution/TestBaselineUtils.cpp
 )
-target_link_libraries(tester PRIVATE Catch2::Catch2WithMain ${LIBS} ${COMMON_LIBS})
+target_link_libraries(tester PRIVATE Catch2::Catch2WithMain ${LIBS} ${COMMON_LIBS} gengodb)
 set_target_properties(tester PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
 enable_testing()
