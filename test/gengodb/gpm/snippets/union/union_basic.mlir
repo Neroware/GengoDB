@@ -1,0 +1,20 @@
+module  {
+    func.func @main() {
+        %res = subop.execution_group (){
+            %0 = gpm.named_graph column : @graphs::@ref({type = !gpm.graph_ref<"coffee", "file://resources/ttl/coffee.ttl#rdf">})
+            %left = gpm.basic_graph_pattern %0 (%arg : !tuples.tuplestream){
+                %1 = gpm.triple_pattern %arg @graphs::@ref(?{@l::@who({type = !gpm.variable_binding})}, id{"http://example.org/drinks"}, ?{@l::@what({type = !gpm.variable_binding})})
+                tuples.return %1 : !tuples.tuplestream
+            }
+            %right = gpm.basic_graph_pattern %0 (%arg : !tuples.tuplestream){
+                %2 = gpm.triple_pattern %arg @graphs::@ref(?{@r::@who({type = !gpm.variable_binding})}, id{"http://example.org/eats"}, ?{@r::@what({type = !gpm.variable_binding})})
+                tuples.return %2 : !tuples.tuplestream
+            }
+            %union = gpm.bag %left, %right mapping: {@union::@who({type = !gpm.variable_binding})=[@l::@who,@r::@who], @union::@what({type = !gpm.variable_binding})=[@l::@what,@r::@what]}
+            %res_table = relalg.materialize %union [@union::@who, @union::@what] => ["who", "what"] : !subop.local_table<[col1: !db.string, col2: !db.string],["who", "what"]>
+            subop.execution_group_return %res_table : !subop.local_table<[col1: !db.string, col2: !db.string],["who", "what"]>
+        } -> !subop.local_table<[col1: !db.string, col2: !db.string],["who", "what"]>
+        subop.set_result 0 %res : !subop.local_table<[col1: !db.string, col2: !db.string],["who", "what"]>
+        return
+    }
+}
