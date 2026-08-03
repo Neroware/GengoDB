@@ -1,0 +1,52 @@
+# For data files ignore this too: -misc-definitions-in-headers
+# Do not enable most of readability crap
+#
+# LLVM 7
+# Everything else
+# LLVM 8
+# -cppcoreguidelines-avoid-* (FIXED)
+# -cppcoreguidelines-macro-usage (FIXED: Commit 23888a6298296882e084c26177cdf4ac6a543501)
+# -modernize-avoid-* (FIXED)
+# -modernize-use-nodiscard (NOTE: Some of the proposals of the check are bad)
+# -hicpp-avoid-* (FIXED)
+# LLVM 9
+# -modernize-use-trailing-return-type (BAD CHECK)
+# -bugprone-branch-clone (FIXED)
+# LLVM 10
+# -cppcoreguidelines-init-variables (FIXED)
+# LLVM 14
+# -hicpp-named-parameter (BAD CHECK: Alias to readability-named-parameter)
+# -bugprone-easily-swappable-parameters (BAD CHECK)
+# LLVM 15
+# -misc-const-correctness (FIXED: See GitHub issue #24)
+# -modernize-macro-to-enum (FIXED: Commit 23888a6298296882e084c26177cdf4ac6a543501)
+# -bugprone-assignment-in-if-condition (FIXED: Commit b341ac0dabf4a52ca1c2bf4b03c640436baec00e)
+
+Checks: '-*,
+clang-analyzer-*,
+cppcoreguidelines-*,
+-cppcoreguidelines-pro-bounds-constant-array-index,
+-cppcoreguidelines-avoid-magic-numbers,
+modernize-*,
+-modernize-use-nodiscard,
+-modernize-use-trailing-return-type,
+misc-*,
+performance-*,
+bugprone-*,
+-bugprone-easily-swappable-parameters,
+hicpp-*,
+-hicpp-braces-around-statements,
+-hicpp-signed-bitwise,
+-hicpp-named-parameter,
+cert-*,
+-cert-dcl21-cpp,
+google-*,
+-google-readability-*,
+google-readability-namespace-comments,
+-google-runtime-int
+'
+CheckOptions:
+  - key: misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic
+    value: true
+  - key: misc-const-correctness.WarnPointersAsValues
+    value: true
