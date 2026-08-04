@@ -98,6 +98,57 @@ class NodeIdDict {
     static std::unique_ptr<NodeIdDict> deserialize(utility::Deserializer& deserializer);
 }; // NodeIdDict
 
+class NodeIdMapping {
+    using global_id_t = uint64_t;
+    using local_id_t = int32_t;
+    std::vector<global_id_t> local_to_global;
+    std::unordered_map<global_id_t, local_id_t> global_to_local;
+    void insert(const global_id_t gid) {
+        local_id_t lid = static_cast<local_id_t>(lid);
+        local_to_global.push_back(gid);
+        global_to_local.emplace(local_to_global.back(), lid);
+    }
+    local_id_t get_local_safe(const global_id_t gid) const {
+        auto it = global_to_local.find(gid);
+        if (it == global_to_local.end())
+            return -1;
+        return it->second;
+    }
+    local_id_t get_local(const global_id_t gid) const {
+        return global_to_local.at(gid);
+    }
+    global_id_t get_global_safe(const local_id_t id) const {
+        if (static_cast<size_t>(id) >= global_to_local.size()) {
+            return -1;
+        }
+        return local_to_global[id];
+    }
+    global_id_t get_global(const local_id_t id) const {
+        return local_to_global[id];
+    }
+    size_t size() const { return local_to_global.size(); }
+    void serialize(utility::Serializer& serializer) const;
+    static std::unique_ptr<NodeIdMapping> deserialize(utility::Deserializer& deserializer);
+}; // NodeIdMapping
+
+class RdfGraph;
+class GraphNodeIndex {
+    std::unordered_map<std::string, NodeIdMapping> index;
+    public:
+    GraphNodeIndex() = default;
+    ~GraphNodeIndex() = default;
+
+    const NodeIdMapping& getIndex(const std::string& graphName) const { return index.at(graphName); }
+    void add_rdf(const RdfGraph& graph) { rdf_.push_back(&graph); }
+    void build();
+    
+    void serialize(utility::Serializer& serializer) const;
+    static std::unique_ptr<GraphNodeIndex> deserialize(utility::Deserializer& deserializer);
+
+    private:
+    std::vector<const RdfGraph*> rdf_;
+}; // GraphNodeIndex
+
 } // namespace gengodb::semantics
 
 #endif // GENGODB_SEMANTICS_IDENTIFIERS_H
