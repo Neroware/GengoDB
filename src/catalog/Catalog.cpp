@@ -6,9 +6,12 @@
 #include "lingodb/catalog/Types.h"
 #include "lingodb/utility/Serialization.h"
 
+#include "gengodb/catalog/GraphCatalogEntry.h"
+
 #include <filesystem>
 
 namespace lingodb::catalog {
+using namespace gengodb::catalog;
 Catalog Catalog::deserialize(lingodb::utility::Deserializer& deSerializer) {
    Catalog res;
    auto version = deSerializer.readProperty<size_t>(0);
@@ -38,6 +41,8 @@ std::shared_ptr<CatalogEntry> CatalogEntry::deserialize(lingodb::utility::Deseri
          return LingoDBHashIndexEntry::deserialize(deserializer);
       case CatalogEntryType::C_FUNCTION_ENTRY:
          return FunctionCatalogEntry::deserialize(deserializer);
+      case CatalogEntryType::GENGODB_GRAPH_ENTRY:
+         return RDFGraphCatalogEntry::deserialize(deserializer);
       default:
          throw std::runtime_error("deserialize: unknown catalog entry type");
    }
