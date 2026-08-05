@@ -121,7 +121,12 @@ ParseResult parseCustRefArr(OpAsmParser& parser, ArrayAttr& attr) {
       return failure();
    }
    for (auto a : parsedAttr) {
+      if (mlir::isa<UnitAttr>(a)) {
+         attributes.push_back(a);
+         continue;
+      }
       SymbolRefAttr parsedSymbolRefAttr = mlir::dyn_cast<SymbolRefAttr>(a);
+      if (!parsedSymbolRefAttr) return failure();
       tuples::ColumnRefAttr attr = getColumnManager(parser).createRef(parsedSymbolRefAttr);
       attributes.push_back(attr);
    }
@@ -139,8 +144,11 @@ void printCustRefArr(OpAsmPrinter& p, mlir::Operation* op, ArrayAttr arrayAttr) 
       } else {
          p << ",";
       }
-      tuples::ColumnRefAttr parsedSymbolRefAttr = mlir::dyn_cast<tuples::ColumnRefAttr>(a);
-      p << parsedSymbolRefAttr.getName();
+      if (auto parsedSymbolRefAttr = mlir::dyn_cast<tuples::ColumnRefAttr>(a)) {
+         p << parsedSymbolRefAttr.getName();
+      } else {
+         p << a;
+      }
    }
    p << "]";
 }
@@ -354,6 +362,27 @@ void relalg::BaseTableOp::print(OpAsmPrinter& p) {
          }
       } else {
          emitError("expected column definition for computed column");
+         return mlir::failure();
+      }
+   }
+   return mlir::success();
+}
+::mlir::LogicalResult relalg::UnionOp::verify() {
+   for (mlir::Attribute attr : getMapping()) {
+      auto colDef = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(attr);
+      if (!colDef) {
+         emitError("union mapping entries must be column definitions");
+         return mlir::failure();
+      }
+      auto fromExisting = mlir::dyn_cast_or_null<mlir::ArrayAttr>(colDef.getFromExisting());
+      if (!fromExisting || fromExisting.size() != 2) {
+         emitError("union mapping entry must reference exactly one column per side (a UnitAttr placeholder if missing)");
+         return mlir::failure();
+      }
+      bool leftPresent = mlir::isa<tuples::ColumnRefAttr>(fromExisting[0]);
+      bool rightPresent = mlir::isa<tuples::ColumnRefAttr>(fromExisting[1]);
+      if ((!leftPresent || !rightPresent) && !mlir::isa<db::NullableType>(colDef.getColumn().type)) {
+         emitError("union mapping entry missing on one side must have a nullable output column type");
          return mlir::failure();
       }
    }

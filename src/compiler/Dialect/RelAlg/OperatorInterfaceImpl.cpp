@@ -215,6 +215,9 @@ relalg::detail::UnaryOperatorType relalg::detail::getUnaryOperatorType(mlir::Ope
 ColumnSet MapOp::getCreatedColumns() {
    return ColumnSet::fromArrayAttr(getComputedCols());
 }
+ColumnSet InFlightOp::getCreatedColumns() {
+   return ColumnSet::fromArrayAttr(getColumns());
+}
 ColumnSet AggregationOp::getCreatedColumns() {
    return ColumnSet::fromArrayAttr(getComputedCols());
 }
@@ -936,6 +939,9 @@ mlir::LogicalResult relalg::SortOp::changeForColumns(lingodb::compiler::dialect:
    return mlir::success();
 }
 mlir::LogicalResult relalg::LimitOp::changeForColumns(lingodb::compiler::dialect::relalg::ColumnNullableChangeInfo& columnInfo) {
+   return mlir::success();
+}
+mlir::LogicalResult relalg::OffsetOp::changeForColumns(lingodb::compiler::dialect::relalg::ColumnNullableChangeInfo& columnInfo) {
    return mlir::success();
 }
 mlir::LogicalResult relalg::RenamingOp::changeForColumns(lingodb::compiler::dialect::relalg::ColumnNullableChangeInfo& columnInfo) {

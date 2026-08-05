@@ -176,6 +176,14 @@ def LimitOp : RelAlg_Op<"limit", [Pure,Operator,UnaryOperator,DeclareOpInterface
     let assemblyFormat = [{ $max_rows $rel attr-dict }];
 }
 
+def OffsetOp : RelAlg_Op<"offset", [Pure,Operator,UnaryOperator,DeclareOpInterfaceMethods<NullColumnTypeChangeable>]> {
+    let summary = "offset operation";
+
+    let arguments = (ins I32Attr:$offset, TupleStream:$rel);
+    let results = (outs TupleStream:$result);
+    let assemblyFormat = [{ $offset $rel attr-dict }];
+}
+
 def TopKOp : RelAlg_Op<"topk", [Pure,Operator,UnaryOperator]> {
     let summary = "top k operation";
     let description = [{
@@ -433,6 +441,7 @@ class RelAlg_BinarySetOp<string mnemonic> : RelAlg_Op<mnemonic,
 
 def UnionOp : RelAlg_BinarySetOp<"union"> {
     let summary = "union operation";
+    let hasVerifier = 1;
 }
 
 def IntersectOp : RelAlg_BinarySetOp<"intersect"> {
@@ -544,6 +553,20 @@ def QueryReturnOp : RelAlg_Op<"query_return",[Terminator]> {
    let summary = "query return";
    let arguments = (ins Variadic<AnyType>:$inputs);
    let assemblyFormat = [{ ($inputs^ `:` type($inputs))? attr-dict-with-keyword }];
+}
+
+//===----------------------------------------------------------------------===//
+// In-flight to RelAlg dialect
+//===----------------------------------------------------------------------===//
+
+def InFlightOp : RelAlg_Op<"in_flight", [Pure,Operator,UnaryOperator]> {
+    let summary = "in flight relational operator";
+    let arguments = (ins TupleStream : $stream, ArrayAttr : $columns);
+    let results = (outs TupleStream : $res);
+    let assemblyFormat = [{  $stream attr-dict }];
+    let extraClassDeclaration = [{
+        ColumnSet getCreatedColumns();
+    }];
 }
 
 

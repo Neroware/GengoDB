@@ -1616,6 +1616,43 @@ class LimitLowering : public OpConversionPattern<relalg::LimitOp> {
       return success();
    }
 };
+class OffsetLowering : public OpConversionPattern<relalg::OffsetOp> {
+   const RequiredColumnsMap& requiredColumnsMap;
+
+   public:
+   OffsetLowering(TypeConverter& typeConverter, MLIRContext* context, const RequiredColumnsMap& requiredColumns)
+      : OpConversionPattern<relalg::OffsetOp>(typeConverter, context), requiredColumnsMap(requiredColumns) {}
+
+   LogicalResult matchAndRewrite(relalg::OffsetOp offsetOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      auto* context = getContext();
+      auto loc = offsetOp->getLoc();
+      relalg::ColumnSet requiredColumns = requiredColumnsMap.lookup(offsetOp);
+      MaterializationHelper helper(requiredColumns, context);
+      auto vectorType = subop::BufferType::get(context, helper.createStateMembersAttr());
+      mlir::Value vector = rewriter.create<subop::GenericCreateOp>(loc, vectorType);
+      rewriter.create<subop::MaterializeOp>(loc, adaptor.getRel(), vector, helper.createColumnstateMapping());
+      auto continuousViewType = subop::ContinuousViewType::get(context, vectorType);
+      mlir::Value continuousView = rewriter.create<subop::CreateContinuousView>(loc, continuousViewType, vector);
+      auto continuousViewRefType = subop::ContinuousEntryRefType::get(context, continuousViewType);
+      auto [refDef, refRef] = createColumn(continuousViewRefType, "scan", "ref");
+      mlir::Value scan = rewriter.create<subop::ScanRefsOp>(loc, continuousView, refDef);
+      mlir::Value afterGather = rewriter.create<subop::GatherOp>(loc, scan, refRef, helper.createStateColumnMapping());
+      auto [beginDef, beginRef] = createColumn(continuousViewRefType, "view", "begin");
+      mlir::Value afterBegin = rewriter.create<subop::GetBeginReferenceOp>(loc, afterGather, continuousView, beginDef);
+      auto [posDef, posRef] = createColumn(rewriter.getIndexType(), "offset", "pos");
+      mlir::Value afterEntriesBetween = rewriter.create<subop::EntriesBetweenOp>(loc, afterBegin, beginRef, refRef, posDef);
+      auto [keepDef, keepRef] = createColumn(rewriter.getI1Type(), "offset", "keep");
+      int64_t offsetVal = static_cast<int64_t>(offsetOp.getOffset());
+      mlir::Value mapped = map(afterEntriesBetween, rewriter, loc, rewriter.getArrayAttr(keepDef), [&](mlir::ConversionPatternRewriter& b, subop::MapCreationHelper& mapHelper, mlir::Location loc) -> std::vector<mlir::Value> {
+         mlir::Value pos = mapHelper.access(posRef, loc);
+         mlir::Value offsetConst = b.create<mlir::arith::ConstantIndexOp>(loc, offsetVal);
+         mlir::Value keep = b.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::sge, pos, offsetConst);
+         return {keep};
+      });
+      rewriter.replaceOpWithNewOp<subop::FilterOp>(offsetOp, mapped, subop::FilterSemantic::all_true, rewriter.getArrayAttr(keepRef));
+      return success();
+   }
+};
 static mlir::Value spaceShipCompare(mlir::OpBuilder& builder, std::vector<std::pair<mlir::Value, mlir::Value>> sortCriteria, size_t pos, mlir::Location loc) {
    mlir::Value compareRes = builder.create<db::SortCompare>(loc, sortCriteria.at(pos).first, sortCriteria.at(pos).second);
    auto zero = builder.create<db::ConstantOp>(loc, builder.getI8Type(), builder.getIntegerAttr(builder.getI8Type(), 0));
@@ -3040,6 +3077,15 @@ class QueryReturnOpLowering : public OpConversionPattern<relalg::QueryReturnOp> 
       return mlir::success();
    }
 };
+class InFlightOpLowering : public OpConversionPattern<relalg::InFlightOp>{
+   public:
+   using OpConversionPattern<relalg::InFlightOp>::OpConversionPattern;
+
+   LogicalResult matchAndRewrite(relalg::InFlightOp inFlightOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      rewriter.replaceOp(inFlightOp, adaptor.getOperands()[0]);
+      return mlir::success();
+   }
+};
 
 void RelalgToSubOpLoweringPass::runOnOperation() {
    auto module = getOperation();
@@ -3098,6 +3144,7 @@ void RelalgToSubOpLoweringPass::runOnOperation() {
    patterns.insert<FullOuterJoinLowering>(typeConverter, ctxt, requiredColumns);
    patterns.insert<SingleJoinLowering>(typeConverter, ctxt, requiredColumns);
    patterns.insert<LimitLowering>(typeConverter, ctxt, requiredColumns);
+   patterns.insert<OffsetLowering>(typeConverter, ctxt, requiredColumns);
    patterns.insert<TopKLowering>(typeConverter, ctxt, requiredColumns);
    patterns.insert<UnionAllLowering>(typeConverter, ctxt);
    patterns.insert<UnionDistinctLowering>(typeConverter, ctxt);
@@ -3107,6 +3154,7 @@ void RelalgToSubOpLoweringPass::runOnOperation() {
    patterns.insert<TrackTuplesLowering>(ctxt);
    patterns.insert<QueryOpLowering>(ctxt);
    patterns.insert<QueryReturnOpLowering>(ctxt);
+   patterns.insert<InFlightOpLowering>(ctxt);
 
    if (failed(applyFullConversion(module, target, std::move(patterns))))
       signalPassFailure();

@@ -488,6 +488,18 @@ class OptimizeImplementations : public mlir::PassWrapper<OptimizeImplementations
 
                   limitOp.replaceAllUsesWith(builder.create<relalg::TopKOp>(limitOp.getLoc(), limitOp.getMaxRows(), sortOp.getRel(), sortOp.getSortspecs()).asRelation());
                }
+               else if (auto offsetOp = mlir::dyn_cast_or_null<relalg::OffsetOp>(limitOp.getRel().getDefiningOp())) {
+                  if (auto sortOp = mlir::dyn_cast_or_null<relalg::SortOp>(offsetOp.getRel().getDefiningOp())) {
+                     mlir::OpBuilder builder(limitOp);
+                     toErase.push_back(limitOp);
+                     toErase.push_back(offsetOp);
+                     toErase.push_back(sortOp);
+                     uint32_t combinedMaxRows = offsetOp.getOffset() + limitOp.getMaxRows();
+                     auto topk = builder.create<relalg::TopKOp>(limitOp.getLoc(), combinedMaxRows, sortOp.getRel(), sortOp.getSortspecs());
+                     auto newOffset = builder.create<relalg::OffsetOp>(limitOp.getLoc(), tuples::TupleStreamType::get(builder.getContext()), offsetOp.getOffset(), topk.asRelation());
+                     limitOp.replaceAllUsesWith(newOffset.getResult());
+                  }
+               }
             })
             .Case<relalg::InnerJoinOp, relalg::CollectionJoinOp, relalg::FullOuterJoinOp>([&](PredicateOperator predicateOperator) {
                auto binOp = mlir::cast<BinaryOperator>(predicateOperator.getOperation());
