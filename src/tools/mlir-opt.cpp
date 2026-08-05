@@ -14,8 +14,8 @@
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamDialect.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
 // #include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
-// #include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
-// #include "gengodb/compiler/Dialect/GPM/Transforms/Passes.h"
+#include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
+#include "gengodb/compiler/Dialect/GPM/Transforms/Passes.h"
 #include "gengodb/compiler/Dialect/Variant/VariantDialect.h"
 #include "lingodb/compiler/Dialect/util/UtilDialect.h"
 #include "lingodb/compiler/mlir-support/eval.h"
@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
    subop::registerSubOpToControlFlowConversionPasses();
    subop::registerSubOpTransformations();
    // gpm::registerGPMToSubOpConversionPasses();
-   // gpm::registerGpmTransformations();
+   gpm::registerGpmTransformations();
    // gsubop::registerGraphSubOpTransformations();
    variant::registerVariantToStdConversionPasses();
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
@@ -85,7 +85,7 @@ int main(int argc, char** argv) {
    registry.insert<tuples::TupleStreamDialect>();
    registry.insert<subop::SubOperatorDialect>();
    registry.insert<gsubop::GraphSubOpDialect>();
-   // registry.insert<gpm::GPMDialect>();
+   registry.insert<gpm::GPMDialect>();
    registry.insert<variant::VariantDialect>();
    registry.insert<db::DBDialect>();
    registry.insert<lingodb::compiler::dialect::arrow::ArrowDialect>();
