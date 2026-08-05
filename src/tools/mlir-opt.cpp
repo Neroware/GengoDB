@@ -12,7 +12,7 @@
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorDialect.h"
 #include "lingodb/compiler/Dialect/SubOperator/Transforms/Passes.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamDialect.h"
-// #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
 // #include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
 // #include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
 // #include "gengodb/compiler/Dialect/GPM/Transforms/Passes.h"
@@ -84,7 +84,7 @@ int main(int argc, char** argv) {
    registry.insert<relalg::RelAlgDialect>();
    registry.insert<tuples::TupleStreamDialect>();
    registry.insert<subop::SubOperatorDialect>();
-   // registry.insert<gsubop::GraphSubOpDialect>();
+   registry.insert<gsubop::GraphSubOpDialect>();
    // registry.insert<gpm::GPMDialect>();
    registry.insert<variant::VariantDialect>();
    registry.insert<db::DBDialect>();
