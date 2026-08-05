@@ -17,7 +17,7 @@
 #include "lingodb/compiler/runtime/Buffer.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
-// #include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
 #include "lingodb/compiler/runtime/DataSourceIteration.h"
 #include "lingodb/compiler/runtime/EntryLock.h"
 #include "lingodb/compiler/runtime/ExecutionContext.h"
@@ -1404,7 +1404,11 @@ class GenerateLowering : public SubOpConversionPattern<subop::GenerateOp> {
          mlir::OpBuilder::InsertionGuard guard(rewriter);
          rewriter.setInsertionPointAfter(emitOp);
          ColumnMapping mapping;
-         mapping.define(generateOp.getGeneratedColumns(), emitOp.getValues());
+         llvm::SmallVector<mlir::Value> mappedValues;
+         for (auto v : emitOp.getValues()) {
+            mappedValues.push_back(rewriter.getMapped(v));
+         }
+         mapping.define(generateOp.getGeneratedColumns(), mappedValues);
          mlir::Value newInFlight = rewriter.createInFlight(mapping);
          streams.push_back(newInFlight);
          rewriter.eraseOp(emitOp);
@@ -5842,6 +5846,7 @@ void subop::setCompressionEnabled(bool compressionEnabled) {
 }
 void subop::createLowerSubOpPipeline(mlir::OpPassManager& pm) {
    //pm.addPass(subop::createGlobalOptPass());
+   pm.addPass(gsubop::createStringifyVariantsPass());
    pm.addPass(subop::createFoldColumnsPass());
    pm.addPass(subop::createReuseLocalPass());
    pm.addPass(subop::createSpecializeSubOpPass(true));

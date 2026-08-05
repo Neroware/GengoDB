@@ -4,7 +4,7 @@
 #include "lingodb/compiler/Dialect/DB/IR/DBDialect.h"
 #include "lingodb/compiler/Dialect/DB/Passes.h"
 #include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgDialect.h"
-// #include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
+#include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
 #include "lingodb/compiler/Dialect/RelAlg/Passes.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorDialect.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorOps.h"
@@ -43,7 +43,7 @@ void lingodb::execution::initializeContext(mlir::MLIRContext& context, bool incl
    mlir::DialectRegistry registry;
    registry.insert<mlir::BuiltinDialect>();
    registry.insert<relalg::RelAlgDialect>();
-   // registry.insert<gpm::GPMDialect>();
+   registry.insert<gpm::GPMDialect>();
    registry.insert<tuples::TupleStreamDialect>();
    registry.insert<subop::SubOperatorDialect>();
    registry.insert<gsubop::GraphSubOpDialect>();
