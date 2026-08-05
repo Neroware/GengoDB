@@ -122,7 +122,7 @@ std::unique_ptr<NodeIdMapping> NodeIdMapping::deserialize(lingodb::utility::Dese
     auto result = std::make_unique<NodeIdMapping>();
     result->local_to_global = std::move(local_to_global);
     for (size_t i = 0; i < result->local_to_global.size(); i++) {
-        result->global_to_local.emplace(result->local_to_global[i], static_cast<local_id_t>(i));
+        result->global_to_local.insert({result->local_to_global[i], static_cast<local_id_t>(i)});
     }
     return result;
 }

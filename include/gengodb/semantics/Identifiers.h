@@ -1,10 +1,14 @@
 #ifndef GENGODB_SEMANTICS_IDENTIFIERS_H
 #define GENGODB_SEMANTICS_IDENTIFIERS_H
 
+#include <cassert>
+
 #include <rdf4cpp.hpp>
 #include <rdf4cpp/storage/identifier/RDFNodeType.hpp>
 
 #include "gengodb/catalog/CreateRdfGraphDef.h"
+
+#include "llvm/ADT/DenseMap.h"
 
 namespace gengodb::semantics {
 using namespace lingodb;
@@ -104,14 +108,14 @@ class NodeIdMapping {
     using local_id_t = int32_t;
     private:
     std::vector<global_id_t> local_to_global;
-    std::unordered_map<global_id_t, local_id_t> global_to_local;
+    llvm::DenseMap<global_id_t, local_id_t> global_to_local;
     public:
     NodeIdMapping() = default;
     ~NodeIdMapping() = default;
     local_id_t insert(const global_id_t gid) {
         local_id_t lid = static_cast<local_id_t>(local_to_global.size());
         local_to_global.push_back(gid);
-        global_to_local.emplace(gid, lid);
+        global_to_local.insert({gid, lid});
         return lid;
     }
     local_id_t get_local_safe(const global_id_t gid) const {
@@ -121,7 +125,9 @@ class NodeIdMapping {
         return it->second;
     }
     local_id_t get_local(const global_id_t gid) const {
-        return global_to_local.at(gid);
+        auto it = global_to_local.find(gid);
+        assert(it != global_to_local.end() && "unknown global id");
+        return it->second;
     }
     global_id_t get_global_safe(const local_id_t id) const {
         if (id < 0 || static_cast<size_t>(id) >= local_to_global.size()) {
