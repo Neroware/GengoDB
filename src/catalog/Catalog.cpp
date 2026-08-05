@@ -7,6 +7,7 @@
 #include "lingodb/utility/Serialization.h"
 
 #include "gengodb/catalog/GraphCatalogEntry.h"
+#include "gengodb/catalog/GraphNodeIndexCatalogEntry.h"
 
 #include <filesystem>
 
@@ -43,6 +44,8 @@ std::shared_ptr<CatalogEntry> CatalogEntry::deserialize(lingodb::utility::Deseri
          return FunctionCatalogEntry::deserialize(deserializer);
       case CatalogEntryType::GENGODB_GRAPH_ENTRY:
          return RDFGraphCatalogEntry::deserialize(deserializer);
+      case CatalogEntryType::GENGODB_NODE_INDEX_ENTRY:
+         return GraphNodeIndexCatalogEntry::deserialize(deserializer);
       default:
          throw std::runtime_error("deserialize: unknown catalog entry type");
    }

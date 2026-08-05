@@ -99,14 +99,20 @@ class NodeIdDict {
 }; // NodeIdDict
 
 class NodeIdMapping {
-    using global_id_t = uint64_t;
+    public:
+    using global_id_t = int64_t;
     using local_id_t = int32_t;
+    private:
     std::vector<global_id_t> local_to_global;
     std::unordered_map<global_id_t, local_id_t> global_to_local;
-    void insert(const global_id_t gid) {
-        local_id_t lid = static_cast<local_id_t>(lid);
+    public:
+    NodeIdMapping() = default;
+    ~NodeIdMapping() = default;
+    local_id_t insert(const global_id_t gid) {
+        local_id_t lid = static_cast<local_id_t>(local_to_global.size());
         local_to_global.push_back(gid);
-        global_to_local.emplace(local_to_global.back(), lid);
+        global_to_local.emplace(gid, lid);
+        return lid;
     }
     local_id_t get_local_safe(const global_id_t gid) const {
         auto it = global_to_local.find(gid);
@@ -118,7 +124,7 @@ class NodeIdMapping {
         return global_to_local.at(gid);
     }
     global_id_t get_global_safe(const local_id_t id) const {
-        if (static_cast<size_t>(id) >= global_to_local.size()) {
+        if (id < 0 || static_cast<size_t>(id) >= local_to_global.size()) {
             return -1;
         }
         return local_to_global[id];
@@ -133,20 +139,24 @@ class NodeIdMapping {
 
 class RdfGraph;
 class GraphNodeIndex {
-    std::unordered_map<std::string, NodeIdMapping> index;
+    std::unordered_map<std::string, std::unique_ptr<NodeIdMapping>> index;
     public:
     GraphNodeIndex() = default;
     ~GraphNodeIndex() = default;
 
-    const NodeIdMapping& getIndex(const std::string& graphName) const { return index.at(graphName); }
-    void add_rdf(const RdfGraph& graph) { rdf_.push_back(&graph); }
+    const NodeIdMapping& getIndex(const std::string& graphName) const { return *index.at(graphName); }
+    bool hasIndex(const std::string& graphName) const { return index.contains(graphName); }
+
+    void add_rdf(const RdfGraph& graph) const { rdf_.emplace_back(std::string{}, &graph); }
+    void add_rdf(const std::string& graphName, const RdfGraph& graph) const { rdf_.emplace_back(graphName, &graph); }
+
     void build();
-    
+
     void serialize(utility::Serializer& serializer) const;
     static std::unique_ptr<GraphNodeIndex> deserialize(utility::Deserializer& deserializer);
 
     private:
-    std::vector<const RdfGraph*> rdf_;
+    mutable std::vector<std::pair<std::string, const RdfGraph*>> rdf_;
 }; // GraphNodeIndex
 
 } // namespace gengodb::semantics

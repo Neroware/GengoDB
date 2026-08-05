@@ -38,6 +38,7 @@ RDFFileFormat getFormatFromExtension(const std::string& ext) {
 
 #include "gengodb/catalog/CreateRdfGraphDef.h"
 #include "gengodb/catalog/GraphCatalogEntry.h"
+#include "gengodb/catalog/GraphNodeIndexCatalogEntry.h"
 #include "gengodb/semantics/RdfFileFormat.h"
 
 using namespace gengodb::semantics;
@@ -58,6 +59,8 @@ int main(int argc, char** argv) {
    bool eagerLoading = std::getenv("LINGODB_BACKEND_ONLY");
    std::shared_ptr<runtime::Session> session = runtime::Session::createSession(rdfDir, eagerLoading);
 
+   std::vector<std::shared_ptr<RDFGraphCatalogEntry>> rdfGraphs;
+
    for (const auto& entry : fs::directory_iterator(rdfDir)) {
       if (!entry.is_regular_file())
          continue;
@@ -68,6 +71,7 @@ int main(int argc, char** argv) {
          if (entry->getFormat() != RDFFileFormat::BINARY) {
             entry->ensureFullyLoaded();
          }
+         rdfGraphs.push_back(entry);
          continue;
       }
 
@@ -97,7 +101,16 @@ int main(int argc, char** argv) {
 
       session->getCatalog()->insertEntry(graphEntry);
       graphEntry->ensureFullyLoaded();
+      rdfGraphs.push_back(graphEntry);
    }
+
+   // Defensive: guarantees every collected entry's storage is actually loaded.
+   for (auto& entry : rdfGraphs) {
+      entry->ensureFullyLoaded();
+   }
+
+   auto indexEntry = GraphNodeIndexCatalogEntry::build(rdfGraphs);
+   session->getCatalog()->insertEntry(indexEntry, /*replace=*/true);
 
    session->getCatalog()->setShouldPersist(true);
    session->getCatalog()->persist();
