@@ -59,7 +59,7 @@ int main(int argc, char** argv) {
    bool eagerLoading = std::getenv("LINGODB_BACKEND_ONLY");
    std::shared_ptr<runtime::Session> session = runtime::Session::createSession(rdfDir, eagerLoading);
 
-   std::vector<std::shared_ptr<RDFGraphCatalogEntry>> rdfGraphs;
+   std::vector<std::shared_ptr<RDFGraphCatalogEntry>> allEntries;
 
    for (const auto& entry : fs::directory_iterator(rdfDir)) {
       if (!entry.is_regular_file())
@@ -71,7 +71,7 @@ int main(int argc, char** argv) {
          if (entry->getFormat() != RDFFileFormat::BINARY) {
             entry->ensureFullyLoaded();
          }
-         rdfGraphs.push_back(entry);
+         allEntries.push_back(entry);
          continue;
       }
 
@@ -101,14 +101,18 @@ int main(int argc, char** argv) {
 
       session->getCatalog()->insertEntry(graphEntry);
       graphEntry->ensureFullyLoaded();
-      rdfGraphs.push_back(graphEntry);
+      allEntries.push_back(graphEntry);
    }
 
    // Defensive: guarantees every collected entry's storage is actually loaded.
-   for (auto& entry : rdfGraphs) {
+   for (auto entry : allEntries) {
       entry->ensureFullyLoaded();
    }
 
+   std::vector<std::pair<std::string, const RdfGraph*>> rdfGraphs;
+   for (auto entry : allEntries) {
+      rdfGraphs.push_back(std::make_pair(entry->getName(), &entry->getGraph()));
+   }
    auto indexEntry = GraphNodeIndexCatalogEntry::build(rdfGraphs);
    session->getCatalog()->insertEntry(indexEntry, /*replace=*/true);
 

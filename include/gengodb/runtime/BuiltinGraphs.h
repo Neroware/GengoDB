@@ -185,17 +185,19 @@ public:
     };
     
     struct Metadata {
-        inline void set_identifier_mapping(std::function<std::string(int32_t)> identifier) { identifier_ = identifier; }
-        inline void set_uid_mapping(std::function<uint64_t(int32_t)> uid) { uid_ = uid; }
-        inline std::string identifier(int32_t id) const { return identifier_(id); }
-        inline uint64_t uid(int32_t id) const { return uid_(id); }
+        inline void set_name_mapping(std::function<std::string(int32_t)> names) { names_ = names; }
+        inline void set_id_mapping(std::function<uint64_t(int32_t)> uid, std::function<uint64_t(int32_t)> local) { uid_ = uid; local_ = local; }
+        inline std::string get_node_name(int32_t id) const { return names_(id); }
+        inline uint64_t uid(int32_t local_id) const { return uid_(local_id); }
+        inline uint64_t local_id(uint64_t uid) const { return local_(uid); }
         inline const std::string& name() const { return name_; }
         inline void set_name(const std::string& n) { name_ = n; }
 
         private:
         std::string name_ = "";
-        std::function<std::string(int32_t)> identifier_ = [](int32_t i){ return std::to_string(i); };
-        std::function<uint64_t(int32_t)> uid_ = [](int32_t i){ return static_cast<uint64_t>(i); };
+        std::function<std::string(int32_t)> names_ = [](int32_t i){ return "v" + std::to_string(i); };
+        std::function<uint64_t(int32_t)> uid_ = [](int32_t i){ assert(false && "missing index"); return -1; };
+        std::function<int32_t(uint64_t)> local_ = [](uint64_t i){ assert(false && "missing index"); return -1; };
     };
 
     PropertyGraph(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);

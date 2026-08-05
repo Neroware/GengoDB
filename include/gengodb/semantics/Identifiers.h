@@ -147,16 +147,10 @@ class GraphNodeIndex {
     const NodeIdMapping& getIndex(const std::string& graphName) const { return *index.at(graphName); }
     bool hasIndex(const std::string& graphName) const { return index.contains(graphName); }
 
-    void add_rdf(const RdfGraph& graph) const { rdf_.emplace_back(std::string{}, &graph); }
-    void add_rdf(const std::string& graphName, const RdfGraph& graph) const { rdf_.emplace_back(graphName, &graph); }
-
-    void build();
+    static std::unique_ptr<GraphNodeIndex> build(const std::vector<std::pair<std::string, const RdfGraph*>>& rdfGraphs);
 
     void serialize(utility::Serializer& serializer) const;
     static std::unique_ptr<GraphNodeIndex> deserialize(utility::Deserializer& deserializer);
-
-    private:
-    mutable std::vector<std::pair<std::string, const RdfGraph*>> rdf_;
 }; // GraphNodeIndex
 
 } // namespace gengodb::semantics

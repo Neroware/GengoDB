@@ -127,12 +127,12 @@ std::unique_ptr<NodeIdMapping> NodeIdMapping::deserialize(lingodb::utility::Dese
     return result;
 }
 
-void GraphNodeIndex::build() {
-    index.clear();
+std::unique_ptr<GraphNodeIndex> GraphNodeIndex::build(const std::vector<std::pair<std::string, const RdfGraph*>>& rdfGraphs) {
+    auto index = std::make_unique<GraphNodeIndex>();
     NodeIdMapping::global_id_t nextGlobalId = 0;
     std::unordered_map<NodeId, NodeIdMapping::global_id_t, NodeId::NodeIdHash> iriToGlobal;
     std::unordered_map<GlobalLiteralKey, NodeIdMapping::global_id_t, GlobalLiteralKeyHash> literalToGlobal;
-    for (const auto& [explicitName, graph] : rdf_) {
+    for (const auto& [explicitName, graph] : rdfGraphs) {
         std::string key = explicitName.empty() ? std::string{graph->getIri().identifier()} : explicitName;
         const auto& nodes = graph->getNodes();
         std::vector<NodeIdMapping::global_id_t> globalIds(nodes.size(), -1);
@@ -171,8 +171,9 @@ void GraphNodeIndex::build() {
         for (const auto gid : globalIds) {
             mapping->insert(gid);
         }
-        index[std::move(key)] = std::move(mapping);
+        index->index[std::move(key)] = std::move(mapping);
     }
+    return index;
 }
 
 void GraphNodeIndex::serialize(lingodb::utility::Serializer& serializer) const {

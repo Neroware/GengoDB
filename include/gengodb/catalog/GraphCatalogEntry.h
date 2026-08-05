@@ -47,7 +47,7 @@ class RDFGraphCatalogEntry : public GraphCatalogEntry {
     std::string_view getLocalId(int32_t node) const;
     lingodb::runtime::PropertyGraph& getStorage() override;
     semantics::RDFFileFormat getFormat() const { return format; }
-    void addToIndex(semantics::GraphNodeIndex& index) { index.add_rdf(*impl); }
+    const semantics::RdfGraph& getGraph() const { return *impl; }
     virtual void flush() override;
     virtual void ensureFullyLoaded() override;
     virtual void setShouldPersist(bool shouldPersist) override;

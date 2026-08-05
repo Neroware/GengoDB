@@ -240,7 +240,7 @@ struct PropertyStringifier {
         return VarLen32::fromString(std::string(reinterpret_cast<const char*>(ptr), len));
     }
     inline VarLen32 from_node(int32_t node) {
-        return VarLen32::fromString(pgraph->getMetadata().identifier(node));
+        return VarLen32::fromString(pgraph->getMetadata().get_node_name(node));
     }
 };
 
@@ -268,13 +268,13 @@ VarLen32 GraphRefString::fromProp(PropertyGraph::PropRecord* prop) {
 VarLen32 GraphRefString::fromNode(PropertyGraph::NodeEntry* node) {
     PropertyGraph* pgraph = reinterpret_cast<PropertyGraph*>(
         GraphStorage::graphPtr(reinterpret_cast<uint8_t*>(node)));
-    return VarLen32::fromString(pgraph->getMetadata().identifier(
+    return VarLen32::fromString(pgraph->getMetadata().get_node_name(
         GraphStorage::nodeId(reinterpret_cast<uint8_t*>(node))));
 }
 VarLen32 GraphRefString::fromRel(PropertyGraph::RelEntry* rel) {
     PropertyGraph* pgraph = reinterpret_cast<PropertyGraph*>(
         GraphStorage::graphPtr(reinterpret_cast<uint8_t*>(rel)));
-    return VarLen32::fromString(pgraph->getMetadata().identifier(rel->typeId));
+    return VarLen32::fromString(pgraph->getMetadata().get_node_name(rel->typeId));
 }
 
 } // namespace lingodb::runtime

@@ -231,7 +231,7 @@ void RdfGraph::ensureLoaded() {
             rebuildLiteralNodeCache();
         }
         storage->storage().getMetadata().set_name(iri.identifier().data());
-        storage->storage().getMetadata().set_identifier_mapping([&](int32_t id) {
+        storage->storage().getMetadata().set_name_mapping([&](int32_t id) {
             auto nodeId = getNodes().get(id);
             switch(nodeId.type) {
                 case RDFNodeType::IRI:      return static_cast<std::string>(nodeId.iri);
@@ -240,8 +240,6 @@ void RdfGraph::ensureLoaded() {
                 default: return std::string();
             }
         });
-        // This is evil, we do not want to do this!
-        // storage->storage().getMetadata().set_rdf(this);
     }
 }
 void RdfGraph::rebuildLiteralNodeCache() {

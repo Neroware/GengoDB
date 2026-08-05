@@ -38,7 +38,7 @@ class GraphNodeIndexCatalogEntry : public CatalogEntry {
 
     const gengodb::semantics::NodeIdMapping& getMapping(const std::string& graphName) const;
 
-    static std::shared_ptr<GraphNodeIndexCatalogEntry> build(const std::vector<std::shared_ptr<RDFGraphCatalogEntry>>& graphs);
+    static std::shared_ptr<GraphNodeIndexCatalogEntry> build(const std::vector<std::pair<std::string, const semantics::RdfGraph*>>& graphs);
 };
 } // namespace gengodb::catalog
 

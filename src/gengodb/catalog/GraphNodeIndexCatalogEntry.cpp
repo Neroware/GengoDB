@@ -21,14 +21,9 @@ const gengodb::semantics::NodeIdMapping& GraphNodeIndexCatalogEntry::getMapping(
     return impl->getIndex(graphName);
 }
 
-std::shared_ptr<GraphNodeIndexCatalogEntry> GraphNodeIndexCatalogEntry::build(const std::vector<std::shared_ptr<RDFGraphCatalogEntry>>& graphs) {
-    auto idx = std::make_unique<semantics::GraphNodeIndex>();
-    for (const auto& entry : graphs) {
-        if (!entry) continue;
-        entry->addToIndex(*idx);
-    }
-    idx->build();
-    return std::make_shared<GraphNodeIndexCatalogEntry>(std::move(idx));
+std::shared_ptr<GraphNodeIndexCatalogEntry> GraphNodeIndexCatalogEntry::build(const std::vector<std::pair<std::string, const semantics::RdfGraph*>>& graphs) {
+    auto index = semantics::GraphNodeIndex::build(graphs);
+    return std::make_shared<GraphNodeIndexCatalogEntry>(std::move(index));
 }
 
 } // namespace gengodb::catalog

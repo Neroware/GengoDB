@@ -121,7 +121,7 @@ TEST_CASE("GraphNodeIndexCatalogEntry:BuildAndSerialize") {
    const int32_t n1 = static_cast<int32_t>(g1->getNodes().size());
    const int32_t n2 = static_cast<int32_t>(g2->getNodes().size());
 
-   auto indexEntry = GraphNodeIndexCatalogEntry::build({g1, g2});
+   auto indexEntry = GraphNodeIndexCatalogEntry::build({std::make_pair(std::string{}, &g1->getGraph()), std::make_pair(std::string{}, &g2->getGraph())});
    REQUIRE(indexEntry->getName() == GraphNodeIndexCatalogEntry::ENTRY_NAME);
 
    for (int32_t localId = 0; localId < n1; localId++) {
