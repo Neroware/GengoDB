@@ -160,7 +160,7 @@ add_subdirectory(src/compiler/Dialect/util)
 add_subdirectory(src/compiler/Conversion/DBToStd)
 add_subdirectory(src/compiler/Conversion/ArrowToStd)
 add_subdirectory(src/compiler/Conversion/RelAlgToSubOp)
-#add_subdirectory(src/gengodb/compiler/Conversion/GPMToSubOp)
+add_subdirectory(src/gengodb/compiler/Conversion/GPMToSubOp)
 add_subdirectory(src/gengodb/compiler/Conversion/VariantToStd)
 add_subdirectory(src/compiler/Conversion/SubOpToControlFlow)
 

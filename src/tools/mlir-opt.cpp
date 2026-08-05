@@ -3,7 +3,7 @@
 #include "lingodb/compiler/Conversion/DBToStd/DBToStd.h"
 #include "lingodb/compiler/Conversion/RelAlgToSubOp/RelAlgToSubOpPass.h"
 #include "lingodb/compiler/Conversion/SubOpToControlFlow/SubOpToControlFlowPass.h"
-// #include "gengodb/compiler/Conversion/GPMToSubOp/GPMToSubOpPass.h"
+#include "gengodb/compiler/Conversion/GPMToSubOp/GPMToSubOpPass.h"
 #include "gengodb/compiler/Conversion/VariantToStd/VariantToStdPass.h"
 #include "lingodb/compiler/Dialect/Arrow/IR/ArrowDialect.h"
 #include "lingodb/compiler/Dialect/DB/IR/DBDialect.h"
@@ -66,7 +66,7 @@ int main(int argc, char** argv) {
    db::registerDBConversionPasses();
    subop::registerSubOpToControlFlowConversionPasses();
    subop::registerSubOpTransformations();
-   // gpm::registerGPMToSubOpConversionPasses();
+   gpm::registerGPMToSubOpConversionPasses();
    gpm::registerGpmTransformations();
    gsubop::registerGraphSubOpTransformations();
    variant::registerVariantToStdConversionPasses();
