@@ -8,6 +8,11 @@
 #include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgOps.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorDialect.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorOps.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpsTypes.h"
+//#include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
+#include "gengodb/compiler/Dialect/Variant/VariantDialect.h"
 #include "lingodb/compiler/Dialect/SubOperator/Utils.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
 #include "lingodb/compiler/Dialect/util/FunctionHelper.h"
@@ -38,6 +43,7 @@ using namespace mlir;
 
 namespace {
 using namespace lingodb::compiler::dialect;
+using namespace gengodb::compiler::dialect;
 using Member = subop::Member;
 using MemberCollector = llvm::SmallVector<Member>;
 using DefMappingCollector = llvm::SmallVector<subop::DefMappingPairT>;
@@ -3106,6 +3112,8 @@ void RelalgToSubOpLoweringPass::runOnOperation() {
    target.addLegalOp<UnrealizedConversionCastOp>();
    target.addIllegalDialect<relalg::RelAlgDialect>();
    target.addLegalDialect<subop::SubOperatorDialect>();
+   target.addLegalDialect<gsubop::GraphSubOpDialect>();
+   target.addLegalDialect<variant::VariantDialect>();
    target.addLegalDialect<db::DBDialect>();
    target.addLegalDialect<lingodb::compiler::dialect::arrow::ArrowDialect>();
 
