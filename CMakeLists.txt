@@ -151,7 +151,7 @@ add_subdirectory(src/compiler/Dialect/TupleStream)
 add_subdirectory(src/compiler/Dialect/SubOperator)
 #add_subdirectory(src/gengodb/compiler/Dialect/GraphSubOp)
 #add_subdirectory(src/gengodb/compiler/Dialect/GPM)
-#add_subdirectory(src/gengodb/compiler/Dialect/Variant)
+add_subdirectory(src/gengodb/compiler/Dialect/Variant)
 
 add_subdirectory(src/compiler/Dialect/DB)
 add_subdirectory(src/compiler/Dialect/Arrow)
