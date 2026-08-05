@@ -33,6 +33,8 @@ class GraphNodeIndexCatalogEntry : public CatalogEntry {
     static std::shared_ptr<GraphNodeIndexCatalogEntry> deserialize(lingodb::utility::Deserializer& deserializer);
     ~GraphNodeIndexCatalogEntry() override = default;
 
+    void setCatalog(Catalog* catalog) override;
+
     int64_t getGlobalId(const std::string& graphName, int32_t localId) const;
     int32_t getLocalId(const std::string& graphName, int64_t globalId) const;
 

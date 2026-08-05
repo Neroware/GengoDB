@@ -147,6 +147,15 @@ class GraphNodeIndex {
     const NodeIdMapping& getIndex(const std::string& graphName) const { return *index.at(graphName); }
     bool hasIndex(const std::string& graphName) const { return index.contains(graphName); }
 
+    std::vector<std::string> getGraphNames() const {
+        std::vector<std::string> names;
+        names.reserve(index.size());
+        for (const auto& [name, mapping] : index) {
+            names.push_back(name);
+        }
+        return names;
+    }
+
     static std::unique_ptr<GraphNodeIndex> build(const std::vector<std::pair<std::string, const RdfGraph*>>& rdfGraphs);
 
     void serialize(utility::Serializer& serializer) const;
