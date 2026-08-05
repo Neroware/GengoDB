@@ -6,9 +6,12 @@
 #include "lingodb/compiler/Conversion/DBToStd/DBToStd.h"
 #include "lingodb/compiler/Conversion/RelAlgToSubOp/RelAlgToSubOpPass.h"
 #include "lingodb/compiler/Conversion/SubOpToControlFlow/SubOpToControlFlowPass.h"
+#include "gengodb/compiler/Conversion/VariantToStd/VariantToStdPass.h"
 #include "lingodb/compiler/Dialect/RelAlg/Passes.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorOps.h"
 #include "lingodb/compiler/Dialect/SubOperator/Transforms/Passes.h"
+#include "gengodb/compiler/Dialect/Variant/VariantDialect.h"
+#include "gengodb/compiler/Dialect/Variant/VariantOps.h"
 #include "lingodb/compiler/helper.h"
 #include "lingodb/execution/BaselineBackend.h"
 #include "lingodb/execution/CBackend.h"
@@ -40,6 +43,7 @@ utility::Tracer::Event loadIndicesEvent("Compilation", "Lower DB");
 } // end anonymous namespace
 namespace lingodb::execution {
 using namespace lingodb::compiler::dialect;
+using namespace gengodb::compiler::dialect;
 class DefaultQueryOptimizer : public QueryOptimizer {
    void optimize(mlir::ModuleOp& moduleOp) override {
       auto start = std::chrono::high_resolution_clock::now();
@@ -170,6 +174,7 @@ class DefaultImperativeLowering : public LoweringStep {
       mlir::PassManager lowerDBPm(moduleOp->getContext());
       lowerDBPm.enableVerifier(verify);
       addLingoDBInstrumentation(lowerDBPm, getSerializationState());
+      lowerDBPm.addPass(variant::createLowerVariantToStdPass());
       db::createLowerDBPipeline(lowerDBPm);
       if (mlir::failed(lowerDBPm.run(moduleOp))) {
          error.emit() << "Lowering of imperative db operations failed";

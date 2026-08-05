@@ -17,9 +17,8 @@ module {
         %sum = scf.for %i = %lb to %ub step %step iter_args(%acc = %c0) -> (i64) {
             %iInt = arith.index_cast %i : index to i64
             %v = variant.create_scalar %iInt : i64
-            %got = variant.variant_get_val %v -> !db.nullable<i64>
-            %unwrapped = db.nullable_get_val %got : !db.nullable<i64>
-            %newAcc = arith.addi %acc, %unwrapped : i64
+            %got = variant.variant_get_val %v -> i64
+            %newAcc = arith.addi %acc, %got : i64
             scf.yield %newAcc : i64
         }
         %sumAsDb = db.as_nullable %sum : i64, %false -> !db.nullable<i64>

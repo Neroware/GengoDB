@@ -34,11 +34,9 @@ def CreateScalarOp : Variant_Op<"create_scalar", [Pure]> {
 def CreateNodeRefOp : Variant_Op<"create_node_ref", [Pure]> {
     let summary = "wrap a graph-bound RDF term reference in a variant";
     let description = [{
-        `ref` is an opaque graph node pointer (lowers to `!util.ref<i8>).
-        Lowering makes exactly one runtime call to resolve the pointer
-        to the UID stored in the graph node index (i32 -> i64). The
-        variant value is packed as `{xsd::Type::RDFNode, uint64_t*}`.
-        Through the RDF index, a lookup to a graph ref is almost free.
+        `ref` is an opaque graph node pointer (lowers to `!util.ref<i8>`).
+        Lowering makes one runtime call to resolve the node's tag (a cheap
+        PropRecord field read; no RDF/rdf4cpp involved).
     }];
     let arguments = (ins AnyType:$ref);
     let results = (outs Variant:$result);
@@ -49,8 +47,8 @@ def CreateNodeRefOp : Variant_Op<"create_node_ref", [Pure]> {
 // Inspection
 //===----------------------------------------------------------------------===//
 
-def VariantIsAOp : Variant_Op<"variant_get_val", [Pure]> {
-    let summary = "unwrap a variant to a statically-typed nullable value";
+def VariantIsAOp : Variant_Op<"variant_is_a", [Pure]> {
+    let summary = "check whether a variant's tag matches a given type";
     let description = [{
         Returns `true` iff the variant tag matches `typeId`.
     }];
@@ -62,8 +60,8 @@ def VariantIsAOp : Variant_Op<"variant_get_val", [Pure]> {
 def VariantGetValOp : Variant_Op<"variant_get_val", [Pure]> {
     let summary = "unsafe variant unwrap to a statically-typed value";
     let description = [{
-        Strict tag match: undefined behavior if result type in-
-        compatile with the variant value.
+        Strict tag match: undefined behavior if result type is
+        incompatible with the variant value.
     }];
     let arguments = (ins Variant:$val);
     let results = (outs AnyType:$result);
@@ -91,10 +89,11 @@ def CmpOp : Variant_Op<"cmp", [Pure]> {
     let summary = "XSD/SPARQL value-semantics comparison between two variants";
     let description = [{
         `result` is `!db.nullable<i1>`; null means "incomparable" (mismatched
-        datatypes with no valid promotion), Same-tag fixed-width scalars 
-        compare as native loads, IRIs as `i64` id equality, blank nodes as pointer 
-        equality, and the string family via `util.varlen32_cmp`; only cross-tag 
-        numeric promotion needs a runtime call.
+        datatypes with no valid promotion). Same-tag fixed-width scalars
+        compare as native loads and the string family via `util.varlen32_cmp`;
+        RDFNode refs resolve both sides' global UID (via the graph node index)
+        and compare those; only cross-tag numeric promotion and the rare
+        non-fixed-width literal family need a full runtime value comparison.
     }];
     let arguments = (ins VariantCmpPredicateAttr:$predicate, Variant:$lhs, Variant:$rhs);
     let results = (outs AnyType:$result);

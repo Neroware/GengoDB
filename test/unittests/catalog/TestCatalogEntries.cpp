@@ -239,12 +239,12 @@ TEST_CASE("GraphNodeIndexCatalogEntry:WiresPropertyGraphMetadata") {
    for (int32_t localId = 0; localId < n1; localId++) {
       uint64_t uid = meta1.uid(localId);
       REQUIRE(static_cast<int64_t>(uid) == indexEntry->getGlobalId(g1->getName(), localId));
-      REQUIRE(meta1.local_id(uid) == static_cast<uint64_t>(localId));
+      REQUIRE(meta1.local_id(uid) == localId);
    }
    for (int32_t localId = 0; localId < n2; localId++) {
       uint64_t uid = meta2.uid(localId);
       REQUIRE(static_cast<int64_t>(uid) == indexEntry->getGlobalId(g2->getName(), localId));
-      REQUIRE(meta2.local_id(uid) == static_cast<uint64_t>(localId));
+      REQUIRE(meta2.local_id(uid) == localId);
    }
 
    // The shared predicate IRI must resolve to the SAME global id through both graphs'
@@ -323,12 +323,12 @@ TEST_CASE("GraphNodeIndexCatalogEntry:MetadataWiringSurvivesCatalogReload") {
    for (int32_t localId = 0; localId < n1; localId++) {
       uint64_t uid = meta1.uid(localId);
       REQUIRE(static_cast<int64_t>(uid) == (*reloadedIndex)->getGlobalId(g1->getName(), localId));
-      REQUIRE(meta1.local_id(uid) == static_cast<uint64_t>(localId));
+      REQUIRE(meta1.local_id(uid) == localId);
    }
    for (int32_t localId = 0; localId < n2; localId++) {
       uint64_t uid = meta2.uid(localId);
       REQUIRE(static_cast<int64_t>(uid) == (*reloadedIndex)->getGlobalId(g2->getName(), localId));
-      REQUIRE(meta2.local_id(uid) == static_cast<uint64_t>(localId));
+      REQUIRE(meta2.local_id(uid) == localId);
    }
 
    // The shared predicate IRI still resolves to the same global id through both

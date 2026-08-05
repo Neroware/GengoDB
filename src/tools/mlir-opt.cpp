@@ -4,7 +4,7 @@
 #include "lingodb/compiler/Conversion/RelAlgToSubOp/RelAlgToSubOpPass.h"
 #include "lingodb/compiler/Conversion/SubOpToControlFlow/SubOpToControlFlowPass.h"
 // #include "gengodb/compiler/Conversion/GPMToSubOp/GPMToSubOpPass.h"
-// #include "gengodb/compiler/Conversion/VariantToStd/VariantToStdPass.h"
+#include "gengodb/compiler/Conversion/VariantToStd/VariantToStdPass.h"
 #include "lingodb/compiler/Dialect/Arrow/IR/ArrowDialect.h"
 #include "lingodb/compiler/Dialect/DB/IR/DBDialect.h"
 #include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgDialect.h"
@@ -16,7 +16,7 @@
 // #include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
 // #include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
 // #include "gengodb/compiler/Dialect/GPM/Transforms/Passes.h"
-// #include "gengodb/compiler/Dialect/Variant/VariantDialect.h"
+#include "gengodb/compiler/Dialect/Variant/VariantDialect.h"
 #include "lingodb/compiler/Dialect/util/UtilDialect.h"
 #include "lingodb/compiler/mlir-support/eval.h"
 #include "lingodb/execution/BackendPasses.h"
@@ -40,7 +40,7 @@
 #include <mlir/Dialect/ControlFlow/IR/ControlFlow.h>
 int main(int argc, char** argv) {
    using namespace lingodb::compiler::dialect;
-   // using namespace gengodb::compiler::dialect;
+   using namespace gengodb::compiler::dialect;
 
    if (argc == 2 && std::string(argv[1]) == "--features") {
       printFeatures();
@@ -69,7 +69,7 @@ int main(int argc, char** argv) {
    // gpm::registerGPMToSubOpConversionPasses();
    // gpm::registerGpmTransformations();
    // gsubop::registerGraphSubOpTransformations();
-   // variant::registerVariantToStdConversionPasses();
+   variant::registerVariantToStdConversionPasses();
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
       return lingodb::compiler::dialect::arrow::createLowerToStdPass();
    });
@@ -86,7 +86,7 @@ int main(int argc, char** argv) {
    registry.insert<subop::SubOperatorDialect>();
    // registry.insert<gsubop::GraphSubOpDialect>();
    // registry.insert<gpm::GPMDialect>();
-   // registry.insert<variant::VariantDialect>();
+   registry.insert<variant::VariantDialect>();
    registry.insert<db::DBDialect>();
    registry.insert<lingodb::compiler::dialect::arrow::ArrowDialect>();
    registry.insert<mlir::func::FuncDialect>();

@@ -189,7 +189,7 @@ public:
         inline void set_id_mapping(std::function<uint64_t(int32_t)> uid, std::function<int32_t(uint64_t)> local) { uid_ = uid; local_ = local; }
         inline std::string get_node_name(int32_t id) const { return names_(id); }
         inline uint64_t uid(int32_t local_id) const { return uid_(local_id); }
-        inline uint64_t local_id(uint64_t uid) const { return local_(uid); }
+        inline int32_t local_id(uint64_t uid) const { return local_(uid); }
         inline const std::string& name() const { return name_; }
         inline void set_name(const std::string& n) { name_ = n; }
 

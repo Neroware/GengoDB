@@ -36,10 +36,10 @@ void GraphNodeIndexCatalogEntry::setCatalog(Catalog* catalog) {
         if (!graphEntry) continue;
         const auto& mapping = getMapping(name);
         (*graphEntry)->getGraph().getStorage().storage().getMetadata().set_id_mapping(
-            [mapping](int32_t localId) -> uint64_t {
+            [&mapping](int32_t localId) -> uint64_t {
                 return static_cast<uint64_t>(mapping.get_global(localId));
             },
-            [mapping](uint64_t globalId) -> int32_t {
+            [&mapping](uint64_t globalId) -> int32_t {
                 return mapping.get_local(static_cast<int64_t>(globalId));
             });
     }

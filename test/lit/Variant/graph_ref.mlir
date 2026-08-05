@@ -1,9 +1,10 @@
 // RUN: run-mlir %s %S/../../../resources/ttl | FileCheck %s
 
-// `variant.create_ref` against a *real*, RDF-catalog-backed graph (loaded
-// from resources/ttl/coffee.ttl, the same fixture the GPM/SPARQL snippet
-// tests use) -- as opposed to every other test in this directory, which only
-// exercises `variant.create_scalar` on query-text-computed values.
+// `variant.create_node_ref` against a *real*, RDF-catalog-backed graph
+// (loaded from resources/ttl/coffee.ttl, the same fixture the GPM/SPARQL
+// snippet tests use) -- as opposed to every other test in this directory,
+// which only exercises `variant.create_scalar` on query-text-computed
+// values.
 //
 // There is no in-memory/builtin gsubop graph fixture that carries real RDF
 // term data (`gsubop.create_builtin_graph` is for generic graph-algorithm
@@ -29,7 +30,7 @@ module {
                 %node_stream = gsubop.scan_node_set %arg1 : !gsubop.node_set<[vx_it : !gsubop.graph_set_iterator<["all"]>]> @nodes::@ref({type = !gsubop.node_ref<[node_id : i32],[incoming : !gsubop.edge_set<[incoming_it : !gsubop.graph_set_iterator<["incoming"]>]>],[outgoing : !gsubop.edge_set<[outgoing_it : !gsubop.graph_set_iterator<["outgoing"]>]>],[property : !gsubop.property_ref]>})
                 tuples.return %node_stream : !tuples.tuplestream
             }
-            // `variant.create_ref` needs a raw `!util.ref<i8>`; a node_ref
+            // `variant.create_node_ref` needs a raw `!util.ref<i8>`; a node_ref
             // column value is already a real pointer by this point (just
             // typed), so this is the same `unrealized_conversion_cast`
             // narrowing idiom `xsd.compare`'s lowering uses on graph refs.
@@ -38,25 +39,69 @@ module {
                 tuples.return %raw : !util.ref<i8>
             }
             %with_str = subop.map %with_raw computes: [@nodes::@str({type = !db.string})] input: [@nodes::@raw] (%raw : !util.ref<i8>){
-                %v = variant.create_ref %raw : !util.ref<i8>
+                %v = variant.create_node_ref %raw : !util.ref<i8>
                 %s = variant.to_string %v -> !db.string
                 db.runtime_call "DumpValue" (%s) : (!db.string) -> ()
+                %falseFlag = arith.constant 0 : i1
+                // variant.variant_get_val is an unsafe, strict-tag-match
+                // unwrap (undefined behavior on a mismatch, see
+                // VariantOps.td) -- it never comes back null, so mismatch
+                // detection across this node scan has to go through
+                // variant.variant_is_a first and only unwrap on a match.
                 // Zero-copy numeric unwrap: succeeds (with the real graph
                 // payload) only for the xsd:long-tagged rows below; every
-                // other tag (IRI/BNode/string-literal/...) must come back
-                // null rather than reading garbage.
-                %asLong = variant.variant_get_val %v -> !db.nullable<i64>
+                // other tag (RDFNode/string-literal/...) must come back
+                // null (via the variant_is_a guard), not read garbage.
+                // Tag values are gengodb::semantics::xsd::Type's explicit
+                // int32s (see Datatypes.h).
+                %longTag = arith.constant 203 : i32
+                %isLong = variant.variant_is_a %v { type = %longTag }
+                %asLong = scf.if %isLong -> (!db.nullable<i64>) {
+                    %val = variant.variant_get_val %v -> i64
+                    %wrapped = db.as_nullable %val : i64, %falseFlag -> !db.nullable<i64>
+                    scf.yield %wrapped : !db.nullable<i64>
+                } else {
+                    %null = db.null : !db.nullable<i64>
+                    scf.yield %null : !db.nullable<i64>
+                }
                 db.runtime_call "DumpValue" (%asLong) : (!db.nullable<i64>) -> ()
                 // Same idea for the rest of the fixed-width inlined family
                 // (see RdfDatatypeInlineHelper/RdfDatatypeFixedHelper) --
                 // each of these succeeds for exactly one real graph node
                 // (ex:bob's xsd:byte/xsd:short/xsd:float properties) and
                 // must come back null for every other row, never garbage.
-                %asByte = variant.variant_get_val %v -> !db.nullable<i8>
+                %byteTag = arith.constant 206 : i32
+                %isByte = variant.variant_is_a %v { type = %byteTag }
+                %asByte = scf.if %isByte -> (!db.nullable<i8>) {
+                    %val = variant.variant_get_val %v -> i8
+                    %wrapped = db.as_nullable %val : i8, %falseFlag -> !db.nullable<i8>
+                    scf.yield %wrapped : !db.nullable<i8>
+                } else {
+                    %null = db.null : !db.nullable<i8>
+                    scf.yield %null : !db.nullable<i8>
+                }
                 db.runtime_call "DumpValue" (%asByte) : (!db.nullable<i8>) -> ()
-                %asShort = variant.variant_get_val %v -> !db.nullable<i16>
+                %shortTag = arith.constant 205 : i32
+                %isShort = variant.variant_is_a %v { type = %shortTag }
+                %asShort = scf.if %isShort -> (!db.nullable<i16>) {
+                    %val = variant.variant_get_val %v -> i16
+                    %wrapped = db.as_nullable %val : i16, %falseFlag -> !db.nullable<i16>
+                    scf.yield %wrapped : !db.nullable<i16>
+                } else {
+                    %null = db.null : !db.nullable<i16>
+                    scf.yield %null : !db.nullable<i16>
+                }
                 db.runtime_call "DumpValue" (%asShort) : (!db.nullable<i16>) -> ()
-                %asFloat = variant.variant_get_val %v -> !db.nullable<f32>
+                %floatTag = arith.constant 4 : i32
+                %isFloat = variant.variant_is_a %v { type = %floatTag }
+                %asFloat = scf.if %isFloat -> (!db.nullable<f32>) {
+                    %val = variant.variant_get_val %v -> f32
+                    %wrapped = db.as_nullable %val : f32, %falseFlag -> !db.nullable<f32>
+                    scf.yield %wrapped : !db.nullable<f32>
+                } else {
+                    %null = db.null : !db.nullable<f32>
+                    scf.yield %null : !db.nullable<f32>
+                }
                 db.runtime_call "DumpValue" (%asFloat) : (!db.nullable<f32>) -> ()
                 tuples.return %s : !db.string
             }
@@ -72,23 +117,28 @@ module {
     }
 }
 
-// IRI (ex:bob), rendered via the stack-scratch backend-id -> IRI reconstruction path.
+// IRI (ex:bob), rendered via PropertyGraph::Metadata::get_node_name -- a
+// plain in-memory name lookup, no rdf4cpp backend-id reconstruction.
 // CHECK-DAG: string("<http://example.org/bob>")
-// Blank node (_:cup1), rendered via the original graph pointer (identity = pointer, per RDF's blank-node-scoped-to-one-graph semantics).
+// Blank node (_:cup1), rendered the same way (get_node_name); no separate
+// BNode-only runtime path anymore -- both IRI and blank-node refs go
+// through the same RDFNode tag and the same to_string call.
 // CHECK-DAG: string("_:cup1")
-// xsd:long literal (ex:accountBalance "-987654321012345"), zero-copy: the ref points directly at PropertyData's i64 vector, no allocation.
+// xsd:long literal (ex:accountBalance "-987654321012345"), zero-copy: the
+// ref points directly at PropertyData's i64 vector, no allocation.
 // CHECK-DAG: string("-987654321012345")
 // CHECK-DAG: int(-987654321012345)
-// xsd:string literal ("Coffee"): to_string succeeds via the lexical-fallback path, but unwrapping it as i64 must be null (wrong tag), not garbage.
+// xsd:string literal ("Coffee"): to_string succeeds via the blob-literal
+// path, but unwrapping it as i64 must be null (wrong tag), not garbage.
 // CHECK-DAG: string("Coffee")
 // CHECK-DAG: int(NULL)
 
 // Rest of the fixed-width inlined family (RdfDatatypeInlineHelper's 32-bit
 // property slot / RdfDatatypeFixedHelper's 64-bit slot), each verified via
 // both to_string (works against real graph bytes regardless of tag) and a
-// matching-type variant_get_val unwrap (only succeeds via the newly-added
-// literalFromNumeric/extractNumericByTag cases -- these came back NULL
-// before this coverage was added).
+// variant_is_a-guarded variant_get_val unwrap (only takes the non-null
+// branch via extractNumericLiteral's direct-storage read -- these came back
+// NULL before this coverage was added).
 // xsd:byte (ex:temperatureOffset "-5")
 // CHECK-DAG: string("-5")
 // CHECK-DAG: int(-5)
@@ -102,8 +152,8 @@ module {
 // CHECK-DAG: float(21.5)
 // xsd:unsignedByte (ex:tableNumber "12"), xsd:unsignedInt (ex:visitCount
 // "1200"), xsd:unsignedLong (ex:loyaltyPoints "18446744073709551615" -- the
-// full uint64 range, only representable because extractNumericByTag/
-// literalFromNumeric round-trip it as a *native* uint64, not a signed i64)
+// full uint64 range, only representable because extractNumericLiteral/
+// extractNumericByTag round-trip it as a *native* uint64, not a signed i64)
 // -- not reachable via variant_get_val (no MLIR unsigned-integer type
 // support, see tagForScalarType's note), so to_string is the only available
 // end-to-end check for these three.
