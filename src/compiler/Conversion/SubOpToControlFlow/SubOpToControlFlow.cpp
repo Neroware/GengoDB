@@ -5354,6 +5354,85 @@ class TypedPropertyRefScatterOpLowering : public SubOpTupleStreamConsumerConvers
    }
 };
 
+static bool isGraphRefType(mlir::Type type) {
+   return mlir::isa<gsubop::NodeRefType>(type) || mlir::isa<gsubop::EdgeRefType>(type) || mlir::isa<gsubop::PropertyRefType>(type);
+}
+static bool isNullableGraphRefType(mlir::Type type) {
+   auto nullable = mlir::dyn_cast<db::NullableType>(type);
+   return nullable && (mlir::isa<gsubop::NodeRefType>(nullable.getType()) || mlir::isa<gsubop::EdgeRefType>(nullable.getType()));
+}
+static bool isGraphRefTypeOrNullableGraphRefType(mlir::Type type) {
+   return isGraphRefType(type) || isNullableGraphRefType(type);
+}
+
+class GraphRefToStringOpLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::GraphRefToStringOp> {
+   using SubOpTupleStreamConsumerConversionPattern<gsubop::GraphRefToStringOp>::SubOpTupleStreamConsumerConversionPattern;
+   LogicalResult match(gsubop::GraphRefToStringOp castOp) const override {
+      auto refType = castOp.getRef().getColumn().type;
+      if (!isGraphRefTypeOrNullableGraphRefType(refType)) {
+         return failure();
+      }
+      if (auto nullable = mlir::dyn_cast_or_null<db::NullableType>(castOp.getStrRef().getColumn().type)) {
+         return mlir::isa<db::StringType>(nullable.getType()) ? success() : failure();
+      }
+      if (!mlir::isa<db::StringType>(castOp.getStrRef().getColumn().type)) {
+         return failure();
+      }
+      return success();
+   }
+   void rewrite(gsubop::GraphRefToStringOp castOp, OpAdaptor adaptor, SubOpRewriter& rewriter, ColumnMapping& mapping) const override {
+      auto loc = castOp.getLoc();
+      auto ctxt = rewriter.getContext();
+      auto ref = mapping.resolve(castOp, castOp.getRef());
+      auto refType = castOp.getRef().getColumn().type;
+      bool nullable = mlir::isa<db::NullableType>(refType);
+      if (nullable) {
+         refType = mlir::cast<db::NullableType>(refType).getType();
+         if (mlir::isa<db::NullableType>(ref.getType())) {
+            mlir::OpBuilder::InsertionGuard guard(rewriter);
+            rewriter.rewrite(ref.getDefiningOp());
+            ref = rewriter.getMapped(ref);
+         }
+      }
+      mlir::Value strRef;
+      rewriter.atStartOf(&ref.getDefiningOp()->getParentOfType<func::FuncOp>().getBlocks().front(), [&](SubOpRewriter& rewriter){
+         strRef = rewriter.create<util::AllocaOp>(loc, util::RefType::get(ctxt, db::StringType::get(ctxt)), mlir::Value());
+      });
+      auto computeStr = [&](mlir::OpBuilder& b, mlir::Value refVal) -> mlir::Value {
+         mlir::Value rawStr;
+         if (mlir::isa<gsubop::NodeRefType>(refType)) {
+            rawStr = rt::GraphRefString::fromNode(b, loc)({refVal})[0];
+         } 
+         else if (mlir::isa<gsubop::EdgeRefType>(refType)) {
+            rawStr = rt::GraphRefString::fromRel(b, loc)({refVal})[0];
+         } 
+         else {
+            rawStr = rt::GraphRefString::fromProp(b, loc)({refVal})[0];
+         }
+         b.create<util::StoreOp>(loc, rawStr, strRef, mlir::Value());
+         return b.create<util::LoadOp>(loc, strRef);
+      };
+      mlir::Value res;
+      if (nullable) {
+         auto nullableStrType = db::NullableType::get(ctxt, db::StringType::get(ctxt));
+         mlir::Value valid = rewriter.create<util::IsRefValidOp>(loc, rewriter.getI1Type(), ref);
+         res = rewriter.create<mlir::scf::IfOp>(
+                        loc, valid, [&](mlir::OpBuilder& b, mlir::Location loc) {
+                           mlir::Value str = computeStr(b, ref);
+                           mlir::Value asNullable = b.create<db::AsNullableOp>(loc, nullableStrType, str);
+                           b.create<mlir::scf::YieldOp>(loc, asNullable); }, [&](mlir::OpBuilder& b, mlir::Location loc) {
+                           mlir::Value nullStr = b.create<db::NullOp>(loc, nullableStrType);
+                           b.create<mlir::scf::YieldOp>(loc, nullStr); })
+                  .getResult(0);
+      }
+      else {
+         res = computeStr(rewriter, ref);
+      }
+      mapping.define(castOp.getStrRef(), res);
+      rewriter.replaceTupleStream(castOp, mapping);
+   }
+};
+
 }; // namespace
 namespace {
 PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* ctxt) {
@@ -5401,11 +5480,11 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    //PropertyGraph
    patterns.insertPattern<ScanPropertySetLowering>(typeConverter, ctxt);
    patterns.insertPattern<CreateIdentifierLowering>(typeConverter, ctxt);
-   patterns.insertPattern<IdentifiersEqualLowering>(typeConverter, ctxt);
+   // patterns.insertPattern<IdentifiersEqualLowering>(typeConverter, ctxt);
    patterns.insertPattern<GetIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<FilterByIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<CastPropertyRefLowering>(typeConverter, ctxt);
-   // patterns.insertPattern<GraphRefToStringOpLowering>(typeConverter, ctxt);
+   patterns.insertPattern<GraphRefToStringOpLowering>(typeConverter, ctxt);
    // patterns.insertPattern<WrapNullableRefOpLowering>(typeConverter, ctxt);
    // patterns.insertPattern<NullRefOpLowering>(typeConverter, ctxt);
    // patterns.insertPattern<IsNullRefOpLowering>(typeConverter, ctxt);
