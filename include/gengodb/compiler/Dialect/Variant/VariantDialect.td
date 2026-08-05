@@ -41,28 +41,4 @@ def Variant : Variant_Type<"Variant", "variant"> {
     let summary = "a runtime-tagged RDF term (IRI, blank node, or XSD-typed literal)";
 }
 
-//===----------------------------------------------------------------------===//
-// Enums
-//===----------------------------------------------------------------------===//
-
-def VariantCmp_EQ  : I64EnumAttrCase<"eq", 0>;
-def VariantCmp_NEQ : I64EnumAttrCase<"neq", 1>;
-def VariantCmp_LT  : I64EnumAttrCase<"lt", 2>;
-def VariantCmp_LTE : I64EnumAttrCase<"lte", 3>;
-def VariantCmp_GT  : I64EnumAttrCase<"gt", 4>;
-def VariantCmp_GTE : I64EnumAttrCase<"gte", 5>;
-def VariantCmpPredicateAttr : I64EnumAttr<"VariantCmpPredicate", "",
-        [VariantCmp_EQ, VariantCmp_NEQ, VariantCmp_LT, VariantCmp_LTE, VariantCmp_GT, VariantCmp_GTE]> {
-    let cppNamespace = "::gengodb::compiler::dialect::variant";
-}
-
-def VariantArith_ADD : I64EnumAttrCase<"add", 0>;
-def VariantArith_SUB : I64EnumAttrCase<"sub", 1>;
-def VariantArith_MUL : I64EnumAttrCase<"mul", 2>;
-def VariantArith_DIV : I64EnumAttrCase<"div", 3>;
-def VariantArithPredicateAttr : I64EnumAttr<"VariantArithPredicate", "",
-        [VariantArith_ADD, VariantArith_SUB, VariantArith_MUL, VariantArith_DIV]> {
-    let cppNamespace = "::gengodb::compiler::dialect::variant";
-}
-
 #endif // GENGODB_DIALECT_VARIANT_DIALECT

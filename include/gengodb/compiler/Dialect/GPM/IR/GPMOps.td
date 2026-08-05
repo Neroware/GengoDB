@@ -10,6 +10,7 @@ include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgInterfaces.td"
 include "gengodb/compiler/Dialect/GPM/IR/GPMBase.td"
+include "gengodb/compiler/Dialect/Variant/VariantDialect.td"
 
 include "GPMInterfaces.td"
 
@@ -109,6 +110,13 @@ def IdentifiersEqualOp : GPM_Op<"identifiers_equal", [Pure]> {
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);
   let results = (outs I1:$result);
   let assemblyFormat = [{ $lhs `:` type($lhs) `,` $rhs `:` type($rhs) attr-dict }];
+}
+
+def ToVariantOp : GPM_Op<"to_variant", [Pure]> {
+  let summary = "cast to variant";
+  let arguments = (ins VariableBinding:$var);
+  let results = (outs Variant:$result);
+  let assemblyFormat = [{ $var `->` type($result) attr-dict }];
 }
 
 #endif // GENGODB_DIALECT_GPM_IR_GPMOPS

@@ -9,7 +9,7 @@
 // SparqlMLIRTranslator includes MLIR dialect headers that introduce
 // lingodb::compiler::dialect::arrow; include execution headers above first
 // to avoid ambiguity with Apache Arrow's ::arrow namespace.
-// #include "gengodb/compiler/frontend/SparqlMLIRTranslator.h"
+#include "gengodb/compiler/frontend/SparqlMLIRTranslator.h"
 
 #include <fstream>
 #include <iostream>
@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
 
    std::string mlirText;
    try {
-      //mlirText = translateSparqlToMLIRString(buf.str());
+      mlirText = translateSparqlToMLIRString(buf.str());
    } catch (const std::exception& e) {
       std::cerr << "Error translating SPARQL: " << e.what() << std::endl;
       return 1;
