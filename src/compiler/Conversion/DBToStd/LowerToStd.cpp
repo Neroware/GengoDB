@@ -1078,7 +1078,53 @@ class HashLowering : public ConversionPattern {
       return builder.create<util::Hash64>(loc, builder.getIndexType(), asIndex);
    }
    Value hashImpl(OpBuilder& builder, Location loc, Value v, Value totalHash, Type originalType) const {
-      if (auto intType = mlir::dyn_cast_or_null<mlir::IntegerType>(v.getType())) {
+      if (mlir::isa<variant::VariantType>(originalType)) {
+         auto variantTupleType = layout::getVariantTupleType(builder.getContext());
+         Value asTuple = v.getType() == variantTupleType ? v : builder.create<mlir::UnrealizedConversionCastOp>(loc, variantTupleType, v).getResult(0);
+         auto [tag, ref] = layout::unpackVariant(builder, loc, asTuple);
+         auto tp = layout::computeTagPredicates(builder, loc, tag);
+         auto varLen32Type = util::VarLen32Type::get(builder.getContext());
+
+         auto ifResult = builder.create<mlir::scf::IfOp>(
+            loc, tp.isNumericFamily,
+            [&](OpBuilder& b, Location l) {
+               Value payload = b.create<util::PtrToIntOp>(l, b.getI64Type(), ref);
+               Value bits = rt::VariantRuntime::hashNumeric(b, l)({payload, tag})[0];
+               b.create<mlir::scf::YieldOp>(l, combineHashes(b, l, hashInteger(b, l, bits), totalHash));
+            },
+            [&](OpBuilder& b, Location l) {
+               auto ifString = b.create<mlir::scf::IfOp>(
+                  l, tp.isString,
+                  [&](OpBuilder& b2, Location l2) {
+                     Value str = layout::loadTyped(b2, l2, ref, varLen32Type);
+                     b2.create<mlir::scf::YieldOp>(l2, hashImpl(b2, l2, str, totalHash, varLen32Type));
+                  },
+                  [&](OpBuilder& b2, Location l2) {
+                     auto ifRDFNode = b2.create<mlir::scf::IfOp>(
+                        l2, tp.isRDFNode,
+                        [&](OpBuilder& b3, Location l3) {
+                           Value uid = rt::VariantRuntime::resolveNodeRef(b3, l3)({ref})[0];
+                           b3.create<mlir::scf::YieldOp>(l3, combineHashes(b3, l3, hashInteger(b3, l3, uid), totalHash));
+                        },
+                        [&](OpBuilder& b3, Location l3) {
+                           auto ifUnspecified = b3.create<mlir::scf::IfOp>(
+                              l3, tp.isUnspecified,
+                              [&](OpBuilder& b4, Location l4) {
+                                 Value h = totalHash ? totalHash : b4.create<arith::ConstantOp>(l4, b4.getIndexType(), b4.getIndexAttr(0));
+                                 b4.create<mlir::scf::YieldOp>(l4, h);
+                              },
+                              [&](OpBuilder& b4, Location l4) {
+                                 Value str = rt::VariantRuntime::toStringBlobLiteral(b4, l4)({ref})[0];
+                                 b4.create<mlir::scf::YieldOp>(l4, hashImpl(b4, l4, str, totalHash, varLen32Type));
+                              });
+                           b3.create<mlir::scf::YieldOp>(l3, ifUnspecified.getResult(0));
+                        });
+                     b2.create<mlir::scf::YieldOp>(l2, ifRDFNode.getResult(0));
+                  });
+               b.create<mlir::scf::YieldOp>(l, ifString.getResult(0));
+            });
+         return ifResult.getResult(0);
+      } else if (auto intType = mlir::dyn_cast_or_null<mlir::IntegerType>(v.getType())) {
          if (intType.getWidth() == 128) {
             auto i64Type = IntegerType::get(builder.getContext(), 64);
             auto i128Type = IntegerType::get(builder.getContext(), 128);
@@ -1134,51 +1180,6 @@ class HashLowering : public ConversionPattern {
          }
          assert(false && "should not happen");
          return Value();
-      } else if (mlir::isa<variant::VariantType>(v.getType())) {
-         auto variantTupleType = layout::getVariantTupleType(builder.getContext());
-         Value asTuple = builder.create<mlir::UnrealizedConversionCastOp>(loc, variantTupleType, v).getResult(0);
-         auto [tag, ref] = layout::unpackVariant(builder, loc, asTuple);
-         auto tp = layout::computeTagPredicates(builder, loc, tag);
-         auto varLen32Type = util::VarLen32Type::get(builder.getContext());
-
-         auto ifResult = builder.create<mlir::scf::IfOp>(
-            loc, tp.isNumericFamily,
-            [&](OpBuilder& b, Location l) {
-               Value bits = rt::VariantRuntime::hashNumeric(b, l)({ref, tag})[0];
-               b.create<mlir::scf::YieldOp>(l, combineHashes(b, l, hashInteger(b, l, bits), totalHash));
-            },
-            [&](OpBuilder& b, Location l) {
-               auto ifString = b.create<mlir::scf::IfOp>(
-                  l, tp.isString,
-                  [&](OpBuilder& b2, Location l2) {
-                     Value str = layout::loadTyped(b2, l2, ref, varLen32Type);
-                     b2.create<mlir::scf::YieldOp>(l2, hashImpl(b2, l2, str, totalHash, varLen32Type));
-                  },
-                  [&](OpBuilder& b2, Location l2) {
-                     auto ifRDFNode = b2.create<mlir::scf::IfOp>(
-                        l2, tp.isRDFNode,
-                        [&](OpBuilder& b3, Location l3) {
-                           Value uid = rt::VariantRuntime::resolveNodeRef(b3, l3)({ref})[0];
-                           b3.create<mlir::scf::YieldOp>(l3, combineHashes(b3, l3, hashInteger(b3, l3, uid), totalHash));
-                        },
-                        [&](OpBuilder& b3, Location l3) {
-                           auto ifUnspecified = b3.create<mlir::scf::IfOp>(
-                              l3, tp.isUnspecified,
-                              [&](OpBuilder& b4, Location l4) {
-                                 Value h = totalHash ? totalHash : b4.create<arith::ConstantOp>(l4, b4.getIndexType(), b4.getIndexAttr(0));
-                                 b4.create<mlir::scf::YieldOp>(l4, h);
-                              },
-                              [&](OpBuilder& b4, Location l4) {
-                                 Value str = rt::VariantRuntime::toStringBlobLiteral(b4, l4)({ref})[0];
-                                 b4.create<mlir::scf::YieldOp>(l4, hashImpl(b4, l4, str, totalHash, varLen32Type));
-                              });
-                           b3.create<mlir::scf::YieldOp>(l3, ifUnspecified.getResult(0));
-                        });
-                     b2.create<mlir::scf::YieldOp>(l2, ifRDFNode.getResult(0));
-                  });
-               b.create<mlir::scf::YieldOp>(l, ifString.getResult(0));
-            });
-         return ifResult.getResult(0);
       }
       assert(false && "should not happen");
       return Value();
@@ -1498,7 +1499,17 @@ void DBToStdLoweringPass::runOnOperation() {
          return mlir::IntegerType::get(ctxt, 32);
       }
    });
-
+   typeConverter.addConversion([&](variant::VariantType t) -> mlir::Type {
+      return layout::getVariantTupleType(ctxt);
+   });
+   typeConverter.addSourceMaterialization([](OpBuilder& builder, mlir::Type resultType, mlir::ValueRange inputs, mlir::Location loc) -> mlir::Value {
+      if (inputs.size() != 1) return nullptr;
+      return builder.create<mlir::UnrealizedConversionCastOp>(loc, resultType, inputs).getResult(0);
+   });
+   typeConverter.addTargetMaterialization([](OpBuilder& builder, mlir::Type resultType, mlir::ValueRange inputs, mlir::Location loc) -> mlir::Value {
+      if (inputs.size() != 1) return nullptr;
+      return builder.create<mlir::UnrealizedConversionCastOp>(loc, resultType, inputs).getResult(0);
+   });
    typeConverter.addConversion([&](db::NullableType type) {
       mlir::Type payloadType = typeConverter.convertType(type.getType());
       if (mlir::isa<util::VarLen32Type>(payloadType)) {

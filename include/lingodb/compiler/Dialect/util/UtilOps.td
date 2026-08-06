@@ -99,6 +99,16 @@ def PtrTagMatches : Util_Op<"ptr_tag_matches",[Pure]> {
     let results = (outs I1:$matches);
     let assemblyFormat = "$hash `,` $ref `:` type($ref) attr-dict";
 }
+def IntToPtrOp : Util_Op<"int_to_ptr",[Pure]> {
+    let arguments = (ins I64:$val);
+    let results = (outs RefType:$ref);
+    let assemblyFormat = "$val `:` type($val) `->` type($ref) attr-dict";
+}
+def PtrToIntOp : Util_Op<"ptr_to_int",[Pure]> {
+    let arguments = (ins RefType:$ref);
+    let results = (outs I64:$val);
+    let assemblyFormat = "$ref `:` type($ref) `->` type($val) attr-dict";
+}
 def AllocOp  : Util_Op<"alloc"> {
 let arguments = (ins Optional<Index>:$size);
 let results=(outs RefType:$ref);

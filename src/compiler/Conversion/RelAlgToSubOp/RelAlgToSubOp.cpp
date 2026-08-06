@@ -13,6 +13,7 @@
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpsTypes.h"
 //#include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
 #include "gengodb/compiler/Dialect/Variant/VariantDialect.h"
+#include "gengodb/compiler/Dialect/Variant/VariantOps.h"
 #include "lingodb/compiler/Dialect/SubOperator/Utils.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
 #include "lingodb/compiler/Dialect/util/FunctionHelper.h"
@@ -143,11 +144,19 @@ class BaseTableLowering : public OpConversionPattern<relalg::BaseTableOp> {
       return success();
    }
 };
-
+static mlir::Value compareOperands(mlir::OpBuilder& rewriter, mlir::Location loc, mlir::Value l, mlir::Value r, bool useIsa) {
+   // db.compare does not apply for variant dialect
+   if (mlir::isa<variant::VariantType>(l.getType())) {
+      auto cmpType = db::NullableType::get(rewriter.getContext(), rewriter.getI1Type());
+      mlir::Value cmp = rewriter.create<variant::CmpOp>(loc, cmpType, variant::VariantCmpPredicate::eq, l, r);
+      return rewriter.create<db::DeriveTruth>(loc, rewriter.getI1Type(), cmp);
+   }
+   return rewriter.create<db::CmpOp>(loc, useIsa ? db::DBCmpPredicate::isa : db::DBCmpPredicate::eq, l, r);
+}
 static mlir::Value compareKeys(mlir::OpBuilder& rewriter, mlir::ValueRange leftUnpacked, mlir::ValueRange rightUnpacked, mlir::Location loc) {
    mlir::Value equal;
    for (size_t i = 0; i < leftUnpacked.size(); i++) {
-      mlir::Value compared = rewriter.create<db::CmpOp>(loc, db::DBCmpPredicate::isa, leftUnpacked[i], rightUnpacked[i]);
+      mlir::Value compared = compareOperands(rewriter, loc, leftUnpacked[i], rightUnpacked[i], /*useIsa=*/true);
       if (equal) {
          equal = rewriter.create<mlir::arith::AndIOp>(loc, rewriter.getI1Type(), mlir::ValueRange({equal, compared}));
       } else {
@@ -1053,7 +1062,7 @@ mlir::Block* createEqFn(mlir::ConversionPatternRewriter& rewriter, mlir::ArrayAt
    for (auto z : llvm::zip(leftArgs, rightArgs, nullsEqual)) {
       auto [l, r, nE] = z;
       bool useIsa = mlir::cast<mlir::IntegerAttr>(nE).getInt();
-      mlir::Value compared = rewriter.create<db::CmpOp>(loc, useIsa ? db::DBCmpPredicate::isa : db::DBCmpPredicate::eq, l, r);
+      mlir::Value compared = compareOperands(rewriter, loc, l, r, useIsa);
       cmps.push_back(compared);
    }
    mlir::Value anded;

@@ -1451,7 +1451,8 @@ class InFlightLowering : public SubOpConversionPattern<subop::InFlightOp> {
    using SubOpConversionPattern<subop::InFlightOp>::SubOpConversionPattern;
 
    LogicalResult matchAndRewrite(subop::InFlightOp inFlightOp, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
-      ColumnMapping mapping(inFlightOp);
+      ColumnMapping mapping;
+      mapping.define(inFlightOp.getColumns(), adaptor.getValues());
       rewriter.replaceTupleStream(inFlightOp, mapping);
       return success();
    }

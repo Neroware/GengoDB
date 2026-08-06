@@ -57,7 +57,7 @@ Value packFromTriBool(OpBuilder& b, Location loc, Type nullableResultType, Value
     Value boolVal = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, raw, one);
     return asNullable(b, loc, nullableResultType, boolVal, isNull);
 }
-Value createAlloca(ConversionPatternRewriter& rewriter, Operation* anchor, Type elementType, std::optional<int64_t> count = std::nullopt) {
+Value allocStack(ConversionPatternRewriter& rewriter, Operation* anchor, Type elementType, std::optional<int64_t> count = std::nullopt) {
     Operation* nearestIsolated = anchor->getParentOp();
     while (nearestIsolated && !nearestIsolated->hasTrait<mlir::OpTrait::IsIsolatedFromAbove>()) {
         nearestIsolated = nearestIsolated->getParentOp();
@@ -71,6 +71,50 @@ Value createAlloca(ConversionPatternRewriter& rewriter, Operation* anchor, Type 
     rewriter.setInsertionPointToStart(&funcOp.getBody().front());
     Value dynamicSize = count ? rewriter.create<arith::ConstantIndexOp>(funcOp.getLoc(), *count).getResult() : Value();
     return rewriter.create<util::AllocaOp>(funcOp.getLoc(), util::RefType::get(rewriter.getContext(), elementType), dynamicSize);
+}
+Value allocScratch(OpBuilder& b, Location loc, mlir::Type elementType, int64_t count = 1) {
+    Value bytes = b.create<util::SizeOfOp>(loc, b.getIndexType(), elementType);
+    if (count != 1) {
+        Value countVal = b.create<arith::ConstantIndexOp>(loc, count);
+        bytes = b.create<arith::MulIOp>(loc, bytes, countVal);
+    }
+    Value bytesI64 = b.create<arith::IndexCastOp>(loc, b.getI64Type(), bytes);
+    return rt::VariantRuntime::allocScratch(b, loc)({bytesI64})[0];
+}
+
+bool isInlineScalarType(mlir::Type t) {
+    return t.isInteger(1) || t.isSignlessInteger(8) || t.isSignlessInteger(16) ||
+        t.isSignlessInteger(32) || t.isSignlessInteger(64) || t.isF32() || t.isF64();
+}
+Value widenToI64(OpBuilder& b, Location loc, Value v) {
+    auto t = v.getType();
+    if (t.isF32()) {
+        Value bits32 = b.create<arith::BitcastOp>(loc, b.getI32Type(), v);
+        return b.create<arith::ExtUIOp>(loc, b.getI64Type(), bits32);
+    }
+    if (t.isF64()) return b.create<arith::BitcastOp>(loc, b.getI64Type(), v);
+    if (t.isInteger(64)) return v;
+    return b.create<arith::ExtUIOp>(loc, b.getI64Type(), v);
+}
+Value narrowFromI64(OpBuilder& b, Location loc, Value bits, Type target) {
+    if (target.isF32()) {
+        Value bits32 = b.create<arith::TruncIOp>(loc, b.getI32Type(), bits);
+        return b.create<arith::BitcastOp>(loc, b.getF32Type(), bits32);
+    }
+    if (target.isF64()) return b.create<arith::BitcastOp>(loc, b.getF64Type(), bits);
+    if (target.isInteger(64)) return bits;
+    return b.create<arith::TruncIOp>(loc, target, bits);
+}
+Value packInline(OpBuilder& b, Location loc, Value v) {
+    return b.create<util::IntToPtrOp>(loc, getPointerType(b.getContext()), widenToI64(b, loc, v));
+}
+Value unpackInline(OpBuilder& b, Location loc, Value ref, Type target) {
+    Value bits = b.create<util::PtrToIntOp>(loc, b.getI64Type(), ref);
+    return narrowFromI64(b, loc, bits, target);
+}
+Value inlineFromScratch(OpBuilder& b, Location loc, Value scratch) {
+    Value bits = loadTyped(b, loc, scratch, b.getI64Type());
+    return b.create<util::IntToPtrOp>(loc, getPointerType(b.getContext()), bits);
 }
 std::optional<int32_t> tagForScalarType(mlir::Type t) {
     if (t.isInteger(1)) return xsd::to_int32(xsd::Type::Boolean);
@@ -131,11 +175,15 @@ class CreateScalarOpLowering : public OpConversionPattern<variant::CreateScalarO
         auto valType = adaptor.getValue().getType();
         auto tagOpt = tagForScalarType(valType);
         if (!tagOpt) return rewriter.notifyMatchFailure(op, "unsupported scalar type for variant.create_scalar (see tagForScalarType)");
-        Value typedRef = createAlloca(rewriter, op, valType);
-        rewriter.create<util::StoreOp>(loc, adaptor.getValue(), typedRef, Value());
-        Value opaqueRef = rewriter.create<util::GenericMemrefCastOp>(loc, getPointerType(ctxt), typedRef);
         Value tag = constI32(rewriter, loc, *tagOpt);
-        rewriter.replaceOp(op, packVariant(rewriter, loc, tag, opaqueRef));
+        if (isInlineScalarType(valType)) {
+            rewriter.replaceOp(op, packVariant(rewriter, loc, tag, packInline(rewriter, loc, adaptor.getValue())));
+            return success();
+        }
+        Value strSlot = allocScratch(rewriter, loc, valType);
+        Value typedSlot = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, valType), strSlot);
+        rewriter.create<util::StoreOp>(loc, adaptor.getValue(), typedSlot, Value());
+        rewriter.replaceOp(op, packVariant(rewriter, loc, tag, strSlot));
         return success();
     }
 };
@@ -149,14 +197,13 @@ class CreateNodeRefOpLowering : public OpConversionPattern<variant::CreateNodeRe
         Value opaqueRef = getPointer(rewriter, loc, adaptor.getRef());
         Value tag = rt::VariantRuntime::resolveRefTag(rewriter, loc)({opaqueRef})[0];
         auto tagPred = computeTagPredicates(rewriter, loc, tag);
-        auto opaqueType = getPointerType(ctxt);
 
         auto outerIf = rewriter.create<scf::IfOp>(
             loc, tagPred.isNumericFamily,
             [&](OpBuilder& b, Location l) {
-                Value slot = createAlloca(rewriter, op, b.getIntegerType(8), 8);
-                rt::VariantRuntime::extractNumericLiteral(b, l)({opaqueRef, tag, slot});
-                b.create<scf::YieldOp>(l, slot);
+                Value scratch = allocStack(rewriter, op, b.getIntegerType(8), 8);
+                rt::VariantRuntime::extractNumericLiteral(b, l)({opaqueRef, tag, scratch});
+                b.create<scf::YieldOp>(l, inlineFromScratch(b, l, scratch));
             },
             [&](OpBuilder& b, Location l) {
                 auto innerIf = b.create<scf::IfOp>(
@@ -169,10 +216,10 @@ class CreateNodeRefOpLowering : public OpConversionPattern<variant::CreateNodeRe
                             l2, tagPred.isString,
                             [&](OpBuilder& b3, Location l3) {
                                 Value strVal = rt::VariantRuntime::extractBlobLiteral(b3, l3)({opaqueRef})[0];
-                                Value strSlot = createAlloca(rewriter, op, getVarlen32Type(ctxt));
-                                b3.create<util::StoreOp>(l3, strVal, strSlot, Value());
-                                Value opaqueStrSlot = b3.create<util::GenericMemrefCastOp>(l3, opaqueType, strSlot);
-                                b3.create<scf::YieldOp>(l3, opaqueStrSlot);
+                                Value strSlot = allocScratch(b3, l3, getVarlen32Type(ctxt));
+                                Value typedStrSlot = b3.create<util::GenericMemrefCastOp>(l3, util::RefType::get(ctxt, getVarlen32Type(ctxt)), strSlot);
+                                b3.create<util::StoreOp>(l3, strVal, typedStrSlot, Value());
+                                b3.create<scf::YieldOp>(l3, strSlot);
                             },
                             [&](OpBuilder& b3, Location l3) {
                                 b3.create<scf::YieldOp>(l3, opaqueRef);
@@ -211,6 +258,10 @@ class VariantGetValOpLowering : public OpConversionPattern<variant::VariantGetVa
             rewriter.replaceOp(op, ref);
             return success();
         }
+        if (isInlineScalarType(resultType)) {
+            rewriter.replaceOp(op, unpackInline(rewriter, loc, ref, resultType));
+            return success();
+        }
         rewriter.replaceOp(op, loadTyped(rewriter, loc, ref, resultType));
         return success();
     }
@@ -227,7 +278,8 @@ class ToStringOpLowering : public OpConversionPattern<variant::ToStringOp> {
         auto result = rewriter.create<scf::IfOp>(
             loc, tp.isNumericFamily,
             [&](OpBuilder& b, Location l) {
-                b.create<scf::YieldOp>(l, rt::VariantRuntime::toStringNumeric(b, l)({ref, tag})[0]);
+                Value payload = b.create<util::PtrToIntOp>(l, b.getI64Type(), ref);
+                b.create<scf::YieldOp>(l, rt::VariantRuntime::toStringNumeric(b, l)({payload, tag})[0]);
             },
             [&](OpBuilder& b, Location l) {
                 auto ifRDFNode = b.create<scf::IfOp>(
@@ -275,8 +327,8 @@ class CmpOpLowering : public OpConversionPattern<variant::CmpOp> {
                 auto ifBool = b.create<scf::IfOp>(
                     l, lp.isBool,
                     [&](OpBuilder& b2, Location l2) {
-                        Value lv = loadTyped(b2, l2, lhsRef, b2.getI1Type());
-                        Value rv = loadTyped(b2, l2, rhsRef, b2.getI1Type());
+                        Value lv = unpackInline(b2, l2, lhsRef, b2.getI1Type());
+                        Value rv = unpackInline(b2, l2, rhsRef, b2.getI1Type());
                         Value cmp = b2.create<arith::CmpIOp>(l2, toCmpIPredicate(predicate), lv, rv);
                         b2.create<scf::YieldOp>(l2, asNullable(b2, l2, resultType, cmp, constBool(b2, l2, false)));
                     },
@@ -284,8 +336,8 @@ class CmpOpLowering : public OpConversionPattern<variant::CmpOp> {
                         auto ifI64 = b2.create<scf::IfOp>(
                             l2, lp.isLong,
                             [&](OpBuilder& b3, Location l3) {
-                            Value lv = loadTyped(b3, l3, lhsRef, b3.getI64Type());
-                            Value rv = loadTyped(b3, l3, rhsRef, b3.getI64Type());
+                            Value lv = unpackInline(b3, l3, lhsRef, b3.getI64Type());
+                            Value rv = unpackInline(b3, l3, rhsRef, b3.getI64Type());
                             Value cmp = b3.create<arith::CmpIOp>(l3, toCmpIPredicate(predicate), lv, rv);
                             b3.create<scf::YieldOp>(l3, asNullable(b3, l3, resultType, cmp, constBool(b3, l3, false)));
                             },
@@ -293,8 +345,8 @@ class CmpOpLowering : public OpConversionPattern<variant::CmpOp> {
                             auto ifDouble = b3.create<scf::IfOp>(
                                 l3, lp.isDouble,
                                 [&](OpBuilder& b4, Location l4) {
-                                    Value lv = loadTyped(b4, l4, lhsRef, b4.getF64Type());
-                                    Value rv = loadTyped(b4, l4, rhsRef, b4.getF64Type());
+                                    Value lv = unpackInline(b4, l4, lhsRef, b4.getF64Type());
+                                    Value rv = unpackInline(b4, l4, rhsRef, b4.getF64Type());
                                     Value cmp = b4.create<arith::CmpFOp>(l4, toCmpFPredicate(predicate), lv, rv);
                                     b4.create<scf::YieldOp>(l4, asNullable(b4, l4, resultType, cmp, constBool(b4, l4, false)));
                                 },
@@ -302,7 +354,9 @@ class CmpOpLowering : public OpConversionPattern<variant::CmpOp> {
                                     auto ifRemainingNumeric = b4.create<scf::IfOp>(
                                         l4, lp.isNumericFamily,
                                         [&](OpBuilder& b5, Location l5) {
-                                            Value raw = rt::VariantRuntime::compareNumericCross(b5, l5)({lhsRef, lhsTag, rhsRef, rhsTag, predConst})[0];
+                                            Value lhsPayload = b5.create<util::PtrToIntOp>(l5, b5.getI64Type(), lhsRef);
+                                            Value rhsPayload = b5.create<util::PtrToIntOp>(l5, b5.getI64Type(), rhsRef);
+                                            Value raw = rt::VariantRuntime::compareNumericCross(b5, l5)({lhsPayload, lhsTag, rhsPayload, rhsTag, predConst})[0];
                                             b5.create<scf::YieldOp>(l5, packFromTriBool(b5, l5, resultType, raw));
                                         },
                                         [&](OpBuilder& b5, Location l5) {
@@ -350,7 +404,9 @@ class CmpOpLowering : public OpConversionPattern<variant::CmpOp> {
                 auto ifNumeric = b.create<scf::IfOp>(
                     l, bothNumeric,
                     [&](OpBuilder& b2, Location l2) {
-                        Value raw = rt::VariantRuntime::compareNumericCross(b2, l2)({lhsRef, lhsTag, rhsRef, rhsTag, predConst})[0];
+                        Value lhsPayload = b2.create<util::PtrToIntOp>(l2, b2.getI64Type(), lhsRef);
+                        Value rhsPayload = b2.create<util::PtrToIntOp>(l2, b2.getI64Type(), rhsRef);
+                        Value raw = rt::VariantRuntime::compareNumericCross(b2, l2)({lhsPayload, lhsTag, rhsPayload, rhsTag, predConst})[0];
                         b2.create<scf::YieldOp>(l2, packFromTriBool(b2, l2, resultType, raw));
                     },
                     [&](OpBuilder& b2, Location l2) {
@@ -397,7 +453,6 @@ class ArithOpLowering : public OpConversionPattern<variant::ArithOp> {
     using OpConversionPattern<variant::ArithOp>::OpConversionPattern;
     LogicalResult matchAndRewrite(variant::ArithOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
         auto loc = op->getLoc();
-        auto* ctxt = getContext();
         auto [lhsTag, lhsRef] = unpackVariant(rewriter, loc, adaptor.getLhs());
         auto [rhsTag, rhsRef] = unpackVariant(rewriter, loc, adaptor.getRhs());
         Value sameTag = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lhsTag, rhsTag);
@@ -416,30 +471,26 @@ class ArithOpLowering : public OpConversionPattern<variant::ArithOp> {
                 auto ifLong = b.create<scf::IfOp>(
                     l, isLong,
                     [&](OpBuilder& b2, Location l2) {
-                        Value lv = loadTyped(b2, l2, lhsRef, b2.getI64Type());
-                        Value rv = loadTyped(b2, l2, rhsRef, b2.getI64Type());
+                        Value lv = unpackInline(b2, l2, lhsRef, b2.getI64Type());
+                        Value rv = unpackInline(b2, l2, rhsRef, b2.getI64Type());
                         Value res = applyIntArith(b2, l2, predicate, lv, rv);
-                        Value slot = createAlloca(rewriter, op, b2.getI64Type());
-                        b2.create<util::StoreOp>(l2, res, slot, Value());
-                        Value opaque = b2.create<util::GenericMemrefCastOp>(l2, getPointerType(ctxt), slot);
-                        b2.create<scf::YieldOp>(l2, packVariant(b2, l2, longTag, opaque));
+                        b2.create<scf::YieldOp>(l2, packVariant(b2, l2, longTag, packInline(b2, l2, res)));
                     },
                     [&](OpBuilder& b2, Location l2) {
-                        Value lv = loadTyped(b2, l2, lhsRef, b2.getF64Type());
-                        Value rv = loadTyped(b2, l2, rhsRef, b2.getF64Type());
+                        Value lv = unpackInline(b2, l2, lhsRef, b2.getF64Type());
+                        Value rv = unpackInline(b2, l2, rhsRef, b2.getF64Type());
                         Value res = applyFloatArith(b2, l2, predicate, lv, rv);
-                        Value slot = createAlloca(rewriter, op, b2.getF64Type());
-                        b2.create<util::StoreOp>(l2, res, slot, Value());
-                        Value opaque = b2.create<util::GenericMemrefCastOp>(l2, getPointerType(ctxt), slot);
-                        b2.create<scf::YieldOp>(l2, packVariant(b2, l2, doubleTag, opaque));
+                        b2.create<scf::YieldOp>(l2, packVariant(b2, l2, doubleTag, packInline(b2, l2, res)));
                     });
                 b.create<scf::YieldOp>(l, ifLong.getResult(0));
             },
             [&](OpBuilder& b, Location l) {
                 Value predConst = constI32(b, l, static_cast<int32_t>(predicate));
-                Value outSlot = createAlloca(rewriter, op, b.getIntegerType(8), 8);
-                Value resultTag = rt::VariantRuntime::arithNumericCross(b, l)({lhsRef, lhsTag, rhsRef, rhsTag, predConst, outSlot})[0];
-                b.create<scf::YieldOp>(l, packVariant(b, l, resultTag, outSlot));
+                Value lhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), lhsRef);
+                Value rhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), rhsRef);
+                Value outSlot = allocStack(rewriter, op, b.getIntegerType(8), 8);
+                Value resultTag = rt::VariantRuntime::arithNumericCross(b, l)({lhsPayload, lhsTag, rhsPayload, rhsTag, predConst, outSlot})[0];
+                b.create<scf::YieldOp>(l, packVariant(b, l, resultTag, inlineFromScratch(b, l, outSlot)));
             });
         rewriter.replaceOp(op, result.getResult(0));
         return success();
@@ -481,6 +532,10 @@ struct VariantToStdLoweringPass
             return getVariantTupleType(type.getContext());
         });
         typeConverter.addSourceMaterialization([](OpBuilder& builder, mlir::Type resultType, mlir::ValueRange inputs, mlir::Location loc) -> mlir::Value {
+            if (inputs.size() != 1) return nullptr;
+            return builder.create<mlir::UnrealizedConversionCastOp>(loc, resultType, inputs).getResult(0);
+        });
+        typeConverter.addTargetMaterialization([](OpBuilder& builder, mlir::Type resultType, mlir::ValueRange inputs, mlir::Location loc) -> mlir::Value {
             if (inputs.size() != 1) return nullptr;
             return builder.create<mlir::UnrealizedConversionCastOp>(loc, resultType, inputs).getResult(0);
         });

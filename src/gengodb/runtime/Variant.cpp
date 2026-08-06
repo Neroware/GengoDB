@@ -16,10 +16,6 @@ namespace xsd = gengodb::semantics::xsd;
 
 namespace {
 
-// ---- rdf4cpp glue for the (rare) cases that genuinely need XSD value
-// semantics: cross-tag numeric promotion, and comparing/stringifying the
-// literal datatypes that don't have a fixed/inlined storage shape. ----
-
 inline constexpr int8_t triBoolToInt8(rdf4cpp::TriBool b) {
     if (b == rdf4cpp::TriBool::Err) return -1;
     return b ? 1 : 0;
@@ -200,12 +196,6 @@ inline PropertyGraph* propertyGraphOf(PropertyGraph::NodeEntry* ref) {
         GraphStorage::graphPtr(reinterpret_cast<uint8_t*>(ref)));
 }
 
-// The storage shape a literal's raw bytes live in, keyed directly off the
-// xsd::Type tag (which PropRecord.type already carries -- see
-// NodeHelper::resolve in RdfGraph.cpp). Mirrors RdfDatatypeInlineHelper /
-// RdfDatatypeFixedHelper's closed 12-entry classification, just addressed by
-// tag instead of by datatype IRI, since by the time Variant.cpp sees a ref
-// the tag is already known and no IRI lookup is needed to classify it.
 enum class StorageShape { Inline32, Int64, UInt64, Double, Blob };
 struct StorageInfo {
     StorageShape shape;
@@ -229,11 +219,6 @@ constexpr StorageInfo classifyStorage(xsd::Type t) {
     }
 }
 
-// Reconstructs an rdf4cpp::Literal straight from the blob PGraph already
-// stores it in ([u8 langLen][lang bytes][lexical bytes], see
-// NodeHelper::resolve/literalKeyFor in RdfGraph.cpp), without ever touching
-// RdfGraph. Only used by the rare-tag fallbacks below, where genuine XSD
-// value semantics (comparison, canonical lexical form) are unavoidable.
 inline std::optional<rdf4cpp::Literal> reconstructBlobLiteral(PropertyGraph::NodeEntry* ref) {
     if (ref->payload < 0) return std::nullopt;
     PropertyGraph* pgraph = propertyGraphOf(ref);
@@ -298,8 +283,12 @@ VarLen32 VariantRuntime::extractBlobLiteral(PropertyGraph::NodeEntry* ref) {
     return VarLen32::fromString(std::string(raw + 1 + langLen, len - 1 - langLen));
 }
 
-VarLen32 VariantRuntime::toStringNumeric(uint8_t* ptr, int32_t tag) {
-    auto lit = getLiteralFromNumeric(ptr, tag);
+uint8_t* VariantRuntime::allocScratch(int64_t bytes) {
+    return getCurrentExecutionContext()->allocString(static_cast<size_t>(bytes));
+}
+
+VarLen32 VariantRuntime::toStringNumeric(int64_t payload, int32_t tag) {
+    auto lit = getLiteralFromNumeric(reinterpret_cast<uint8_t*>(&payload), tag);
     if (lit.null()) return emptyVarLen32();
     return VarLen32::fromString(std::string(lit.lexical_form()));
 }
@@ -337,21 +326,18 @@ int8_t VariantRuntime::compareBlobLiteralRefRef(PropertyGraph::NodeEntry* lhs, P
     return triBoolToInt8(applyPredicate(*lhsLit, *rhsLit, predicate));
 }
 
-int8_t VariantRuntime::compareNumericCross(uint8_t* lhsPtr, int32_t lhsTag, uint8_t* rhsPtr, int32_t rhsTag, int32_t predicate) {
-    auto lhsLit = getLiteralFromNumeric(lhsPtr, lhsTag);
-    auto rhsLit = getLiteralFromNumeric(rhsPtr, rhsTag);
+int8_t VariantRuntime::compareNumericCross(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag, int32_t predicate) {
+    auto lhsLit = getLiteralFromNumeric(reinterpret_cast<uint8_t*>(&lhsPayload), lhsTag);
+    auto rhsLit = getLiteralFromNumeric(reinterpret_cast<uint8_t*>(&rhsPayload), rhsTag);
     if (lhsLit.null() || rhsLit.null()) return -1;
     return triBoolToInt8(applyPredicate(lhsLit, rhsLit, predicate));
 }
 
-int64_t VariantRuntime::hashNumeric(uint8_t* ptr, int32_t tag) {
+int64_t VariantRuntime::hashNumeric(int64_t payload, int32_t tag) {
+    uint8_t* ptr = reinterpret_cast<uint8_t*>(&payload);
     auto t = xsd::from_int32(tag);
     if (!t.has_value()) return 0;
-    if (*t == xsd::Type::Date) {
-        int64_t packed;
-        std::memcpy(&packed, ptr, sizeof(packed));
-        return packed;
-    }
+    if (*t == xsd::Type::Date) return payload;
     auto lit = getLiteralFromNumeric(ptr, tag);
     if (lit.null()) return 0;
     auto asDouble = lit.cast_to_value<rdf4cpp::datatypes::xsd::Double>();
@@ -361,9 +347,9 @@ int64_t VariantRuntime::hashNumeric(uint8_t* ptr, int32_t tag) {
     return bits;
 }
 
-int32_t VariantRuntime::arithNumericCross(uint8_t* lhsPtr, int32_t lhsTag, uint8_t* rhsPtr, int32_t rhsTag, int32_t predicate, uint8_t* outPtr) {
-    auto lhsLit = getLiteralFromNumeric(lhsPtr, lhsTag);
-    auto rhsLit = getLiteralFromNumeric(rhsPtr, rhsTag);
+int32_t VariantRuntime::arithNumericCross(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag, int32_t predicate, uint8_t* outPtr) {
+    auto lhsLit = getLiteralFromNumeric(reinterpret_cast<uint8_t*>(&lhsPayload), lhsTag);
+    auto rhsLit = getLiteralFromNumeric(reinterpret_cast<uint8_t*>(&rhsPayload), rhsTag);
     if (lhsLit.null() || rhsLit.null()) return xsd::to_int32(xsd::Type::Unspecified);
     auto result = applyArith(lhsLit, rhsLit, predicate);
     if (result.null()) return xsd::to_int32(xsd::Type::Unspecified);
