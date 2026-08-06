@@ -488,11 +488,37 @@ class GpmIdentifiersEqualLowering : public OpConversionPattern<gpm::IdentifiersE
    using OpConversionPattern<gpm::IdentifiersEqualOp>::OpConversionPattern;
    LogicalResult matchAndRewrite(gpm::IdentifiersEqualOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
       auto* ctxt = rewriter.getContext();
+      auto loc = op.getLoc();
       mlir::Value lhs = refreshStaleRefOperand(adaptor.getLhs(), rewriter);
       mlir::Value rhs = refreshStaleRefOperand(adaptor.getRhs(), rewriter);
+      mlir::Value anyNull;
+      mlir::Value lhsRaw = lhs;
+      mlir::Value rhsRaw = rhs;
+      if (mlir::isa<db::NullableType>(lhs.getType())) {
+         anyNull = rewriter.create<db::IsNullOp>(loc, lhs);
+         lhsRaw = rewriter.create<db::NullableGetVal>(loc, lhs);
+      }
+      if (mlir::isa<db::NullableType>(rhs.getType())) {
+         mlir::Value isNull = rewriter.create<db::IsNullOp>(loc, rhs);
+         anyNull = anyNull ? rewriter.create<mlir::arith::OrIOp>(loc, anyNull, isNull).getResult() : isNull;
+         rhsRaw = rewriter.create<db::NullableGetVal>(loc, rhs);
+      }
       auto cmpType = db::NullableType::get(ctxt, rewriter.getI1Type());
-      auto cmp = rewriter.create<variant::CmpOp>(op.getLoc(), cmpType, variant::VariantCmpPredicate::eq, lhs, rhs);
-      rewriter.replaceOpWithNewOp<db::DeriveTruth>(op, rewriter.getI1Type(), cmp);
+      if (!anyNull) {
+         auto cmp = rewriter.create<variant::CmpOp>(loc, cmpType, variant::VariantCmpPredicate::eq, lhsRaw, rhsRaw);
+         rewriter.replaceOpWithNewOp<db::DeriveTruth>(op, rewriter.getI1Type(), cmp);
+         return success();
+      }
+      auto ifOp = rewriter.create<mlir::scf::IfOp>(
+         loc, anyNull,
+         [&](mlir::OpBuilder& b, mlir::Location l) {
+            b.create<mlir::scf::YieldOp>(l, b.create<mlir::arith::ConstantIntOp>(l, 0, 1).getResult());
+         },
+         [&](mlir::OpBuilder& b, mlir::Location l) {
+            auto cmp = b.create<variant::CmpOp>(l, cmpType, variant::VariantCmpPredicate::eq, lhsRaw, rhsRaw);
+            b.create<mlir::scf::YieldOp>(l, b.create<db::DeriveTruth>(l, b.getI1Type(), cmp).getResult());
+         });
+      rewriter.replaceOp(op, ifOp.getResult(0));
       return success();
    }
 };
@@ -504,31 +530,50 @@ class GpmToVariantLowering : public OpConversionPattern<gpm::ToVariantOp> {
       return success();
    }
 };
-static void refreshUnionMappingTypes(ModuleOp module) {
-   module.walk([&](relalg::UnionOp unionOp) {
-      for (mlir::Attribute attr : unionOp.getMapping()) {
-         auto defAttr = mlir::cast<tuples::ColumnDefAttr>(attr);
-         auto fromExisting = mlir::cast<mlir::ArrayAttr>(defAttr.getFromExisting());
-         bool nullable = false;
-         mlir::Type mergedType;
-         for (mlir::Attribute side : fromExisting) {
-            auto sourceRef = mlir::dyn_cast<tuples::ColumnRefAttr>(side);
-            if (!sourceRef) {
-               nullable = true;
-               continue;
-            }
-            mlir::Type sideType = sourceRef.getColumn().type;
-            if (auto nullableType = mlir::dyn_cast<db::NullableType>(sideType)) {
-               nullable = true;
-               sideType = nullableType.getType();
-            }
-            if (!mergedType) mergedType = sideType;
+static void refreshOuterJoinMappingTypes(relalg::OuterJoinOp outerJoinOp) {
+   for (mlir::Attribute attr : outerJoinOp.getMapping()) {
+      auto defAttr = mlir::cast<tuples::ColumnDefAttr>(attr);
+      auto fromExisting = mlir::cast<mlir::ArrayAttr>(defAttr.getFromExisting());
+      auto sourceRef = mlir::cast<tuples::ColumnRefAttr>(fromExisting[0]);
+      mlir::Type innerType = sourceRef.getColumn().type;
+      mlir::Type newType = mlir::isa<db::NullableType>(innerType) ? innerType : db::NullableType::get(outerJoinOp.getContext(), innerType);
+      defAttr.getColumn().type = newType;
+   }
+}
+static void refreshUnionMappingTypes(relalg::UnionOp unionOp) {
+   for (mlir::Attribute attr : unionOp.getMapping()) {
+      auto defAttr = mlir::cast<tuples::ColumnDefAttr>(attr);
+      auto fromExisting = mlir::cast<mlir::ArrayAttr>(defAttr.getFromExisting());
+      bool nullable = false;
+      mlir::Type mergedType;
+      for (mlir::Attribute side : fromExisting) {
+         auto sourceRef = mlir::dyn_cast<tuples::ColumnRefAttr>(side);
+         if (!sourceRef) {
+            nullable = true;
+            continue;
          }
-         if (!mergedType) continue;
-         defAttr.getColumn().type = nullable ? db::NullableType::get(unionOp.getContext(), mergedType) : mergedType;
+         mlir::Type sideType = sourceRef.getColumn().type;
+         if (auto nullableType = mlir::dyn_cast<db::NullableType>(sideType)) {
+            nullable = true;
+            sideType = nullableType.getType();
+         }
+         if (!mergedType) mergedType = sideType;
+      }
+      if (!mergedType) continue;
+      defAttr.getColumn().type = nullable ? db::NullableType::get(unionOp.getContext(), mergedType) : mergedType;
+   }
+}
+static void refreshNullableTypes(ModuleOp module) {
+   module.walk([&](mlir::Operation* op) {
+      if (auto outerJoinOp = mlir::dyn_cast<relalg::OuterJoinOp>(op)) {
+         refreshOuterJoinMappingTypes(outerJoinOp);
+      } 
+      else if (auto unionOp = mlir::dyn_cast<relalg::UnionOp>(op)) {
+         refreshUnionMappingTypes(unionOp);
       }
    });
 }
+
 
 static void addCommonLegalDialects(ConversionTarget& target) {
    target.addLegalDialect<gpu::GPUDialect>();
@@ -580,7 +625,7 @@ void GPMToSubOpLoweringPass::runOnOperation() {
       }
    }
 
-   refreshUnionMappingTypes(module);
+   refreshNullableTypes(module);
 
    {
       ConversionTarget target(getContext());

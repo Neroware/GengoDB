@@ -11,6 +11,7 @@
 #include "gengodb/compiler/Dialect/Variant/VariantDialect.h"
 #include "gengodb/compiler/Dialect/Variant/VariantOps.h"
 #include "gengodb/compiler/Dialect/Variant/VariantOpsEnums.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "lingodb/compiler/helper.h"
 
@@ -55,14 +56,25 @@ static inline bool isDBStringOrNullableDBString(mlir::Type type) {
 
 static mlir::Value buildToStringExpr(mlir::OpBuilder& b, mlir::Location loc, mlir::Value val, mlir::Type strType) {
     auto ctxt = b.getContext();
+    auto dbStringType = db::StringType::get(ctxt);
     mlir::Value raw;
     mlir::Value isNull;
     if (mlir::isa<db::NullableType>(val.getType())) {
         isNull = b.create<db::IsNullOp>(loc, val);
-        auto nonNull = b.create<db::NullableGetVal>(loc, val);
-        raw = b.create<variant::ToStringOp>(loc, db::StringType::get(ctxt), nonNull);
+        auto ifOp = b.create<mlir::scf::IfOp>(
+           loc, isNull,
+           [&](mlir::OpBuilder& b2, mlir::Location l) {
+              mlir::Value placeholder = b2.create<db::ConstantOp>(l, dbStringType, b2.getStringAttr(""));
+              b2.create<mlir::scf::YieldOp>(l, placeholder);
+           },
+           [&](mlir::OpBuilder& b2, mlir::Location l) {
+              auto nonNull = b2.create<db::NullableGetVal>(l, val);
+              mlir::Value str = b2.create<variant::ToStringOp>(l, dbStringType, nonNull);
+              b2.create<mlir::scf::YieldOp>(l, str);
+           });
+        raw = ifOp.getResult(0);
     } else {
-        raw = b.create<variant::ToStringOp>(loc, db::StringType::get(ctxt), val);
+        raw = b.create<variant::ToStringOp>(loc, dbStringType, val);
     }
     if (!mlir::isa<db::NullableType>(strType))
         return raw;
@@ -101,6 +113,10 @@ class StringifyMaterializedVariants : public mlir::OpRewritePattern<subop::Mater
                     continue;
                 }
                 auto strType = memberManager.getType(pair.first);
+                if (isNullableVariant(pair.second.getColumn().type) && !mlir::isa<db::NullableType>(strType)) {
+                    strType = db::NullableType::get(ctxt, strType);
+                    pair.first.internal->type = strType;
+                }
                 auto [newColDef, newColRef] = createColumn(strType, "vars", "str");
                 auto val = helper.access(pair.second, loc);
                 computedVals.push_back(buildToStringExpr(b, loc, val, strType));
