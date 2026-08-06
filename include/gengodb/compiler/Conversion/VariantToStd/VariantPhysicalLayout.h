@@ -8,7 +8,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Builders.h"
 
-namespace gengodb::compiler::variant::layout {
+namespace gengodb::compiler::dialect::variant::layout {
 
 inline mlir::Type getPointerType(mlir::MLIRContext* ctxt) {
    return lingodb::compiler::dialect::util::RefType::get(ctxt, mlir::IntegerType::get(ctxt, 8));
@@ -70,6 +70,6 @@ inline TagPredicates computeTagPredicates(mlir::OpBuilder& b, mlir::Location loc
    return p;
 }
 
-} // namespace gengodb::compiler::variant::layout
+} // namespace gengodb::compiler::dialect::variant::layout
 
 #endif // GENGODB_COMPILER_CONVERSION_VARIANTTOSTD_VARIANTPHYSICALLAYOUT_H

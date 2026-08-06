@@ -40,7 +40,7 @@ namespace {
 using namespace lingodb::compiler::dialect;
 namespace rt = lingodb::compiler::runtime;
 namespace variant = gengodb::compiler::dialect::variant;
-namespace layout = gengodb::compiler::variant::layout;
+namespace layout = gengodb::compiler::dialect::variant::layout;
 struct DBToStdLoweringPass
    : public PassWrapper<DBToStdLoweringPass, OperationPass<ModuleOp>> {
    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(DBToStdLoweringPass)

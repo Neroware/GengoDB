@@ -28,7 +28,7 @@ using namespace mlir;
 namespace {
 using namespace lingodb::compiler::dialect;
 using namespace gengodb::compiler::dialect;
-using namespace gengodb::compiler::variant::layout;
+using namespace gengodb::compiler::dialect::variant::layout;
 namespace rt = lingodb::compiler::runtime;
 namespace xsd = gengodb::semantics::xsd;
 
