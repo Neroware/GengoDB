@@ -627,8 +627,8 @@ static mlir::Value mapColsToNull(mlir::Value stream, mlir::OpBuilder& rewriter, 
       for (mlir::Attribute attr : mapping) {
          auto relationDefAttr = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(attr);
          auto* defAttr = &relationDefAttr.getColumn();
-         auto fromExisting = mlir::cast<tuples::ColumnRefAttr>(mlir::cast<mlir::ArrayAttr>(relationDefAttr.getFromExisting())[0]);
-         if (excluded.contains(&fromExisting.getColumn())) continue;
+         auto fromExisting = mlir::dyn_cast<tuples::ColumnRefAttr>(mlir::cast<mlir::ArrayAttr>(relationDefAttr.getFromExisting())[0]);
+         if (fromExisting && excluded.contains(&fromExisting.getColumn())) continue;
          mlir::Value nullValue = rewriter.create<db::NullOp>(loc, defAttr->type);
          res.push_back(nullValue);
          defAttrs.push_back(colManager.createDef(defAttr));
@@ -648,7 +648,12 @@ static mlir::Value mapColsToNullable(mlir::Value stream, mlir::OpBuilder& rewrit
       for (mlir::Attribute attr : mapping) {
          auto relationDefAttr = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(attr);
          auto* defAttr = &relationDefAttr.getColumn();
-         auto fromExisting = mlir::cast<tuples::ColumnRefAttr>(mlir::cast<mlir::ArrayAttr>(relationDefAttr.getFromExisting())[exisingOffset]);
+         auto fromExisting = mlir::dyn_cast<tuples::ColumnRefAttr>(mlir::cast<mlir::ArrayAttr>(relationDefAttr.getFromExisting())[exisingOffset]);
+         if (!fromExisting) {
+            res.push_back(rewriter.create<db::NullOp>(loc, defAttr->type));
+            defAttrs.push_back(colManager.createDef(defAttr));
+            continue;
+         }
          if (excluded.contains(&fromExisting.getColumn())) continue;
          mlir::Value value = helper.access(fromExisting, loc);
          if (fromExisting.getColumn().type != defAttr->type) {
