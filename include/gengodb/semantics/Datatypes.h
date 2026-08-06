@@ -88,7 +88,8 @@ enum class Type : std::int32_t {
     PositiveInteger    = 212,
 
     // ---- GengoDB-specific: (1000 - 1099) ----
-    RDFNode            = 1000
+    RDFNode            = 1000,
+    LangString         = 1001
 };
 
 // Explicit, storage-safe conversions to/from the int32 you persist.
@@ -118,6 +119,7 @@ inline std::optional<Type> from_int32(std::int32_t value) {
         case Type::UnsignedLong: case Type::UnsignedInt:
         case Type::UnsignedShort: case Type::UnsignedByte:
         case Type::PositiveInteger:
+        case Type::LangString:
             return static_cast<Type>(value);
         default:
             return std::nullopt;
@@ -175,6 +177,8 @@ inline const std::string& to_string(Type t) {
         {Type::UnsignedShort,      "unsignedShort"},
         {Type::UnsignedByte,       "unsignedByte"},
         {Type::PositiveInteger,    "positiveInteger"},
+
+        {Type::LangString,         "langString"},
     };
     return names.at(t);
 }
@@ -230,6 +234,8 @@ inline std::optional<Type> from_string(const std::string& name) {
         {"unsignedShort",      Type::UnsignedShort},
         {"unsignedByte",       Type::UnsignedByte},
         {"positiveInteger",    Type::PositiveInteger},
+
+        {"langString",         Type::LangString},
     };
     auto it = lookup.find(name);
     if (it == lookup.end()) return std::nullopt;
