@@ -344,6 +344,23 @@ int8_t VariantRuntime::compareNumericCross(uint8_t* lhsPtr, int32_t lhsTag, uint
     return triBoolToInt8(applyPredicate(lhsLit, rhsLit, predicate));
 }
 
+int64_t VariantRuntime::hashNumeric(uint8_t* ptr, int32_t tag) {
+    auto t = xsd::from_int32(tag);
+    if (!t.has_value()) return 0;
+    if (*t == xsd::Type::Date) {
+        int64_t packed;
+        std::memcpy(&packed, ptr, sizeof(packed));
+        return packed;
+    }
+    auto lit = getLiteralFromNumeric(ptr, tag);
+    if (lit.null()) return 0;
+    auto asDouble = lit.cast_to_value<rdf4cpp::datatypes::xsd::Double>();
+    if (!asDouble.has_value()) return 0; // should not happen for the numeric-family tag set
+    int64_t bits;
+    std::memcpy(&bits, &*asDouble, sizeof(bits));
+    return bits;
+}
+
 int32_t VariantRuntime::arithNumericCross(uint8_t* lhsPtr, int32_t lhsTag, uint8_t* rhsPtr, int32_t rhsTag, int32_t predicate, uint8_t* outPtr) {
     auto lhsLit = getLiteralFromNumeric(lhsPtr, lhsTag);
     auto rhsLit = getLiteralFromNumeric(rhsPtr, rhsTag);

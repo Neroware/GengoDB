@@ -1,5 +1,6 @@
 #include "gengodb/compiler/Conversion/VariantToStd/VariantToStdPass.h"
 
+#include "gengodb/compiler/Conversion/VariantToStd/VariantPhysicalLayout.h"
 #include "gengodb/compiler/Dialect/Variant/VariantDialect.h"
 #include "gengodb/compiler/Dialect/Variant/VariantOps.h"
 #include "gengodb/semantics/Datatypes.h"
@@ -27,32 +28,21 @@ using namespace mlir;
 namespace {
 using namespace lingodb::compiler::dialect;
 using namespace gengodb::compiler::dialect;
+using namespace gengodb::compiler::variant::layout;
 namespace rt = lingodb::compiler::runtime;
 namespace xsd = gengodb::semantics::xsd;
 
 // Shared helpers
 
-mlir::Type getPointerType(MLIRContext* ctxt) { return util::RefType::get(ctxt, IntegerType::get(ctxt, 8)); }
 mlir::Type getVarlen32Type(MLIRContext* ctxt) { return util::VarLen32Type::get(ctxt); }
-mlir::TupleType getVariantTupleType(MLIRContext* ctxt) {
-    return mlir::TupleType::get(ctxt, {IntegerType::get(ctxt, 32), getPointerType(ctxt)});
-}
 mlir::Value getPointer(OpBuilder& b, Location loc, Value ref) {
     auto opaque = getPointerType(b.getContext());
     if (ref.getType() == opaque) return ref;
     return b.create<mlir::UnrealizedConversionCastOp>(loc, opaque, ref).getResult(0);
 }
-Value constI32(OpBuilder& b, Location loc, int32_t v) { return b.create<arith::ConstantIntOp>(loc, v, 32); }
 Value constBool(OpBuilder& b, Location loc, bool v) { return b.create<arith::ConstantIntOp>(loc, v ? 1 : 0, 1); }
-Value getEqTag(OpBuilder& b, Location loc, Value tag, xsd::Type t) {
-    return b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, tag, constI32(b, loc, xsd::to_int32(t)));
-}
 Value packVariant(OpBuilder& b, Location loc, Value tag, Value ref) {
     return b.create<util::PackOp>(loc, getVariantTupleType(b.getContext()), mlir::ValueRange{tag, ref});
-}
-std::pair<Value, Value> unpackVariant(OpBuilder& b, Location loc, Value variant) {
-    auto unpacked = b.create<util::UnPackOp>(loc, variant);
-    return {unpacked.getResult(0), unpacked.getResult(1)};
 }
 Value asNullable(OpBuilder& b, Location loc, Type nullableResultType, Value val, Value isNull) {
     return b.create<db::AsNullableOp>(loc, nullableResultType, val, isNull);
@@ -66,10 +56,6 @@ Value packFromTriBool(OpBuilder& b, Location loc, Type nullableResultType, Value
     Value isNull = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, raw, minusOne);
     Value boolVal = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, raw, one);
     return asNullable(b, loc, nullableResultType, boolVal, isNull);
-}
-Value loadTyped(OpBuilder& b, Location loc, Value opaqueRef, Type type) {
-    Value typedRef = b.create<util::GenericMemrefCastOp>(loc, util::RefType::get(b.getContext(), type), opaqueRef);
-    return b.create<util::LoadOp>(loc, type, typedRef, Value());
 }
 Value createAlloca(ConversionPatternRewriter& rewriter, Operation* anchor, Type elementType, std::optional<int64_t> count = std::nullopt) {
     Operation* nearestIsolated = anchor->getParentOp();
@@ -129,35 +115,6 @@ Value applyStringCmp(OpBuilder& b, Location loc, variant::VariantCmpPredicate p,
         case variant::VariantCmpPredicate::gte: return rt::StringRuntime::compareGte(b, loc)({lhs, rhs})[0];
     }
     llvm_unreachable("unhandled VariantCmpPredicate");
-}
-struct TagPredicates {
-   Value isBool, isLong, isDouble, isRDFNode, isString, isUnspecified, isNumericFamily, isScratchPayload;
-};
-Value orAll(OpBuilder& b, Location loc, llvm::ArrayRef<Value> vals) {
-    Value acc = vals.front();
-    for (Value v : vals.drop_front()) acc = b.create<arith::OrIOp>(loc, acc, v);
-    return acc;
-}
-TagPredicates computeTagPredicates(OpBuilder& b, Location loc, Value tag) {
-    TagPredicates p;
-    p.isBool = getEqTag(b, loc, tag, xsd::Type::Boolean);
-    p.isLong = getEqTag(b, loc, tag, xsd::Type::Long);
-    p.isDouble = getEqTag(b, loc, tag, xsd::Type::Double);
-    p.isRDFNode = getEqTag(b, loc, tag, xsd::Type::RDFNode);
-    p.isString = getEqTag(b, loc, tag, xsd::Type::String);
-    p.isUnspecified = getEqTag(b, loc, tag, xsd::Type::Unspecified);
-    Value isByte = getEqTag(b, loc, tag, xsd::Type::Byte);
-    Value isShort = getEqTag(b, loc, tag, xsd::Type::Short);
-    Value isInt = getEqTag(b, loc, tag, xsd::Type::Int);
-    Value isUByte = getEqTag(b, loc, tag, xsd::Type::UnsignedByte);
-    Value isUShort = getEqTag(b, loc, tag, xsd::Type::UnsignedShort);
-    Value isUInt = getEqTag(b, loc, tag, xsd::Type::UnsignedInt);
-    Value isULong = getEqTag(b, loc, tag, xsd::Type::UnsignedLong);
-    Value isFloat = getEqTag(b, loc, tag, xsd::Type::Float);
-    Value isDate = getEqTag(b, loc, tag, xsd::Type::Date);
-    p.isNumericFamily = orAll(b, loc, {p.isBool, p.isLong, p.isDouble, isByte, isShort, isInt, isUByte, isUShort, isUInt, isULong, isFloat, isDate});
-    p.isScratchPayload = orAll(b, loc, {p.isNumericFamily, p.isRDFNode, p.isString});
-    return p;
 }
 Value notB(OpBuilder& b, Location loc, Value v) {
     return b.create<arith::XOrIOp>(loc, v, constBool(b, loc, true));
@@ -522,6 +479,10 @@ struct VariantToStdLoweringPass
         typeConverter.addConversion([&](mlir::Type type) { return type; });
         typeConverter.addConversion([&](variant::VariantType type) -> mlir::Type {
             return getVariantTupleType(type.getContext());
+        });
+        typeConverter.addSourceMaterialization([](OpBuilder& builder, mlir::Type resultType, mlir::ValueRange inputs, mlir::Location loc) -> mlir::Value {
+            if (inputs.size() != 1) return nullptr;
+            return builder.create<mlir::UnrealizedConversionCastOp>(loc, resultType, inputs).getResult(0);
         });
 
         RewritePatternSet patterns(ctxt);

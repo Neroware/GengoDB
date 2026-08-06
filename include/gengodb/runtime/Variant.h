@@ -36,6 +36,9 @@ struct VariantRuntime {
     // needs rdf4cpp for XSD numeric promotion rules.
     static int8_t compareNumericCross(uint8_t* lhsPtr, int32_t lhsTag, uint8_t* rhsPtr, int32_t rhsTag, int32_t predicate);
     static int32_t arithNumericCross(uint8_t* lhsPtr, int32_t lhsTag, uint8_t* rhsPtr, int32_t rhsTag, int32_t predicate, uint8_t* outPtr);
+
+    // Canonicalizing hash for the fixed/inline numeric family
+    static int64_t hashNumeric(uint8_t* ptr, int32_t tag);
 };
 
 } // namespace lingodb::runtime
