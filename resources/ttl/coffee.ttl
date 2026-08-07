@@ -61,7 +61,7 @@ ex:steve ex:eats ex:sushi .
 # --- dedup checks: same (datatype, value) reused across different subjects,
 #     across every storage tier, should collapse onto the same literal node ---
 ex:steve ex:name "Bob"^^xsd:string .
-ex:steve ex:nickname "Bobby"@en .
+ex:steve ex:nickname "Stevie"@en .
 ex:steve ex:favoriteRating "4.75"^^xsd:double .
 ex:steve ex:loyaltyPoints "18446744073709551615"^^xsd:unsignedLong .
 

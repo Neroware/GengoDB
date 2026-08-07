@@ -454,6 +454,39 @@ class OrderOpLowering : public OpConversionPattern<variant::OrderOp> {
     }
 };
 
+class PredicateOpLowering : public OpConversionPattern<variant::PredicateOp> {
+    public:
+    using OpConversionPattern<variant::PredicateOp>::OpConversionPattern;
+    LogicalResult matchAndRewrite(variant::PredicateOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+        auto loc = op->getLoc();
+        if (!mlir::isa<db::NullableType>(op.getResult().getType())) return rewriter.notifyMatchFailure(op, "variant.predicate result must be !db.nullable<i1>");
+        auto resultType = op.getResult().getType();
+        auto predArr = op.getPred();
+        if (predArr.empty()) return rewriter.notifyMatchFailure(op, "variant.predicate's `pred` array must start with the predicate function name");
+        auto fnAttr = mlir::dyn_cast<mlir::StringAttr>(predArr[0]);
+        if (!fnAttr) return rewriter.notifyMatchFailure(op, "variant.predicate's `pred` array must start with a string (the function name)");
+        llvm::StringRef fn = fnAttr.getValue();
+        auto [tag, ref] = unpackVariant(rewriter, loc, adaptor.getVar());
+        if (fn == "BOUND") {
+            Value unspecifiedTag = constI32(rewriter, loc, xsd::to_int32(xsd::Type::Unspecified));
+            Value isBound = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ne, tag, unspecifiedTag);
+            rewriter.replaceOp(op, asNullable(rewriter, loc, resultType, isBound, constBool(rewriter, loc, false)));
+            return success();
+        }
+        if (fn == "LANGMATCHES") {
+            if (predArr.size() != 2) return rewriter.notifyMatchFailure(op, "variant.predicate LANGMATCHES requires exactly one argument (the language range)");
+            auto rangeAttr = mlir::dyn_cast<mlir::StringAttr>(predArr[1]);
+            if (!rangeAttr) return rewriter.notifyMatchFailure(op, "variant.predicate LANGMATCHES's language range must be a string");
+            Value payload = rewriter.create<util::PtrToIntOp>(loc, rewriter.getI64Type(), ref);
+            Value range = rewriter.create<util::CreateConstVarLen>(loc, getVarlen32Type(getContext()), rangeAttr);
+            Value raw = rt::VariantRuntime::langMatches(rewriter, loc)({payload, tag, ref, range})[0];
+            rewriter.replaceOp(op, packFromTriBool(rewriter, loc, resultType, raw));
+            return success();
+        }
+        return rewriter.notifyMatchFailure(op, llvm::Twine("variant.predicate: unsupported predicate function '") + fn + "'");
+    }
+};
+
 Value applyIntArith(OpBuilder& b, Location loc, variant::VariantArithPredicate p, Value lhs, Value rhs, bool isUnsigned) {
     switch (p) {
         case variant::VariantArithPredicate::add: return b.create<arith::AddIOp>(loc, lhs, rhs);
@@ -571,6 +604,7 @@ struct VariantToStdLoweringPass
         patterns.insert<CmpOpLowering>(typeConverter, ctxt);
         patterns.insert<OrderOpLowering>(typeConverter, ctxt);
         patterns.insert<ArithOpLowering>(typeConverter, ctxt);
+        patterns.insert<PredicateOpLowering>(typeConverter, ctxt);
 
         if (failed(applyFullConversion(module, target, std::move(patterns)))) {
             signalPassFailure();

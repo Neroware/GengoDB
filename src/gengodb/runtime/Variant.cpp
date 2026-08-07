@@ -402,3 +402,9 @@ int8_t VariantRuntime::compareOrder(int64_t lhsPayload, int32_t lhsTag, Property
     if (ord == std::strong_ordering::greater) return 1;
     return 0;
 }
+
+int8_t VariantRuntime::langMatches(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref, VarLen32 langRange) {
+    auto lit = reconstructLiteral(payload, tag, ref);
+    if (!lit.has_value()) return -1;
+    return triBoolToInt8(lit->language_tag_matches_range(std::string_view(langRange.data(), langRange.getLen())));
+}

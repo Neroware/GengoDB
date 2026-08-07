@@ -45,6 +45,9 @@ struct VariantRuntime {
 
     // Total order of the variant type
     static int8_t compareOrder(int64_t lhsPayload, int32_t lhsTag, PropertyGraph::NodeEntry* lhsRef, int64_t rhsPayload, int32_t rhsTag, PropertyGraph::NodeEntry* rhsRef);
+
+    // xsd:string language tag filter
+    static int8_t langMatches(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref, VarLen32 langRange);
 };
 
 } // namespace lingodb::runtime

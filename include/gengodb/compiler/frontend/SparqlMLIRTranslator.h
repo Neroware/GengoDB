@@ -94,12 +94,13 @@ struct UnionPattern : PatternElement {
 // FILTER expressions
 // ------------------------------------------------------------
 // Scope: comparisons (=,!=,<,<=,>,>=), the logical connectives (&&,||,!), numeric
-// arithmetic (+,-,*,/, unary -), and literals/variable references -- the SPARQL
-// three-valued (TRUE/FALSE/ERROR) boolean core. The builtin test functions
-// (bound(), isIRI(), …) are not yet supported -- see
-// Translator::translateFilterExpr's default case.
+// arithmetic (+,-,*,/, unary -), literals/variable references, and the builtin
+// predicate functions BOUND() / LANGMATCHES() (spelled case-insensitively -- 
+// see Parser::parsePrimary), which compile onto `variant.predicate` (see 
+// Translator::translatePredicateCall). Other builtin test functions (isIRI(), …) 
+// are not yet supported -- see Translator::translateFilterExpr's default case.
 struct Expr {
-   enum class Kind { Variable, Literal, Not, And, Or, Compare, Arith, Negate };
+   enum class Kind { Variable, Literal, Not, And, Or, Compare, Arith, Negate, FunctionCall };
    virtual ~Expr() = default;
    virtual Kind kind() const = 0;
 };
@@ -156,6 +157,16 @@ struct ArithExpr : Expr {
 struct NegateExpr : Expr {
    std::unique_ptr<Expr> operand;
    Kind kind() const override { return Kind::Negate; }
+};
+
+// A builtin predicate test function call, e.g. BOUND(?x) or LANGMATCHES(?x, "en").
+// `name` is the canonical spelling used both here and as `variant.predicate`'s
+// `pred` array's first element ("BOUND" / "LANGMATCHES") -- see
+// Parser::parsePrimary for how surface spellings normalize onto it.
+struct FunctionCallExpr : Expr {
+   std::string name;
+   std::vector<std::unique_ptr<Expr>> args;
+   Kind kind() const override { return Kind::FunctionCall; }
 };
 
 struct FilterPattern : PatternElement {
@@ -416,6 +427,16 @@ class Parser {
          e->lexicalForm = kw("TRUE") ? "true" : "false";
          e->xsdType = gengodb::semantics::xsd::Type::Boolean;
          advance();
+         return e;
+      }
+      if (kw("BOUND") || kw("LANGMATCHES")) {
+         auto e = std::make_unique<sparql::FunctionCallExpr>();
+         e->name = kw("BOUND") ? "BOUND" : "LANGMATCHES";
+         advance();
+         eat(TK::LeftParen);
+         e->args.push_back(parseFilterExpr(pref));
+         while (is(TK::Comma)) { advance(); e->args.push_back(parseFilterExpr(pref)); }
+         eat(TK::RightParen);
          return e;
       }
       throw std::runtime_error("Expected FILTER expression term at line " + std::to_string(tok.line) + ", got '" + tok.value + "'");
@@ -1113,6 +1134,37 @@ class Translator {
       mlir::Value rhs = translateArithExpr(*e.rhs, tupleArg);
       return builder.create<variant::CmpOp>(loc, resType, toVariantCmpPredicate(e.op), lhs, rhs);
    }
+   // Builtin predicate test functions -- BOUND(?x) / LANGMATCHES(?x, "en") --
+   // both compile onto a single `variant.predicate` op: its `pred` array's
+   // first element is the canonical function name (also FunctionCallExpr::name,
+   // see Parser::parsePrimary), any further elements are compile-time constant
+   // arguments packed alongside it (LANGMATCHES's language range). The result
+   // is `!db.nullable<i1>`, exactly like translateCompareExpr's, so it composes
+   // into &&/||/! the same way.
+   mlir::Value translatePredicateCall(const sparql::FunctionCallExpr& fc, mlir::Value tupleArg) {
+      auto loc = builder.getUnknownLoc();
+      auto resType = db::NullableType::get(ctxt, builder.getI1Type());
+      if (fc.name == "BOUND") {
+         if (fc.args.size() != 1 || fc.args[0]->kind() != sparql::Expr::Kind::Variable)
+            throw std::runtime_error("BOUND() requires exactly one variable argument, e.g. BOUND(?x)");
+         mlir::Value var = translateArithExpr(*fc.args[0], tupleArg);
+         auto pred = builder.getArrayAttr({builder.getStringAttr("BOUND")});
+         return builder.create<variant::PredicateOp>(loc, resType, var, pred);
+      }
+      if (fc.name == "LANGMATCHES") {
+         if (fc.args.size() != 2)
+            throw std::runtime_error("LANGMATCHES() requires exactly two arguments, e.g. LANGMATCHES(?x, \"en\")");
+         mlir::Value var = translateArithExpr(*fc.args[0], tupleArg);
+         if (fc.args[1]->kind() != sparql::Expr::Kind::Literal)
+            throw std::runtime_error("LANGMATCHES()'s second argument must be a string literal language range");
+         const auto& rangeLit = static_cast<const sparql::LiteralExpr&>(*fc.args[1]);
+         if (rangeLit.xsdType != gengodb::semantics::xsd::Type::String)
+            throw std::runtime_error("LANGMATCHES()'s second argument must be a string literal language range");
+         auto pred = builder.getArrayAttr({builder.getStringAttr("LANGMATCHES"), builder.getStringAttr(rangeLit.lexicalForm)});
+         return builder.create<variant::PredicateOp>(loc, resType, var, pred);
+      }
+      throw std::runtime_error("Unsupported FILTER function '" + fc.name + "'");
+   }
    mlir::Value translateFilterExpr(const sparql::Expr& expr, mlir::Value tupleArg) {
       auto loc = builder.getUnknownLoc();
       switch (expr.kind()) {
@@ -1134,8 +1186,10 @@ class Translator {
          }
          case sparql::Expr::Kind::Compare:
             return translateCompareExpr(static_cast<const sparql::CompareExpr&>(expr), tupleArg);
+         case sparql::Expr::Kind::FunctionCall:
+            return translatePredicateCall(static_cast<const sparql::FunctionCallExpr&>(expr), tupleArg);
          default:
-            throw std::runtime_error("Unsupported FILTER expression (only comparisons, &&, ||, !, and arithmetic +-*/ are implemented)");
+            throw std::runtime_error("Unsupported FILTER expression (only comparisons, &&, ||, !, arithmetic +-*/, and BOUND()/LANGMATCHES() are implemented)");
       }
    }
    // Wraps `inputStream` in a relalg.selection -- not a bespoke GPM-level op --
