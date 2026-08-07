@@ -522,11 +522,18 @@ class GpmIdentifiersEqualLowering : public OpConversionPattern<gpm::IdentifiersE
       return success();
    }
 };
-class GpmToVariantLowering : public OpConversionPattern<gpm::ToVariantOp> {
+class GetBindingOpLowering : public OpConversionPattern<gpm::GetBindingOp> {
    public:
-   using OpConversionPattern<gpm::ToVariantOp>::OpConversionPattern;
-   LogicalResult matchAndRewrite(gpm::ToVariantOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
-      rewriter.replaceOp(op, refreshStaleRefOperand(adaptor.getVar(), rewriter));
+   using OpConversionPattern<gpm::GetBindingOp>::OpConversionPattern;
+   LogicalResult matchAndRewrite(gpm::GetBindingOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      mlir::Value binding = refreshStaleRefOperand(adaptor.getVar(), rewriter);
+      if (mlir::isa<db::NullableType>(binding.getType())) {
+         auto loc = op.getLoc();
+         mlir::Value isNull = rewriter.create<db::IsNullOp>(loc, binding);
+         mlir::Value rawBinding = rewriter.create<db::NullableGetVal>(loc, binding);
+         binding = rewriter.create<variant::UnspecifiedIfOp>(loc, rawBinding.getType(), isNull, rawBinding);
+      }
+      rewriter.replaceOp(op, binding);
       return success();
    }
 };
@@ -634,7 +641,7 @@ void GPMToSubOpLoweringPass::runOnOperation() {
 
       RewritePatternSet patterns(ctxt);
       patterns.insert<GpmIdentifiersEqualLowering>(typeConverter, ctxt);
-      patterns.insert<GpmToVariantLowering>(typeConverter, ctxt);
+      patterns.insert<GetBindingOpLowering>(typeConverter, ctxt);
 
       if (failed(applyFullConversion(module, target, std::move(patterns)))) {
          signalPassFailure();

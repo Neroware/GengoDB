@@ -233,6 +233,23 @@ class CreateNodeRefOpLowering : public OpConversionPattern<variant::CreateNodeRe
     }
 };
 
+class UnspecifiedIfOpLowering : public OpConversionPattern<variant::UnspecifiedIfOp> {
+    public:
+    using OpConversionPattern<variant::UnspecifiedIfOp>::OpConversionPattern;
+    LogicalResult matchAndRewrite(variant::UnspecifiedIfOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+        auto loc = op->getLoc();
+        auto* ctxt = getContext();
+        auto [tag, ref] = unpackVariant(rewriter, loc, adaptor.getVal());
+        Value cond = adaptor.getCond();
+        Value unspecifiedTag = constI32(rewriter, loc, xsd::to_int32(xsd::Type::Unspecified));
+        Value noPayload = rewriter.create<util::InvalidRefOp>(loc, getPointerType(ctxt));
+        Value resTag = rewriter.create<arith::SelectOp>(loc, cond, unspecifiedTag, tag);
+        Value resRef = rewriter.create<arith::SelectOp>(loc, cond, noPayload, ref);
+        rewriter.replaceOp(op, packVariant(rewriter, loc, resTag, resRef));
+        return success();
+    }
+};
+
 class VariantIsAOpLowering : public OpConversionPattern<variant::VariantIsAOp> {
     public:
     using OpConversionPattern<variant::VariantIsAOp>::OpConversionPattern;
@@ -543,6 +560,7 @@ struct VariantToStdLoweringPass
         RewritePatternSet patterns(ctxt);
         patterns.insert<CreateScalarOpLowering>(typeConverter, ctxt);
         patterns.insert<CreateNodeRefOpLowering>(typeConverter, ctxt);
+        patterns.insert<UnspecifiedIfOpLowering>(typeConverter, ctxt);
         patterns.insert<VariantIsAOpLowering>(typeConverter, ctxt);
         patterns.insert<VariantGetValOpLowering>(typeConverter, ctxt);
         patterns.insert<ToStringOpLowering>(typeConverter, ctxt);

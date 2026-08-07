@@ -68,6 +68,13 @@ def CreateNodeRefOp : Variant_Op<"create_node_ref", [Pure]> {
     let assemblyFormat = [{ $ref `:` type($ref) attr-dict }];
 }
 
+def UnspecifiedIfOp : Variant_Op<"unspecified_if", [Pure]> {
+    let summary = "replace a variant with the `Unspecified` sentinel if a condition holds";
+    let arguments = (ins I1:$cond, Variant:$val);
+    let results = (outs Variant:$result);
+    let assemblyFormat = [{ $cond `,` $val attr-dict }];
+}
+
 //===----------------------------------------------------------------------===//
 // Inspection
 //===----------------------------------------------------------------------===//

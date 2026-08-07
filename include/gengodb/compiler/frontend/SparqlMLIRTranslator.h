@@ -1082,7 +1082,7 @@ class Translator {
       switch (expr.kind()) {
          case sparql::Expr::Kind::Variable: {
             mlir::Value ref = getFilterColumn(static_cast<const sparql::VariableExpr&>(expr).name, tupleArg);
-            return builder.create<gpm::ToVariantOp>(loc, variantType, ref);
+            return builder.create<gpm::GetBindingOp>(loc, variantType, ref);
          }
          case sparql::Expr::Kind::Literal: {
             const auto& lit = static_cast<const sparql::LiteralExpr&>(expr);

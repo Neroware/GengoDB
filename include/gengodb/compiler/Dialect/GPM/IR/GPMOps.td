@@ -112,8 +112,8 @@ def IdentifiersEqualOp : GPM_Op<"identifiers_equal", [Pure]> {
   let assemblyFormat = [{ $lhs `:` type($lhs) `,` $rhs `:` type($rhs) attr-dict }];
 }
 
-def ToVariantOp : GPM_Op<"to_variant", [Pure]> {
-  let summary = "cast to variant";
+def GetBindingOp : GPM_Op<"get_binding", [Pure]> {
+  let summary = "cast binding to variant";
   let arguments = (ins VariableBinding:$var);
   let results = (outs Variant:$result);
   let assemblyFormat = [{ $var `->` type($result) attr-dict }];
