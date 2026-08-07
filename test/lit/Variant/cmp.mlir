@@ -1,8 +1,7 @@
 // RUN: mlir-db-opt --lower-variant-to-std %s | env LINGODB_EXECUTION_MODE=DEFAULT run-mlir - | FileCheck %s
 
-// Same-tag comparisons take the native load+cmp fast path (no runtime call);
-// cross-tag numeric comparisons (Long vs Double) fall back to a single
-// runtime call that reuses rdf4cpp's Literal comparison/promotion.
+// Fixed-sized variant scalars (Int, Float, Date, Long,...) take arithmetic fast paths, 
+// otherwise use arithemtic numeric cross via rdf4cpp API callbacks.
 module {
     func.func @main() {
         %i5 = arith.constant 5 : i64
@@ -37,12 +36,7 @@ module {
         //CHECK: bool(true)
         db.runtime_call "DumpValue" (%ltCross) : (!db.nullable<i1>) -> ()
 
-        // Same-tag comparison for a numeric-family member outside the
-        // Bool/Long/Double native fast lane (see CmpOpLowering's
-        // `ifRemainingNumeric` branch) -- both operands here are
-        // create_scalar'd scratch-alloca pointers, exactly the case that
-        // would be undefined behavior if this fell through to
-        // `compareLiteralRefRef` (which assumes graph residency) instead.
+        // Same-tag comparison for a fixed-width numeric tag xsd:unsignedByte.
         %by5 = arith.constant 5 : i8
         %by9 = arith.constant 9 : i8
         %vBy5 = variant.create_scalar %by5 : i8
@@ -50,6 +44,15 @@ module {
         %ltByte = variant.cmp lt %vBy5, %vBy9 -> !db.nullable<i1>
         //CHECK: bool(true)
         db.runtime_call "DumpValue" (%ltByte) : (!db.nullable<i1>) -> ()
+
+        // Same-tag comparison for a fixed-width numeric tag xsd:int.
+        %in5 = arith.constant 5 : i32
+        %in9 = arith.constant 9 : i32
+        %vIn5 = variant.create_scalar %in5 : i32
+        %vIn9 = variant.create_scalar %in9 : i32
+        %ltInt = variant.cmp lt %vIn5, %vIn9 -> !db.nullable<i1>
+        //CHECK: bool(true)
+        db.runtime_call "DumpValue" (%ltInt) : (!db.nullable<i1>) -> ()
 
         // Same-tag string comparison: native `!util.varlen32` load +
         // StringRuntime, no runtime dispatch on the variant's tag itself.

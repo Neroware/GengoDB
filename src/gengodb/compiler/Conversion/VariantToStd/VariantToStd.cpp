@@ -24,6 +24,8 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 
+#include <functional>
+
 using namespace mlir;
 namespace {
 using namespace lingodb::compiler::dialect;
@@ -138,6 +140,17 @@ arith::CmpIPredicate toCmpIPredicate(variant::VariantCmpPredicate p) {
     }
     llvm_unreachable("unhandled VariantCmpPredicate");
 }
+arith::CmpIPredicate toCmpIPredicateUnsigned(variant::VariantCmpPredicate p) {
+    switch (p) {
+        case variant::VariantCmpPredicate::eq: return arith::CmpIPredicate::eq;
+        case variant::VariantCmpPredicate::neq: return arith::CmpIPredicate::ne;
+        case variant::VariantCmpPredicate::lt: return arith::CmpIPredicate::ult;
+        case variant::VariantCmpPredicate::lte: return arith::CmpIPredicate::ule;
+        case variant::VariantCmpPredicate::gt: return arith::CmpIPredicate::ugt;
+        case variant::VariantCmpPredicate::gte: return arith::CmpIPredicate::uge;
+    }
+    llvm_unreachable("unhandled VariantCmpPredicate");
+}
 arith::CmpFPredicate toCmpFPredicate(variant::VariantCmpPredicate p) {
     switch (p) {
         case variant::VariantCmpPredicate::eq: return arith::CmpFPredicate::OEQ;
@@ -162,6 +175,22 @@ Value applyStringCmp(OpBuilder& b, Location loc, variant::VariantCmpPredicate p,
 }
 Value notB(OpBuilder& b, Location loc, Value v) {
     return b.create<arith::XOrIOp>(loc, v, constBool(b, loc, true));
+}
+
+using TagCaseBuilder = std::function<Value(OpBuilder&, Location)>;
+struct TagCase {
+    Value cond;
+    TagCaseBuilder build;
+};
+Value dispatchOnTag(OpBuilder& b, Location loc, llvm::ArrayRef<TagCase> cases, const TagCaseBuilder& fallback) {
+    if (cases.empty()) return fallback(b, loc);
+    TagCase head = cases.front();
+    llvm::ArrayRef<TagCase> rest = cases.drop_front();
+    auto ifOp = b.create<scf::IfOp>(
+        loc, head.cond,
+        [&](OpBuilder& b2, Location l2) { b2.create<scf::YieldOp>(l2, head.build(b2, l2)); },
+        [&](OpBuilder& b2, Location l2) { b2.create<scf::YieldOp>(l2, dispatchOnTag(b2, l2, rest, fallback)); });
+    return ifOp.getResult(0);
 }
 
 // Lowering patterns
@@ -338,120 +367,85 @@ class CmpOpLowering : public OpConversionPattern<variant::CmpOp> {
         Value predConst = constI32(rewriter, loc, static_cast<int32_t>(op.getPredicate()));
         auto predicate = op.getPredicate();
 
+        // Slow runtime-call fallback via rdf4cpp API
+        auto numericCrossCmp = [&](OpBuilder& b, Location l) -> Value {
+            Value lhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), lhsRef);
+            Value rhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), rhsRef);
+            Value raw = rt::VariantRuntime::compareNumericCross(b, l)({lhsPayload, lhsTag, rhsPayload, rhsTag, predConst})[0];
+            return packFromTriBool(b, l, resultType, raw);
+        };
+        auto blobLiteralCmp = [&](OpBuilder& b, Location l) -> Value {
+            Value raw = rt::VariantRuntime::compareBlobLiteralRefRef(b, l)({lhsRef, rhsRef, predConst})[0];
+            return packFromTriBool(b, l, resultType, raw);
+        };
+
+        // Same-tag fast paths for fixed scalars up to 8 bytes.
+        std::vector<TagCase> fastCases;
+        fastCases.push_back({lp.isBool, [&](OpBuilder& b, Location l) -> Value {
+            Value lv = unpackInline(b, l, lhsRef, b.getI1Type());
+            Value rv = unpackInline(b, l, rhsRef, b.getI1Type());
+            Value cmp = b.create<arith::CmpIOp>(l, toCmpIPredicate(predicate), lv, rv);
+                return asNullable(b, l, resultType, cmp, constBool(b, l, false));
+        }});
+        for (const FixedNumericTag& n : fixedNumericTags()) {
+            Value isThisTag = getEqTag(rewriter, loc, lhsTag, n.type);
+            fastCases.push_back({isThisTag, [&, n](OpBuilder& b, Location l) -> Value {
+                mlir::Type ty = fixedNumericMlirType(b, n);
+                Value lv = unpackInline(b, l, lhsRef, ty);
+                Value rv = unpackInline(b, l, rhsRef, ty);
+                Value cmp = n.isFloat
+                    ? b.create<arith::CmpFOp>(l, toCmpFPredicate(predicate), lv, rv).getResult()
+                    : b.create<arith::CmpIOp>(l, n.isUnsigned ? toCmpIPredicateUnsigned(predicate) : toCmpIPredicate(predicate), lv, rv).getResult();
+                        return asNullable(b, l, resultType, cmp, constBool(b, l, false));
+            }});
+        }
+        auto sameTagSlow = [&](OpBuilder& b, Location l) -> Value {
+            std::vector<TagCase> cases = {
+                {lp.isNumericFamily, numericCrossCmp},
+                {lp.isString, [&](OpBuilder& b2, Location l2) -> Value {
+                    Value lv = loadTyped(b2, l2, lhsRef, getVarlen32Type(getContext()));
+                    Value rv = loadTyped(b2, l2, rhsRef, getVarlen32Type(getContext()));
+                    Value cmp = applyStringCmp(b2, l2, predicate, lv, rv);
+                    return asNullable(b2, l2, resultType, cmp, constBool(b2, l2, false));
+                }},
+                {lp.isRDFNode, [&](OpBuilder& b2, Location l2) -> Value {
+                    Value raw = rt::VariantRuntime::compareNodeRefRef(b2, l2)({lhsRef, rhsRef, predConst})[0];
+                    return packFromTriBool(b2, l2, resultType, raw);
+                }},
+                {lp.isUnspecified, [&](OpBuilder& b2, Location l2) -> Value {
+                    return nullValue(b2, l2, resultType);
+                }},
+            };
+            return dispatchOnTag(b, l, cases, blobLiteralCmp);
+        };
+
         auto outer = rewriter.create<scf::IfOp>(
             loc, sameTag,
-            [&](OpBuilder& b, Location l) {
-                auto ifBool = b.create<scf::IfOp>(
-                    l, lp.isBool,
-                    [&](OpBuilder& b2, Location l2) {
-                        Value lv = unpackInline(b2, l2, lhsRef, b2.getI1Type());
-                        Value rv = unpackInline(b2, l2, rhsRef, b2.getI1Type());
-                        Value cmp = b2.create<arith::CmpIOp>(l2, toCmpIPredicate(predicate), lv, rv);
-                        b2.create<scf::YieldOp>(l2, asNullable(b2, l2, resultType, cmp, constBool(b2, l2, false)));
-                    },
-                    [&](OpBuilder& b2, Location l2) {
-                        auto ifI64 = b2.create<scf::IfOp>(
-                            l2, lp.isLong,
-                            [&](OpBuilder& b3, Location l3) {
-                            Value lv = unpackInline(b3, l3, lhsRef, b3.getI64Type());
-                            Value rv = unpackInline(b3, l3, rhsRef, b3.getI64Type());
-                            Value cmp = b3.create<arith::CmpIOp>(l3, toCmpIPredicate(predicate), lv, rv);
-                            b3.create<scf::YieldOp>(l3, asNullable(b3, l3, resultType, cmp, constBool(b3, l3, false)));
-                            },
-                            [&](OpBuilder& b3, Location l3) {
-                            auto ifDouble = b3.create<scf::IfOp>(
-                                l3, lp.isDouble,
-                                [&](OpBuilder& b4, Location l4) {
-                                    Value lv = unpackInline(b4, l4, lhsRef, b4.getF64Type());
-                                    Value rv = unpackInline(b4, l4, rhsRef, b4.getF64Type());
-                                    Value cmp = b4.create<arith::CmpFOp>(l4, toCmpFPredicate(predicate), lv, rv);
-                                    b4.create<scf::YieldOp>(l4, asNullable(b4, l4, resultType, cmp, constBool(b4, l4, false)));
-                                },
-                                [&](OpBuilder& b4, Location l4) {
-                                    auto ifRemainingNumeric = b4.create<scf::IfOp>(
-                                        l4, lp.isNumericFamily,
-                                        [&](OpBuilder& b5, Location l5) {
-                                            Value lhsPayload = b5.create<util::PtrToIntOp>(l5, b5.getI64Type(), lhsRef);
-                                            Value rhsPayload = b5.create<util::PtrToIntOp>(l5, b5.getI64Type(), rhsRef);
-                                            Value raw = rt::VariantRuntime::compareNumericCross(b5, l5)({lhsPayload, lhsTag, rhsPayload, rhsTag, predConst})[0];
-                                            b5.create<scf::YieldOp>(l5, packFromTriBool(b5, l5, resultType, raw));
-                                        },
-                                        [&](OpBuilder& b5, Location l5) {
-                                            auto ifString = b5.create<scf::IfOp>(
-                                                l5, lp.isString,
-                                                [&](OpBuilder& b6, Location l6) {
-                                                    Value lv = loadTyped(b6, l6, lhsRef, getVarlen32Type(getContext()));
-                                                    Value rv = loadTyped(b6, l6, rhsRef, getVarlen32Type(getContext()));
-                                                    Value cmp = applyStringCmp(b6, l6, predicate, lv, rv);
-                                                    b6.create<scf::YieldOp>(l6, asNullable(b6, l6, resultType, cmp, constBool(b6, l6, false)));
-                                                },
-                                                [&](OpBuilder& b6, Location l6) {
-                                                    auto ifRDFNode = b6.create<scf::IfOp>(
-                                                        l6, lp.isRDFNode,
-                                                        [&](OpBuilder& b7, Location l7) {
-                                                        Value raw = rt::VariantRuntime::compareNodeRefRef(b7, l7)({lhsRef, rhsRef, predConst})[0];
-                                                        b7.create<scf::YieldOp>(l7, packFromTriBool(b7, l7, resultType, raw));
-                                                        },
-                                                        [&](OpBuilder& b7, Location l7) {
-                                                        auto ifUnspecified = b7.create<scf::IfOp>(
-                                                            l7, lp.isUnspecified,
-                                                            [&](OpBuilder& b8, Location l8) {
-                                                                b8.create<scf::YieldOp>(l8, nullValue(b8, l8, resultType));
-                                                            },
-                                                            [&](OpBuilder& b8, Location l8) {
-                                                                Value raw = rt::VariantRuntime::compareBlobLiteralRefRef(b8, l8)({lhsRef, rhsRef, predConst})[0];
-                                                                b8.create<scf::YieldOp>(l8, packFromTriBool(b8, l8, resultType, raw));
-                                                            });
-                                                        b7.create<scf::YieldOp>(l7, ifUnspecified.getResult(0));
-                                                        });
-                                                    b6.create<scf::YieldOp>(l6, ifRDFNode.getResult(0));
-                                                });
-                                            b5.create<scf::YieldOp>(l5, ifString.getResult(0));
-                                        });
-                                    b4.create<scf::YieldOp>(l4, ifRemainingNumeric.getResult(0));
-                                });
-                            b3.create<scf::YieldOp>(l3, ifDouble.getResult(0));
-                            });
-                        b2.create<scf::YieldOp>(l2, ifI64.getResult(0));
-                    });
-                b.create<scf::YieldOp>(l, ifBool.getResult(0));
-            },
+            [&](OpBuilder& b, Location l) { b.create<scf::YieldOp>(l, dispatchOnTag(b, l, fastCases, sameTagSlow)); },
             [&](OpBuilder& b, Location l) {
                 Value bothNumeric = b.create<arith::AndIOp>(l, lp.isNumericFamily, rp.isNumericFamily);
-                auto ifNumeric = b.create<scf::IfOp>(
-                    l, bothNumeric,
-                    [&](OpBuilder& b2, Location l2) {
-                        Value lhsPayload = b2.create<util::PtrToIntOp>(l2, b2.getI64Type(), lhsRef);
-                        Value rhsPayload = b2.create<util::PtrToIntOp>(l2, b2.getI64Type(), rhsRef);
-                        Value raw = rt::VariantRuntime::compareNumericCross(b2, l2)({lhsPayload, lhsTag, rhsPayload, rhsTag, predConst})[0];
-                        b2.create<scf::YieldOp>(l2, packFromTriBool(b2, l2, resultType, raw));
-                    },
-                    [&](OpBuilder& b2, Location l2) {
-                        Value neitherScratch = b2.create<arith::AndIOp>(l2, notB(b2, l2, lp.isScratchPayload), notB(b2, l2, rp.isScratchPayload));
-                        auto ifLiteral = b2.create<scf::IfOp>(
-                            l2, neitherScratch,
-                            [&](OpBuilder& b3, Location l3) {
-                                Value raw = rt::VariantRuntime::compareBlobLiteralRefRef(b3, l3)({lhsRef, rhsRef, predConst})[0];
-                                b3.create<scf::YieldOp>(l3, packFromTriBool(b3, l3, resultType, raw));
-                            },
-                            [&](OpBuilder& b3, Location l3) {
-                                b3.create<scf::YieldOp>(l3, nullValue(b3, l3, resultType));
-                            });
-                        b2.create<scf::YieldOp>(l2, ifLiteral.getResult(0));
+                std::vector<TagCase> crossTagCases = {{bothNumeric, numericCrossCmp}};
+                Value result = dispatchOnTag(b, l, crossTagCases, [&](OpBuilder& b2, Location l2) -> Value {
+                    Value neitherScratch = b2.create<arith::AndIOp>(l2, notB(b2, l2, lp.isScratchPayload), notB(b2, l2, rp.isScratchPayload));
+                    std::vector<TagCase> literalCase = {{neitherScratch, blobLiteralCmp}};
+                    return dispatchOnTag(b2, l2, literalCase, [&](OpBuilder& b3, Location l3) -> Value {
+                        return nullValue(b3, l3, resultType);
                     });
-                b.create<scf::YieldOp>(l, ifNumeric.getResult(0));
+                });
+                b.create<scf::YieldOp>(l, result);
             });
         rewriter.replaceOp(op, outer.getResult(0));
         return success();
     }
 };
 
-Value applyIntArith(OpBuilder& b, Location loc, variant::VariantArithPredicate p, Value lhs, Value rhs) {
+Value applyIntArith(OpBuilder& b, Location loc, variant::VariantArithPredicate p, Value lhs, Value rhs, bool isUnsigned) {
     switch (p) {
         case variant::VariantArithPredicate::add: return b.create<arith::AddIOp>(loc, lhs, rhs);
         case variant::VariantArithPredicate::sub: return b.create<arith::SubIOp>(loc, lhs, rhs);
         case variant::VariantArithPredicate::mul: return b.create<arith::MulIOp>(loc, lhs, rhs);
-        case variant::VariantArithPredicate::div: return b.create<arith::DivSIOp>(loc, lhs, rhs);
+        case variant::VariantArithPredicate::div:
+            return isUnsigned ? b.create<arith::DivUIOp>(loc, lhs, rhs).getResult() : b.create<arith::DivSIOp>(loc, lhs, rhs).getResult();
     }
     llvm_unreachable("unhandled VariantArithPredicate");
 }
@@ -473,42 +467,37 @@ class ArithOpLowering : public OpConversionPattern<variant::ArithOp> {
         auto [lhsTag, lhsRef] = unpackVariant(rewriter, loc, adaptor.getLhs());
         auto [rhsTag, rhsRef] = unpackVariant(rewriter, loc, adaptor.getRhs());
         Value sameTag = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lhsTag, rhsTag);
-        Value longTag = constI32(rewriter, loc, xsd::to_int32(xsd::Type::Long));
-        Value doubleTag = constI32(rewriter, loc, xsd::to_int32(xsd::Type::Double));
-        Value isLong = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lhsTag, longTag);
-        Value isDouble = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lhsTag, doubleTag);
-        bool longFastEligible = op.getPredicate() != variant::VariantArithPredicate::div;
-        Value fastLong = longFastEligible ? isLong : constBool(rewriter, loc, false);
-        Value fast = rewriter.create<arith::AndIOp>(loc, sameTag, rewriter.create<arith::OrIOp>(loc, fastLong, isDouble));
-
         auto predicate = op.getPredicate();
+
+        // Runtime-call fallback via rdf4cpp API
+        auto slowArith = [&](OpBuilder& b, Location l) -> Value {
+            Value predConst = constI32(b, l, static_cast<int32_t>(predicate));
+            Value lhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), lhsRef);
+            Value rhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), rhsRef);
+            Value outSlot = allocStack(rewriter, op, b.getIntegerType(8), 8);
+            Value resultTag = rt::VariantRuntime::arithNumericCross(b, l)({lhsPayload, lhsTag, rhsPayload, rhsTag, predConst, outSlot})[0];
+            return packVariant(b, l, resultTag, inlineFromScratch(b, l, outSlot));
+        };
+
+        // Same-tag fast paths for fixed sized scalars up to 8 bytes.
+        std::vector<TagCase> fastCases;
+        for (const FixedNumericTag& n : fixedNumericTags()) {
+            if (!n.isFloat && predicate == variant::VariantArithPredicate::div) continue;
+            Value isThisTag = getEqTag(rewriter, loc, lhsTag, n.type);
+            fastCases.push_back({isThisTag, [&, n](OpBuilder& b, Location l) -> Value {
+                mlir::Type ty = fixedNumericMlirType(b, n);
+                Value lv = unpackInline(b, l, lhsRef, ty);
+                Value rv = unpackInline(b, l, rhsRef, ty);
+                Value res = n.isFloat ? applyFloatArith(b, l, predicate, lv, rv) : applyIntArith(b, l, predicate, lv, rv, n.isUnsigned);
+                Value resTag = constI32(b, l, xsd::to_int32(n.type));
+                    return packVariant(b, l, resTag, packInline(b, l, res));
+            }});
+        }
+
         auto result = rewriter.create<scf::IfOp>(
-            loc, fast,
-            [&](OpBuilder& b, Location l) {
-                auto ifLong = b.create<scf::IfOp>(
-                    l, isLong,
-                    [&](OpBuilder& b2, Location l2) {
-                        Value lv = unpackInline(b2, l2, lhsRef, b2.getI64Type());
-                        Value rv = unpackInline(b2, l2, rhsRef, b2.getI64Type());
-                        Value res = applyIntArith(b2, l2, predicate, lv, rv);
-                        b2.create<scf::YieldOp>(l2, packVariant(b2, l2, longTag, packInline(b2, l2, res)));
-                    },
-                    [&](OpBuilder& b2, Location l2) {
-                        Value lv = unpackInline(b2, l2, lhsRef, b2.getF64Type());
-                        Value rv = unpackInline(b2, l2, rhsRef, b2.getF64Type());
-                        Value res = applyFloatArith(b2, l2, predicate, lv, rv);
-                        b2.create<scf::YieldOp>(l2, packVariant(b2, l2, doubleTag, packInline(b2, l2, res)));
-                    });
-                b.create<scf::YieldOp>(l, ifLong.getResult(0));
-            },
-            [&](OpBuilder& b, Location l) {
-                Value predConst = constI32(b, l, static_cast<int32_t>(predicate));
-                Value lhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), lhsRef);
-                Value rhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), rhsRef);
-                Value outSlot = allocStack(rewriter, op, b.getIntegerType(8), 8);
-                Value resultTag = rt::VariantRuntime::arithNumericCross(b, l)({lhsPayload, lhsTag, rhsPayload, rhsTag, predConst, outSlot})[0];
-                b.create<scf::YieldOp>(l, packVariant(b, l, resultTag, inlineFromScratch(b, l, outSlot)));
-            });
+            loc, sameTag,
+            [&](OpBuilder& b, Location l) { b.create<scf::YieldOp>(l, dispatchOnTag(b, l, fastCases, slowArith)); },
+            [&](OpBuilder& b, Location l) { b.create<scf::YieldOp>(l, slowArith(b, l)); });
         rewriter.replaceOp(op, result.getResult(0));
         return success();
     }

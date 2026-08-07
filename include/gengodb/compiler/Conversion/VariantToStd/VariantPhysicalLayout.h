@@ -47,6 +47,35 @@ struct TagPredicates {
    mlir::Value isBool, isLong, isDouble, isRDFNode, isString, isUnspecified, isNumericFamily, isScratchPayload;
 };
 
+struct FixedNumericTag {
+   gengodb::semantics::xsd::Type type;
+   unsigned bitWidth;
+   bool isFloat;
+   bool isUnsigned;
+};
+
+inline llvm::ArrayRef<FixedNumericTag> fixedNumericTags() {
+   namespace xsd = gengodb::semantics::xsd;
+   static const FixedNumericTag kTags[] = {
+      {xsd::Type::Byte, 8, false, false},
+      {xsd::Type::Short, 16, false, false},
+      {xsd::Type::Int, 32, false, false},
+      {xsd::Type::Long, 64, false, false},
+      {xsd::Type::UnsignedByte, 8, false, true},
+      {xsd::Type::UnsignedShort, 16, false, true},
+      {xsd::Type::UnsignedInt, 32, false, true},
+      {xsd::Type::UnsignedLong, 64, false, true},
+      {xsd::Type::Float, 32, true, false},
+      {xsd::Type::Double, 64, true, false},
+   };
+   return kTags;
+}
+
+inline mlir::Type fixedNumericMlirType(mlir::OpBuilder& b, const FixedNumericTag& n) {
+   if (n.isFloat) return n.bitWidth == 32 ? mlir::Type(b.getF32Type()) : mlir::Type(b.getF64Type());
+   return b.getIntegerType(n.bitWidth);
+}
+
 inline TagPredicates computeTagPredicates(mlir::OpBuilder& b, mlir::Location loc, mlir::Value tag) {
    namespace xsd = gengodb::semantics::xsd;
    TagPredicates p;

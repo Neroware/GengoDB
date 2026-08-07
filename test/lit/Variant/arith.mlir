@@ -1,12 +1,7 @@
 // RUN: mlir-db-opt --lower-variant-to-std %s | env LINGODB_EXECUTION_MODE=DEFAULT run-mlir - | FileCheck %s
 
-// Same-tag add/sub/mul take the native arith fast path (no runtime call);
-// div and cross-tag arithmetic fall back to a runtime call built on
-// rdf4cpp's Literal arithmetic/promotion. An invalid combination (division
-// by zero) yields a variant tagged Unspecified, the "no value" sentinel
-// (see ArithOp's description in VariantOps.td). variant.variant_get_val is
-// an unsafe unwrap with no defined behavior on a tag mismatch, so detecting
-// that sentinel has to go through variant.variant_is_a instead of unwrapping.
+// Fixed-sized variant scalars (Int, Float, Date, Long,...) take arithmetic fast paths, 
+// otherwise use arithemtic numeric cross via rdf4cpp API callbacks.
 module {
     func.func @main() {
         %i5 = arith.constant 5 : i64
@@ -30,6 +25,16 @@ module {
         //CHECK: int(15)
         db.runtime_call "DumpValue" (%prodVal) : (i64) -> ()
 
+        // Same-tag fast path for a fixed-width numeric
+        %i5_32 = arith.constant 5 : i32
+        %i3_32 = arith.constant 3 : i32
+        %v5_32 = variant.create_scalar %i5_32 : i32
+        %v3_32 = variant.create_scalar %i3_32 : i32
+        %sum32 = variant.arith add %v5_32, %v3_32
+        %sum32Val = variant.variant_get_val %sum32 -> i32
+        //CHECK: int(8)
+        db.runtime_call "DumpValue" (%sum32Val) : (i32) -> ()
+
         // cross-tag fallback: int + double
         %crossSum = variant.arith add %v5, %vf5
         %crossVal = variant.variant_get_val %crossSum -> f64
@@ -43,6 +48,15 @@ module {
         %isUnspecified = variant.variant_is_a %divByZero { type = %unspecifiedTag }
         //CHECK: bool(true)
         db.runtime_call "DumpValue" (%isUnspecified) : (i1) -> ()
+
+        // Same-tag *integer* division is excluded from the fast path on
+        // purpose, because native `arith.divsi`/`divui` by zero traps.
+        %i0_32 = arith.constant 0 : i32
+        %v0_32 = variant.create_scalar %i0_32 : i32
+        %divByZero32 = variant.arith div %v5_32, %v0_32
+        %isUnspecified32 = variant.variant_is_a %divByZero32 { type = %unspecifiedTag }
+        //CHECK: bool(true)
+        db.runtime_call "DumpValue" (%isUnspecified32) : (i1) -> ()
 
         return
     }

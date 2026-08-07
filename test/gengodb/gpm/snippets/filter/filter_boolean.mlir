@@ -8,10 +8,15 @@ module  {
             }
             %filtered = relalg.selection %bgp (%arg0 : !tuples.tuple){
                 %ageVal = tuples.getcol %arg0 @vars::@age : !gpm.variable_binding
-                %gt10 = xsd.compare_literal gt %ageVal : !gpm.variable_binding, "10" dtype 200 -> !db.nullable<i1>
-                %lt100 = xsd.compare_literal lt %ageVal : !gpm.variable_binding, "100" dtype 200 -> !db.nullable<i1>
+                %ageVar = gpm.get_binding %ageVal -> !variant.variant
+                %ten = arith.constant 10 : i32
+                %tenVar = variant.create_scalar %ten : i32
+                %hundred = arith.constant 100 : i32
+                %hundredVar = variant.create_scalar %hundred : i32
+                %gt10 = variant.cmp gt %ageVar, %tenVar -> !db.nullable<i1>
+                %lt100 = variant.cmp lt %ageVar, %hundredVar -> !db.nullable<i1>
                 %anded = db.and %gt10, %lt100 : !db.nullable<i1>, !db.nullable<i1>
-                %lt10 = xsd.compare_literal lt %ageVal : !gpm.variable_binding, "10" dtype 200 -> !db.nullable<i1>
+                %lt10 = variant.cmp lt %ageVar, %tenVar -> !db.nullable<i1>
                 %notLt10 = db.not %lt10 : !db.nullable<i1>
                 %pred = db.or %anded, %notLt10 : !db.nullable<i1>, !db.nullable<i1>
                 tuples.return %pred : !db.nullable<i1>
