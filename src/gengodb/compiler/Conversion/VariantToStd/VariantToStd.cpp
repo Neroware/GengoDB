@@ -439,6 +439,21 @@ class CmpOpLowering : public OpConversionPattern<variant::CmpOp> {
     }
 };
 
+class OrderOpLowering : public OpConversionPattern<variant::OrderOp> {
+    public:
+    using OpConversionPattern<variant::OrderOp>::OpConversionPattern;
+    LogicalResult matchAndRewrite(variant::OrderOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+        auto loc = op->getLoc();
+        auto [lhsTag, lhsRef] = unpackVariant(rewriter, loc, adaptor.getLhs());
+        auto [rhsTag, rhsRef] = unpackVariant(rewriter, loc, adaptor.getRhs());
+        Value lhsPayload = rewriter.create<util::PtrToIntOp>(loc, rewriter.getI64Type(), lhsRef);
+        Value rhsPayload = rewriter.create<util::PtrToIntOp>(loc, rewriter.getI64Type(), rhsRef);
+        Value result = rt::VariantRuntime::compareOrder(rewriter, loc)({lhsPayload, lhsTag, lhsRef, rhsPayload, rhsTag, rhsRef})[0];
+        rewriter.replaceOp(op, result);
+        return success();
+    }
+};
+
 Value applyIntArith(OpBuilder& b, Location loc, variant::VariantArithPredicate p, Value lhs, Value rhs, bool isUnsigned) {
     switch (p) {
         case variant::VariantArithPredicate::add: return b.create<arith::AddIOp>(loc, lhs, rhs);
@@ -554,6 +569,7 @@ struct VariantToStdLoweringPass
         patterns.insert<VariantGetValOpLowering>(typeConverter, ctxt);
         patterns.insert<ToStringOpLowering>(typeConverter, ctxt);
         patterns.insert<CmpOpLowering>(typeConverter, ctxt);
+        patterns.insert<OrderOpLowering>(typeConverter, ctxt);
         patterns.insert<ArithOpLowering>(typeConverter, ctxt);
 
         if (failed(applyFullConversion(module, target, std::move(patterns)))) {

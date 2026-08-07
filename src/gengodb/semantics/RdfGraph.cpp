@@ -240,6 +240,9 @@ void RdfGraph::ensureLoaded() {
                 default: return std::string();
             }
         });
+        storage->storage().getMetadata().set_type_id_mapping([&](int32_t id) {
+            return static_cast<int32_t>(getNodes().get(id).type);
+        });
     }
 }
 void RdfGraph::rebuildLiteralNodeCache() {

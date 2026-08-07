@@ -234,6 +234,20 @@ inline std::optional<rdf4cpp::Literal> reconstructBlobLiteral(PropertyGraph::Nod
     return rdf4cpp::Literal::make_typed(lex, toDatatypeIri(*t));
 }
 
+inline std::optional<rdf4cpp::Literal> reconstructLiteral(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref) {
+    auto t = xsd::from_int32(tag);
+    if (!t.has_value() || *t == xsd::Type::Unspecified) return std::nullopt;
+    if (*t == xsd::Type::String) {
+        VarLen32 sv;
+        std::memcpy(&sv, ref, sizeof(sv));
+        return rdf4cpp::Literal::make_typed(std::string_view(sv.data(), sv.getLen()), toDatatypeIri(xsd::Type::String));
+    }
+    if (classifyStorage(*t).shape == StorageShape::Blob) return reconstructBlobLiteral(ref);
+    auto lit = getLiteralFromNumeric(reinterpret_cast<uint8_t*>(&payload), tag);
+    if (lit.null()) return std::nullopt;
+    return lit;
+}
+
 } // namespace
 
 int32_t VariantRuntime::resolveRefTag(PropertyGraph::NodeEntry* ref) {
@@ -356,4 +370,39 @@ int32_t VariantRuntime::arithNumericCross(int64_t lhsPayload, int32_t lhsTag, in
     auto resultTag = static_cast<int32_t>(xsd::from_iri(result.datatype()));
     if (!extractNumericByTag(result, resultTag, outPtr)) return xsd::to_int32(xsd::Type::Unspecified);
     return resultTag;
+}
+
+int8_t VariantRuntime::compareOrder(int64_t lhsPayload, int32_t lhsTag, PropertyGraph::NodeEntry* lhsRef, int64_t rhsPayload, int32_t rhsTag, PropertyGraph::NodeEntry* rhsRef) {
+    const bool lhsIsNode = lhsTag == xsd::to_int32(xsd::Type::RDFNode);
+    const bool rhsIsNode = rhsTag == xsd::to_int32(xsd::Type::RDFNode);
+    // Rank: blank node (0) < IRI (1) < literal (2).
+    auto rankOf = [](bool isNode, PropertyGraph::NodeEntry* ref) -> std::pair<int, bool> {
+        if (!isNode) return {2, false};
+        PropertyGraph* pgraph = propertyGraphOf(ref);
+        const int32_t localId = GraphStorage::nodeId(reinterpret_cast<uint8_t*>(ref));
+        const bool isBlank = pgraph->getMetadata().type_id(localId) == static_cast<int32_t>(RDFNodeType::BNode);
+        return {isBlank ? 0 : 1, isBlank};
+    };
+    const auto [lhsRank, lhsBlank] = rankOf(lhsIsNode, lhsRef);
+    const auto [rhsRank, rhsBlank] = rankOf(rhsIsNode, rhsRef);
+    if (lhsRank != rhsRank) return lhsRank < rhsRank ? -1 : 1;
+    if (lhsRank != 2) {
+        if (lhsBlank) {
+            const std::string lhsName = propertyGraphOf(lhsRef)->getMetadata().get_node_name(GraphStorage::nodeId(reinterpret_cast<uint8_t*>(lhsRef)));
+            const std::string rhsName = propertyGraphOf(rhsRef)->getMetadata().get_node_name(GraphStorage::nodeId(reinterpret_cast<uint8_t*>(rhsRef)));
+            if (lhsName != rhsName) return lhsName < rhsName ? -1 : 1;
+            return 0;
+        }
+        const int64_t lhsUid = resolveNodeRef(lhsRef);
+        const int64_t rhsUid = resolveNodeRef(rhsRef);
+        if (lhsUid != rhsUid) return lhsUid < rhsUid ? -1 : 1;
+        return 0;
+    }
+    auto lhsLit = reconstructLiteral(lhsPayload, lhsTag, lhsRef);
+    auto rhsLit = reconstructLiteral(rhsPayload, rhsTag, rhsRef);
+    if (!lhsLit.has_value() || !rhsLit.has_value()) return 0;
+    const auto ord = lhsLit->order(*rhsLit);
+    if (ord == std::strong_ordering::less) return -1;
+    if (ord == std::strong_ordering::greater) return 1;
+    return 0;
 }

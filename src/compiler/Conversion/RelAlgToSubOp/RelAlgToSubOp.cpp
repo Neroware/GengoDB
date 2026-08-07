@@ -1898,8 +1898,51 @@ class OffsetLowering : public OpConversionPattern<relalg::OffsetOp> {
       return success();
    }
 };
+static mlir::Value variantRawSpaceship(mlir::OpBuilder& builder, mlir::Value left, mlir::Value right, mlir::Location loc) {
+   return builder.create<variant::OrderOp>(loc, builder.getI8Type(), left, right);
+}
+static mlir::Value buildCompareValue(mlir::OpBuilder& builder, mlir::Value left, mlir::Value right, mlir::Location loc) {
+   auto nullableType = mlir::dyn_cast<db::NullableType>(left.getType());
+   auto baseType = nullableType ? nullableType.getType() : left.getType();
+   if (!mlir::isa<variant::VariantType>(baseType)) {
+      return builder.create<db::SortCompare>(loc, left, right);
+   }
+   bool lNullable = static_cast<bool>(nullableType);
+   bool rNullable = mlir::isa<db::NullableType>(right.getType());
+   if (!lNullable && !rNullable) {
+      return variantRawSpaceship(builder, left, right, loc);
+   }
+   auto i8Type = builder.getI8Type();
+   mlir::Value zero = builder.create<db::ConstantOp>(loc, i8Type, builder.getIntegerAttr(i8Type, 0));
+   mlir::Value minus1 = builder.create<db::ConstantOp>(loc, i8Type, builder.getIntegerAttr(i8Type, -1));
+   mlir::Value one = builder.create<db::ConstantOp>(loc, i8Type, builder.getIntegerAttr(i8Type, 1));
+   mlir::Value isNullL = lNullable ? builder.create<db::IsNullOp>(loc, left).getResult() : mlir::Value();
+   mlir::Value isNullR = rNullable ? builder.create<db::IsNullOp>(loc, right).getResult() : mlir::Value();
+   mlir::Value anyNull = (isNullL && isNullR) ? builder.create<mlir::arith::OrIOp>(loc, isNullL, isNullR).getResult() : (isNullL ? isNullL : isNullR);
+   mlir::Value lRaw = lNullable ? builder.create<db::NullableGetVal>(loc, left).getResult() : left;
+   mlir::Value rRaw = rNullable ? builder.create<db::NullableGetVal>(loc, right).getResult() : right;
+   auto ifOp = builder.create<mlir::scf::IfOp>(
+      loc, anyNull,
+      [&](mlir::OpBuilder& b, mlir::Location l2) {
+         mlir::Value res;
+         if (isNullL && isNullR) {
+            mlir::Value bothNull = b.create<mlir::arith::AndIOp>(l2, isNullL, isNullR);
+            res = b.create<mlir::arith::SelectOp>(l2, isNullR, minus1, one);
+            res = b.create<mlir::arith::SelectOp>(l2, bothNull, zero, res);
+         } else if (isNullL) {
+            res = one;
+         } else {
+            res = minus1;
+         }
+         b.create<mlir::scf::YieldOp>(l2, res);
+      },
+      [&](mlir::OpBuilder& b, mlir::Location l2) {
+         b.create<mlir::scf::YieldOp>(l2, variantRawSpaceship(b, lRaw, rRaw, l2));
+      });
+   return ifOp.getResult(0);
+}
 static mlir::Value spaceShipCompare(mlir::OpBuilder& builder, std::vector<std::pair<mlir::Value, mlir::Value>> sortCriteria, size_t pos, mlir::Location loc) {
-   mlir::Value compareRes = builder.create<db::SortCompare>(loc, sortCriteria.at(pos).first, sortCriteria.at(pos).second);
+   mlir::Value compareRes = buildCompareValue(builder, sortCriteria.at(pos).first, sortCriteria.at(pos).second, loc);
    auto zero = builder.create<db::ConstantOp>(loc, builder.getI8Type(), builder.getIntegerAttr(builder.getI8Type(), 0));
    auto isZero = builder.create<db::CmpOp>(loc, db::DBCmpPredicate::eq, compareRes, zero);
    if (pos + 1 < sortCriteria.size()) {

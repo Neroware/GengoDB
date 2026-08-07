@@ -42,6 +42,9 @@ struct VariantRuntime {
 
     // Canonicalizing hash for the fixed/inline numeric family
     static int64_t hashNumeric(int64_t payload, int32_t tag);
+
+    // Total order of the variant type
+    static int8_t compareOrder(int64_t lhsPayload, int32_t lhsTag, PropertyGraph::NodeEntry* lhsRef, int64_t rhsPayload, int32_t rhsTag, PropertyGraph::NodeEntry* rhsRef);
 };
 
 } // namespace lingodb::runtime

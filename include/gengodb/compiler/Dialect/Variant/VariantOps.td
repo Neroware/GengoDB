@@ -132,6 +132,13 @@ def CmpOp : Variant_Op<"cmp", [Pure]> {
     let assemblyFormat = [{ $predicate $lhs `,` $rhs `->` type($result) attr-dict }];
 }
 
+def OrderOp : Variant_Op<"order", [Pure]> {
+    let summary = "total order of variant type";
+    let arguments = (ins Variant:$lhs, Variant:$rhs);
+    let results = (outs I8:$result);
+    let assemblyFormat = [{ $lhs `,` $rhs attr-dict }];
+}
+
 def ArithOp : Variant_Op<"arith", [Pure]> {
     let summary = "binary XSD/SPARQL numeric arithmetic on two variants";
     let description = [{
