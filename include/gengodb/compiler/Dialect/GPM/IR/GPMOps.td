@@ -10,6 +10,7 @@ include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgInterfaces.td"
 include "gengodb/compiler/Dialect/GPM/IR/GPMBase.td"
+include "gengodb/compiler/Dialect/Variant/VariantDialect.td"
 
 include "GPMInterfaces.td"
 
@@ -105,10 +106,17 @@ def BagOp : GPM_Op<"bag", [Pure,GPMOperator,Operator,BinaryOperator]> {
 }
 
 def IdentifiersEqualOp : GPM_Op<"identifiers_equal", [Pure]> {
-  let summary = "identifier equality check";
+  let summary = "global identifier equality check";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);
   let results = (outs I1:$result);
   let assemblyFormat = [{ $lhs `:` type($lhs) `,` $rhs `:` type($rhs) attr-dict }];
+}
+
+def GetBindingOp : GPM_Op<"get_binding", [Pure]> {
+  let summary = "cast binding to variant";
+  let arguments = (ins VariableBinding:$var);
+  let results = (outs Variant:$result);
+  let assemblyFormat = [{ $var `->` type($result) attr-dict }];
 }
 
 #endif // GENGODB_DIALECT_GPM_IR_GPMOPS

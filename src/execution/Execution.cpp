@@ -6,15 +6,17 @@
 #include "lingodb/compiler/Conversion/ArrowToStd/ArrowToStd.h"
 #include "lingodb/compiler/Conversion/DBToStd/DBToStd.h"
 #include "gengodb/compiler/Conversion/GPMToSubOp/GPMToSubOpPass.h"
-#include "gengodb/compiler/Conversion/XSDToControlFlow/XSDToControlFlowPass.h"
 #include "lingodb/compiler/Conversion/RelAlgToSubOp/RelAlgToSubOpPass.h"
 #include "lingodb/compiler/Conversion/SubOpToControlFlow/SubOpToControlFlowPass.h"
+#include "gengodb/compiler/Conversion/VariantToStd/VariantToStdPass.h"
 #include "lingodb/compiler/Dialect/RelAlg/Passes.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorOps.h"
 #include "lingodb/compiler/Dialect/SubOperator/Transforms/Passes.h"
+#include "gengodb/compiler/Dialect/Variant/VariantDialect.h"
+#include "gengodb/compiler/Dialect/Variant/VariantOps.h"
 #include "lingodb/compiler/helper.h"
 #include "lingodb/execution/BaselineBackend.h"
 #include "lingodb/execution/CBackend.h"
@@ -84,7 +86,7 @@ class GpmLoweringStep : public LoweringStep {
       auto endLowerGpm = std::chrono::high_resolution_clock::now();
       timing["lowerGpm"] = std::chrono::duration_cast<std::chrono::microseconds>(endLowerGpm - startLowerGpm).count() / 1000.0;
       utility::Tracer::Trace indexLoadingTrace(loadIndicesEvent);
-      // Load the required tables/indices for the query
+      // Load the required named graphs for the query
       moduleOp.walk([&](mlir::Operation* op) {
          if (auto getExternalOp = mlir::dyn_cast_or_null<gsubop::GetExternalGraphOp>(*op)) {
             auto* catalog = getCatalog();
@@ -160,7 +162,7 @@ class SubOpLoweringStep : public LoweringStep {
       while (std::getline(configList, optPass, ',')) {
          enabledPasses.insert(optPass);
       }
-      optSubOpPm.addPass(gsubop::createStringifyMaterializedGraphRefsPass());
+      optSubOpPm.addPass(gsubop::createStringifyVariantsPass());
       optSubOpPm.addPass(subop::createFoldColumnsPass());
       optSubOpPm.addPass(subop::createCommonPiplineEliminationPass());
       if (enabledPasses.contains("ReuseLocal"))
@@ -189,7 +191,6 @@ class SubOpLoweringStep : public LoweringStep {
       addLingoDBInstrumentation(lowerSubOpPm, getSerializationState());
 
       subop::setCompressionEnabled(enabledPasses.contains("Compression"));
-      lowerSubOpPm.addPass(xsd::createLowerXSDToControlFlowPass());
       lowerSubOpPm.addPass(subop::createLowerSubOpPass());
       if (cleanupAfterSubOp.getValue()) {
          lowerSubOpPm.addPass(lingodb::compiler::createCanonicalizerPass());
@@ -213,6 +214,7 @@ class DefaultImperativeLowering : public LoweringStep {
       mlir::PassManager lowerDBPm(moduleOp->getContext());
       lowerDBPm.enableVerifier(verify);
       addLingoDBInstrumentation(lowerDBPm, getSerializationState());
+      lowerDBPm.addPass(variant::createLowerVariantToStdPass());
       db::createLowerDBPipeline(lowerDBPm);
       if (mlir::failed(lowerDBPm.run(moduleOp))) {
          error.emit() << "Lowering of imperative db operations failed";

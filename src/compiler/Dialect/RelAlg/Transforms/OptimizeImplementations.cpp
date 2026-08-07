@@ -487,7 +487,7 @@ class OptimizeImplementations : public mlir::PassWrapper<OptimizeImplementations
                   toErase.push_back(sortOp);
 
                   limitOp.replaceAllUsesWith(builder.create<relalg::TopKOp>(limitOp.getLoc(), limitOp.getMaxRows(), sortOp.getRel(), sortOp.getSortspecs()).asRelation());
-               } 
+               }
                else if (auto offsetOp = mlir::dyn_cast_or_null<relalg::OffsetOp>(limitOp.getRel().getDefiningOp())) {
                   if (auto sortOp = mlir::dyn_cast_or_null<relalg::SortOp>(offsetOp.getRel().getDefiningOp())) {
                      mlir::OpBuilder builder(limitOp);

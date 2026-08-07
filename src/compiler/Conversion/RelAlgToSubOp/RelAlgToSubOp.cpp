@@ -11,7 +11,9 @@
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpsTypes.h"
-#include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
+//#include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
+#include "gengodb/compiler/Dialect/Variant/VariantDialect.h"
+#include "gengodb/compiler/Dialect/Variant/VariantOps.h"
 #include "lingodb/compiler/Dialect/SubOperator/Utils.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
 #include "lingodb/compiler/Dialect/util/FunctionHelper.h"
@@ -37,7 +39,6 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include <iostream>
-#include <optional>
 
 using namespace mlir;
 
@@ -143,11 +144,50 @@ class BaseTableLowering : public OpConversionPattern<relalg::BaseTableOp> {
       return success();
    }
 };
-
+static mlir::Type stripNullable(mlir::Type type) {
+   if (auto nullable = mlir::dyn_cast<db::NullableType>(type)) return nullable.getType();
+   return type;
+}
+static mlir::Value compareOperands(mlir::OpBuilder& rewriter, mlir::Location loc, mlir::Value l, mlir::Value r, bool useIsa) {
+   if (mlir::isa<variant::VariantType>(stripNullable(l.getType()))) {
+      bool lNullable = mlir::isa<db::NullableType>(l.getType());
+      bool rNullable = mlir::isa<db::NullableType>(r.getType());
+      if (!lNullable && !rNullable) {
+         auto cmpType = db::NullableType::get(rewriter.getContext(), rewriter.getI1Type());
+         mlir::Value cmp = rewriter.create<variant::CmpOp>(loc, cmpType, variant::VariantCmpPredicate::eq, l, r);
+         return rewriter.create<db::DeriveTruth>(loc, rewriter.getI1Type(), cmp);
+      }
+      mlir::Value isNullL = lNullable ? rewriter.create<db::IsNullOp>(loc, l).getResult() : mlir::Value();
+      mlir::Value isNullR = rNullable ? rewriter.create<db::IsNullOp>(loc, r).getResult() : mlir::Value();
+      mlir::Value anyNull = (isNullL && isNullR) ? rewriter.create<mlir::arith::OrIOp>(loc, isNullL, isNullR).getResult() : (isNullL ? isNullL : isNullR);
+      mlir::Value lRaw = lNullable ? rewriter.create<db::NullableGetVal>(loc, l).getResult() : l;
+      mlir::Value rRaw = rNullable ? rewriter.create<db::NullableGetVal>(loc, r).getResult() : r;
+      mlir::Type resultType = useIsa ? static_cast<mlir::Type>(rewriter.getI1Type()) : static_cast<mlir::Type>(db::NullableType::get(rewriter.getContext(), rewriter.getI1Type()));
+      auto ifOp = rewriter.create<mlir::scf::IfOp>(
+         loc, anyNull,
+         [&](mlir::OpBuilder& b, mlir::Location l2) {
+            mlir::Value res;
+            if (useIsa) {
+               res = (isNullL && isNullR) ? b.create<mlir::arith::AndIOp>(l2, isNullL, isNullR).getResult() : b.create<mlir::arith::ConstantIntOp>(l2, 0, 1).getResult();
+            } else {
+               res = b.create<db::NullOp>(l2, resultType).getResult();
+            }
+            b.create<mlir::scf::YieldOp>(l2, res);
+         },
+         [&](mlir::OpBuilder& b, mlir::Location l2) {
+            auto cmpType = db::NullableType::get(b.getContext(), b.getI1Type());
+            auto cmp = b.create<variant::CmpOp>(l2, cmpType, variant::VariantCmpPredicate::eq, lRaw, rRaw);
+            mlir::Value res = useIsa ? b.create<db::DeriveTruth>(l2, b.getI1Type(), cmp).getResult() : cmp.getResult();
+            b.create<mlir::scf::YieldOp>(l2, res);
+         });
+      return ifOp.getResult(0);
+   }
+   return rewriter.create<db::CmpOp>(loc, useIsa ? db::DBCmpPredicate::isa : db::DBCmpPredicate::eq, l, r);
+}
 static mlir::Value compareKeys(mlir::OpBuilder& rewriter, mlir::ValueRange leftUnpacked, mlir::ValueRange rightUnpacked, mlir::Location loc) {
    mlir::Value equal;
    for (size_t i = 0; i < leftUnpacked.size(); i++) {
-      mlir::Value compared = rewriter.create<db::CmpOp>(loc, db::DBCmpPredicate::isa, leftUnpacked[i], rightUnpacked[i]);
+      mlir::Value compared = compareOperands(rewriter, loc, leftUnpacked[i], rightUnpacked[i], /*useIsa=*/true);
       if (equal) {
          equal = rewriter.create<mlir::arith::AndIOp>(loc, rewriter.getI1Type(), mlir::ValueRange({equal, compared}));
       } else {
@@ -339,35 +379,6 @@ static mlir::Block* createCompareBlock(std::vector<mlir::Type> keyTypes, Convers
    return equalBlock;
 }
 
-// Unpack complex types to their key members
-static std::pair<mlir::Value, mlir::ArrayAttr> unpackHashKeyColumns(mlir::Value stream, mlir::ArrayAttr hashKeys, mlir::ConversionPatternRewriter& rewriter, mlir::Location loc) {
-   llvm::SmallVector<mlir::Attribute> newHashKeys;
-   for (auto attr : hashKeys) {
-      auto colRef = mlir::cast<tuples::ColumnRefAttr>(attr);
-      auto colType = colRef.getColumn().type;
-      auto nullableType = mlir::dyn_cast<db::NullableType>(colType);
-      mlir::Type refType = nullableType ? nullableType.getType() : colType;
-      mlir::Type idType;
-      Member idMember;
-      if (auto nodeRefType = mlir::dyn_cast<gsubop::NodeRefType>(refType)) {
-         idMember = nodeRefType.getNodeMembers().getMembers()[0];
-         idType = nullableType ? mlir::Type(db::NullableType::get(rewriter.getContext(), rewriter.getI32Type()))
-            : mlir::Type(rewriter.getI32Type());
-      } else if (auto edgeRefType = mlir::dyn_cast<gsubop::EdgeRefType>(refType)) {
-         idMember = edgeRefType.getEdgeMembers().getMembers()[0];
-         idType = nullableType ? mlir::Type(db::NullableType::get(rewriter.getContext(), rewriter.getI32Type()))
-            : mlir::Type(rewriter.getI32Type());
-      } else {
-         newHashKeys.push_back(attr);
-         continue;
-      }
-      auto [idDef, idRef] = createColumn(idType, "hashkey", "id");
-      stream = rewriter.create<subop::GatherOp>(loc, stream, colRef, createColumnDefMemberMappingAttr(rewriter.getContext(), {{idMember, idDef}}));
-      newHashKeys.push_back(idRef);
-   }
-   return {stream, rewriter.getArrayAttr(newHashKeys)};
-}
-
 class ProjectionDistinctLowering : public OpConversionPattern<relalg::ProjectionOp> {
    public:
    using OpConversionPattern<relalg::ProjectionOp>::OpConversionPattern;
@@ -378,80 +389,46 @@ class ProjectionDistinctLowering : public OpConversionPattern<relalg::Projection
       auto loc = projectionOp->getLoc();
 
       auto& colManager = context->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-      auto& memberManager = context->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
-
-      mlir::Value rel;
-      mlir::ArrayAttr hashKeyCols;
-      std::tie(rel, hashKeyCols) = unpackHashKeyColumns(adaptor.getRel(), projectionOp.getCols(), rewriter, loc);
 
       llvm::SmallVector<Member> keyMemberList;
-      llvm::SmallVector<Member> valueMemberList;
       std::vector<mlir::Type> keyTypes;
       llvm::SmallVector<subop::DefMappingPairT> defMapping;
-      llvm::SmallVector<mlir::Attribute> passthroughCols;
-      for (auto [origAttr, keyAttr] : llvm::zip(projectionOp.getCols(), hashKeyCols)) {
-         auto origRef = mlir::cast<tuples::ColumnRefAttr>(origAttr);
-         auto keyRef = mlir::cast<tuples::ColumnRefAttr>(keyAttr);
-         auto keyMember = createMember(context, "keyval", keyRef.getColumn().type);
-         keyMemberList.push_back(keyMember);
-         keyTypes.push_back(keyRef.getColumn().type);
-         if (origAttr == keyAttr) {
-            defMapping.push_back({keyMember, colManager.createDef(&origRef.getColumn())});
-         } 
-         else {
-            auto valueMember = createMember(context, "keyval", origRef.getColumn().type);
-            valueMemberList.push_back(valueMember);
-            defMapping.push_back({valueMember, colManager.createDef(&origRef.getColumn())});
-            passthroughCols.push_back(origAttr);
-         }
+      for (auto x : projectionOp.getCols()) {
+         auto ref = mlir::cast<tuples::ColumnRefAttr>(x);
+         auto member = createMember(context, "keyval", ref.getColumn().type);
+         keyMemberList.push_back(member);
+         keyTypes.push_back((ref.getColumn().type));
+         defMapping.push_back({member, colManager.createDef(&ref.getColumn())});
       }
       auto keyMembers = createStateMembersAttr(context, keyMemberList);
-      auto stateMembers = createStateMembersAttr(context, valueMemberList);
+      auto stateMembers = createStateMembersAttr(context, {});
 
       auto stateType = subop::MapType::get(rewriter.getContext(), keyMembers, stateMembers, false);
       mlir::Value state = rewriter.create<subop::GenericCreateOp>(loc, stateType);
       auto [referenceDef, referenceRef] = createColumn(subop::LookupEntryRefType::get(context, stateType), "lookup", "ref");
-      auto lookupOp = rewriter.create<subop::LookupOrInsertOp>(loc, tuples::TupleStreamType::get(getContext()), rel, state, hashKeyCols, referenceDef);
+      auto lookupOp = rewriter.create<subop::LookupOrInsertOp>(loc, tuples::TupleStreamType::get(getContext()), adaptor.getRel(), state, projectionOp.getCols(), referenceDef);
       auto* initialValueBlock = new Block;
       {
          mlir::OpBuilder::InsertionGuard guard(rewriter);
          rewriter.setInsertionPointToStart(initialValueBlock);
-         llvm::SmallVector<mlir::Value> defaultValues;
-         for (auto& valueMember : valueMemberList) {
-            defaultValues.push_back(rewriter.create<util::UndefOp>(loc, memberManager.getType(valueMember)));
-         }
-         rewriter.create<tuples::ReturnOp>(loc, defaultValues);
+         rewriter.create<tuples::ReturnOp>(loc);
       }
       lookupOp.getInitFn().push_back(initialValueBlock);
       lookupOp.getEqFn().push_back(createCompareBlock(keyTypes, rewriter, loc));
-      auto reduceOp = rewriter.create<subop::ReduceOp>(loc, lookupOp, referenceRef, rewriter.getArrayAttr(passthroughCols), createMemberAttrArray(context, valueMemberList));
+      auto reduceOp = rewriter.create<subop::ReduceOp>(loc, lookupOp, referenceRef, rewriter.getArrayAttr({}), rewriter.getArrayAttr({}));
 
       {
          mlir::Block* reduceBlock = new Block;
          mlir::OpBuilder::InsertionGuard guard(rewriter);
          rewriter.setInsertionPointToStart(reduceBlock);
-         llvm::SmallVector<mlir::Value> columnArgs;
-         for (auto attr : passthroughCols) {
-            columnArgs.push_back(reduceBlock->addArgument(mlir::cast<tuples::ColumnRefAttr>(attr).getColumn().type, loc));
-         }
-         for (auto& valueMember : valueMemberList) {
-            reduceBlock->addArgument(memberManager.getType(valueMember), loc);
-         }
-         rewriter.create<tuples::ReturnOp>(loc, mlir::ValueRange(columnArgs));
+         rewriter.create<tuples::ReturnOp>(loc, mlir::ValueRange({}));
          reduceOp.getRegion().push_back(reduceBlock);
       }
       {
          mlir::Block* combineBlock = new Block;
          mlir::OpBuilder::InsertionGuard guard(rewriter);
          rewriter.setInsertionPointToStart(combineBlock);
-         llvm::SmallVector<mlir::Value> leftArgs;
-         for (auto& valueMember : valueMemberList) {
-            leftArgs.push_back(combineBlock->addArgument(memberManager.getType(valueMember), loc));
-         }
-         for (auto& valueMember : valueMemberList) {
-            combineBlock->addArgument(memberManager.getType(valueMember), loc);
-         }
-         rewriter.create<tuples::ReturnOp>(loc, mlir::ValueRange(leftArgs));
+         rewriter.create<tuples::ReturnOp>(loc, mlir::ValueRange({}));
          reduceOp.getCombine().push_back(combineBlock);
       }
       mlir::Value scan = rewriter.create<subop::ScanOp>(loc, state, createColumnDefMemberMappingAttr(context, defMapping));
@@ -650,8 +627,8 @@ static mlir::Value mapColsToNull(mlir::Value stream, mlir::OpBuilder& rewriter, 
       for (mlir::Attribute attr : mapping) {
          auto relationDefAttr = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(attr);
          auto* defAttr = &relationDefAttr.getColumn();
-         auto fromExisting = mlir::cast<tuples::ColumnRefAttr>(mlir::cast<mlir::ArrayAttr>(relationDefAttr.getFromExisting())[0]);
-         if (excluded.contains(&fromExisting.getColumn())) continue;
+         auto fromExisting = mlir::dyn_cast<tuples::ColumnRefAttr>(mlir::cast<mlir::ArrayAttr>(relationDefAttr.getFromExisting())[0]);
+         if (fromExisting && excluded.contains(&fromExisting.getColumn())) continue;
          mlir::Value nullValue = rewriter.create<db::NullOp>(loc, defAttr->type);
          res.push_back(nullValue);
          defAttrs.push_back(colManager.createDef(defAttr));
@@ -662,13 +639,6 @@ static mlir::Value mapColsToNull(mlir::Value stream, mlir::OpBuilder& rewriter, 
    mapOp.getFn().push_back(mapBlock);
    return mapOp.getResult();
 }
-static bool isGraphRefType(mlir::Type type) {
-   return mlir::isa<gsubop::NodeRefType>(type) || mlir::isa<gsubop::EdgeRefType>(type) || mlir::isa<gsubop::PropertyRefType>(type);
-}
-static bool isNullableGraphRefType(mlir::Type type) {
-   auto nullable = mlir::dyn_cast<db::NullableType>(type);
-   return nullable && (mlir::isa<gsubop::NodeRefType>(nullable.getType()) || mlir::isa<gsubop::EdgeRefType>(nullable.getType()));
-}
 static mlir::Value mapColsToNullable(mlir::Value stream, mlir::OpBuilder& rewriter, mlir::Location loc, mlir::ArrayAttr mapping, size_t exisingOffset = 0, relalg::ColumnSet excluded = {}) {
    auto& colManager = rewriter.getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
    std::vector<mlir::Attribute> defAttrs;
@@ -678,26 +648,16 @@ static mlir::Value mapColsToNullable(mlir::Value stream, mlir::OpBuilder& rewrit
       for (mlir::Attribute attr : mapping) {
          auto relationDefAttr = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(attr);
          auto* defAttr = &relationDefAttr.getColumn();
-         auto fromExisting = mlir::dyn_cast_or_null<tuples::ColumnRefAttr>(mlir::cast<mlir::ArrayAttr>(relationDefAttr.getFromExisting())[exisingOffset]);
+         auto fromExisting = mlir::dyn_cast<tuples::ColumnRefAttr>(mlir::cast<mlir::ArrayAttr>(relationDefAttr.getFromExisting())[exisingOffset]);
          if (!fromExisting) {
-            mlir::Value value = rewriter.create<db::NullOp>(loc, defAttr->type);
-            res.push_back(value);
+            res.push_back(rewriter.create<db::NullOp>(loc, defAttr->type));
             defAttrs.push_back(colManager.createDef(defAttr));
             continue;
          }
          if (excluded.contains(&fromExisting.getColumn())) continue;
          mlir::Value value = helper.access(fromExisting, loc);
          if (fromExisting.getColumn().type != defAttr->type) {
-            mlir::Value tmp;
-            if (isNullableGraphRefType(value.getType())) {
-               tmp = value;
-            }
-            else if (isGraphRefType(value.getType())) {
-               tmp = rewriter.create<gsubop::WrapNullableRefOp>(loc, db::NullableType::get(rewriter.getContext(), value.getType()), value);
-            }
-            else {
-               tmp = rewriter.create<db::AsNullableOp>(loc, defAttr->type, value);
-            }
+            mlir::Value tmp = rewriter.create<db::AsNullableOp>(loc, defAttr->type, value);
             value = tmp;
          }
          res.push_back(value);
@@ -1138,7 +1098,7 @@ mlir::Block* createEqFn(mlir::ConversionPatternRewriter& rewriter, mlir::ArrayAt
    for (auto z : llvm::zip(leftArgs, rightArgs, nullsEqual)) {
       auto [l, r, nE] = z;
       bool useIsa = mlir::cast<mlir::IntegerAttr>(nE).getInt();
-      mlir::Value compared = rewriter.create<db::CmpOp>(loc, useIsa ? db::DBCmpPredicate::isa : db::DBCmpPredicate::eq, l, r);
+      mlir::Value compared = compareOperands(rewriter, loc, l, r, useIsa);
       cmps.push_back(compared);
    }
    mlir::Value anded;
@@ -1222,7 +1182,7 @@ static mlir::Value applyFillIn(mlir::Value stream, llvm::SmallVectorImpl<std::pa
       std::vector<mlir::Value> res;
       for (auto& [targetRef, sourceRef] : fillPairs) {
          mlir::Value sourceVal = fillHelper.access(sourceRef, loc);
-         mlir::Value filled = sourceVal.getType() == targetRef.getColumn().type ? sourceVal : rewriter.create<gsubop::WrapNullableRefOp>(loc, targetRef.getColumn().type, sourceVal).getResult();
+         mlir::Value filled = sourceVal.getType() == targetRef.getColumn().type ? sourceVal : rewriter.create<db::AsNullableOp>(loc, targetRef.getColumn().type, sourceVal).getResult();
          res.push_back(filled);
          fillDefs.push_back(colManager.createDef(&targetRef.getColumn()));
       }
@@ -1233,10 +1193,6 @@ static mlir::Value applyFillIn(mlir::Value stream, llvm::SmallVectorImpl<std::pa
    return fillMapOp.getResult();
 }
 static mlir::Value translateHJNullMatchesAll(mlir::Value left, mlir::Value right, mlir::ArrayAttr nullsEqual, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, relalg::ColumnSet columns, mlir::ConversionPatternRewriter& rewriter, mlir::Location loc, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn, mlir::ArrayAttr nullMatchesAll = mlir::ArrayAttr(), relalg::ColumnSet fullOutputColumns = relalg::ColumnSet(), relalg::ColumnSet leftColumns = relalg::ColumnSet()) {
-   auto originalHashRight = hashRight;
-   auto originalHashLeft = hashLeft;
-   std::tie(right, hashRight) = unpackHashKeyColumns(right, hashRight, rewriter, loc);
-   std::tie(left, hashLeft) = unpackHashKeyColumns(left, hashLeft, rewriter, loc);
    mlir::Value fullRightStream = right; // captured before any build-side null-key split, for probe-side handling below
 
    std::optional<MaterializationHelper> rightColumnsHelper;
@@ -1247,7 +1203,7 @@ static mlir::Value translateHJNullMatchesAll(mlir::Value left, mlir::Value right
 
    // Build side: a null-keyed build row must cross-join with every probe row
    llvm::SmallVector<std::pair<tuples::ColumnRefAttr, tuples::ColumnRefAttr>> fillFromLeft;
-   auto [markedRight, buildMarkerRef] = computeNullKeyMarker(right, hashRight, originalHashRight, originalHashLeft, nullMatchesAll, rewriter, loc, fillFromLeft);
+   auto [markedRight, buildMarkerRef] = computeNullKeyMarker(right, hashRight, hashRight, hashLeft, nullMatchesAll, rewriter, loc, fillFromLeft);
    mlir::Value nullKeyBuffer;
    if (buildMarkerRef) {
       relalg::ColumnSet rightPlusMarker = columns;
@@ -1272,7 +1228,7 @@ static mlir::Value translateHJNullMatchesAll(mlir::Value left, mlir::Value right
 
    // Probe side: a null-keyed probe row must cross-join with the entire build side
    llvm::SmallVector<std::pair<tuples::ColumnRefAttr, tuples::ColumnRefAttr>> fillFromRight;
-   auto [markedLeft, probeMarkerRef] = computeNullKeyMarker(left, hashLeft, originalHashLeft, originalHashRight, nullMatchesAll, rewriter, loc, fillFromRight);
+   auto [markedLeft, probeMarkerRef] = computeNullKeyMarker(left, hashLeft, hashLeft, hashRight, nullMatchesAll, rewriter, loc, fillFromRight);
    mlir::Value fullRightBuffer;
    mlir::Value leftNullOnly;
    if (buildMarkerRef || probeMarkerRef) {
@@ -1373,8 +1329,6 @@ static mlir::Value translateHJNullMatchesAll(mlir::Value left, mlir::Value right
    return rewriter.create<subop::UnionOp>(loc, mlir::ValueRange(topLevelResults));
 }
 static mlir::Value translateHJ(mlir::Value left, mlir::Value right, mlir::ArrayAttr nullsEqual, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, relalg::ColumnSet columns, mlir::ConversionPatternRewriter& rewriter, mlir::Location loc, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn) {
-   std::tie(right, hashRight) = unpackHashKeyColumns(right, hashRight, rewriter, loc);
-   std::tie(left, hashLeft) = unpackHashKeyColumns(left, hashLeft, rewriter, loc);
    auto keyColumns = relalg::ColumnSet::fromArrayAttr(hashRight);
    MaterializationHelper keyHelper(hashRight, rewriter.getContext());
    auto valueColumns = columns;
@@ -1944,36 +1898,60 @@ class OffsetLowering : public OpConversionPattern<relalg::OffsetOp> {
       return success();
    }
 };
-static mlir::Value buildCompareValue(mlir::OpBuilder& builder, mlir::Value left, mlir::Value right, mlir::Location loc) {
-   auto leftType = left.getType();
-   auto nullableType = mlir::dyn_cast<db::NullableType>(leftType);
-   auto baseType = nullableType ? nullableType.getType() : leftType;
-   if (mlir::isa<gsubop::NodeRefType, gsubop::EdgeRefType>(baseType)) {
-      bool isEdge = mlir::isa<gsubop::EdgeRefType>(baseType);
-      return builder.create<gsubop::GraphRefCompareOp>(loc, builder.getI8Type(), left, right, builder.getBoolAttr(isEdge), builder.getBoolAttr(static_cast<bool>(nullableType)));
-   }
-   return builder.create<db::SortCompare>(loc, left, right);
+static mlir::Value variantRawSpaceship(mlir::OpBuilder& builder, mlir::Value left, mlir::Value right, mlir::Location loc) {
+   return builder.create<variant::OrderOp>(loc, builder.getI8Type(), left, right);
 }
-static mlir::Value chainCompareResults(mlir::OpBuilder& builder, const std::vector<mlir::Value>& compareResults, size_t pos, mlir::Location loc) {
-   mlir::Value compareRes = compareResults[pos];
-   auto zero = builder.create<db::ConstantOp>(loc, builder.getI8Type(), builder.getIntegerAttr(builder.getI8Type(), 0));
-   auto isZero = builder.create<db::CmpOp>(loc, db::DBCmpPredicate::eq, compareRes, zero);
-   if (pos + 1 < compareResults.size()) {
-      auto ifOp = builder.create<mlir::scf::IfOp>(
-         loc, isZero, [&](mlir::OpBuilder& builder, mlir::Location loc) { builder.create<mlir::scf::YieldOp>(loc, chainCompareResults(builder, compareResults, pos + 1, loc)); }, [&](mlir::OpBuilder& builder, mlir::Location loc) { builder.create<mlir::scf::YieldOp>(loc, compareRes); });
-      return ifOp.getResult(0);
-   } 
-   else {
-      return compareRes;
+static mlir::Value buildCompareValue(mlir::OpBuilder& builder, mlir::Value left, mlir::Value right, mlir::Location loc) {
+   auto nullableType = mlir::dyn_cast<db::NullableType>(left.getType());
+   auto baseType = nullableType ? nullableType.getType() : left.getType();
+   if (!mlir::isa<variant::VariantType>(baseType)) {
+      return builder.create<db::SortCompare>(loc, left, right);
    }
+   bool lNullable = static_cast<bool>(nullableType);
+   bool rNullable = mlir::isa<db::NullableType>(right.getType());
+   if (!lNullable && !rNullable) {
+      return variantRawSpaceship(builder, left, right, loc);
+   }
+   auto i8Type = builder.getI8Type();
+   mlir::Value zero = builder.create<db::ConstantOp>(loc, i8Type, builder.getIntegerAttr(i8Type, 0));
+   mlir::Value minus1 = builder.create<db::ConstantOp>(loc, i8Type, builder.getIntegerAttr(i8Type, -1));
+   mlir::Value one = builder.create<db::ConstantOp>(loc, i8Type, builder.getIntegerAttr(i8Type, 1));
+   mlir::Value isNullL = lNullable ? builder.create<db::IsNullOp>(loc, left).getResult() : mlir::Value();
+   mlir::Value isNullR = rNullable ? builder.create<db::IsNullOp>(loc, right).getResult() : mlir::Value();
+   mlir::Value anyNull = (isNullL && isNullR) ? builder.create<mlir::arith::OrIOp>(loc, isNullL, isNullR).getResult() : (isNullL ? isNullL : isNullR);
+   mlir::Value lRaw = lNullable ? builder.create<db::NullableGetVal>(loc, left).getResult() : left;
+   mlir::Value rRaw = rNullable ? builder.create<db::NullableGetVal>(loc, right).getResult() : right;
+   auto ifOp = builder.create<mlir::scf::IfOp>(
+      loc, anyNull,
+      [&](mlir::OpBuilder& b, mlir::Location l2) {
+         mlir::Value res;
+         if (isNullL && isNullR) {
+            mlir::Value bothNull = b.create<mlir::arith::AndIOp>(l2, isNullL, isNullR);
+            res = b.create<mlir::arith::SelectOp>(l2, isNullR, minus1, one);
+            res = b.create<mlir::arith::SelectOp>(l2, bothNull, zero, res);
+         } else if (isNullL) {
+            res = one;
+         } else {
+            res = minus1;
+         }
+         b.create<mlir::scf::YieldOp>(l2, res);
+      },
+      [&](mlir::OpBuilder& b, mlir::Location l2) {
+         b.create<mlir::scf::YieldOp>(l2, variantRawSpaceship(b, lRaw, rRaw, l2));
+      });
+   return ifOp.getResult(0);
 }
 static mlir::Value spaceShipCompare(mlir::OpBuilder& builder, std::vector<std::pair<mlir::Value, mlir::Value>> sortCriteria, size_t pos, mlir::Location loc) {
-   std::vector<mlir::Value> compareResults;
-   compareResults.reserve(sortCriteria.size());
-   for (auto& criterion : sortCriteria) {
-      compareResults.push_back(buildCompareValue(builder, criterion.first, criterion.second, loc));
+   mlir::Value compareRes = buildCompareValue(builder, sortCriteria.at(pos).first, sortCriteria.at(pos).second, loc);
+   auto zero = builder.create<db::ConstantOp>(loc, builder.getI8Type(), builder.getIntegerAttr(builder.getI8Type(), 0));
+   auto isZero = builder.create<db::CmpOp>(loc, db::DBCmpPredicate::eq, compareRes, zero);
+   if (pos + 1 < sortCriteria.size()) {
+      auto ifOp = builder.create<mlir::scf::IfOp>(
+         loc, isZero, [&](mlir::OpBuilder& builder, mlir::Location loc) { builder.create<mlir::scf::YieldOp>(loc, spaceShipCompare(builder, sortCriteria, pos + 1, loc)); }, [&](mlir::OpBuilder& builder, mlir::Location loc) { builder.create<mlir::scf::YieldOp>(loc, compareRes); });
+      return ifOp.getResult(0);
+   } else {
+      return compareRes;
    }
-   return chainCompareResults(builder, compareResults, pos, loc);
 }
 static mlir::Value createSortedView(ConversionPatternRewriter& rewriter, mlir::Value buffer, mlir::ArrayAttr sortSpecs, mlir::Location loc, MaterializationHelper& helper) {
    auto* block = new Block;
@@ -3417,6 +3395,7 @@ void RelalgToSubOpLoweringPass::runOnOperation() {
    target.addIllegalDialect<relalg::RelAlgDialect>();
    target.addLegalDialect<subop::SubOperatorDialect>();
    target.addLegalDialect<gsubop::GraphSubOpDialect>();
+   target.addLegalDialect<variant::VariantDialect>();
    target.addLegalDialect<db::DBDialect>();
    target.addLegalDialect<lingodb::compiler::dialect::arrow::ArrowDialect>();
 
@@ -3477,7 +3456,6 @@ relalg::createLowerToSubOpPass() {
 }
 void relalg::createLowerRelAlgToSubOpPipeline(mlir::OpPassManager& pm) {
    pm.addPass(relalg::createLowerToSubOpPass());
-   pm.addPass(gsubop::createGraphSubOpCleanupPass());
 }
 void relalg::registerRelAlgToSubOpConversionPasses() {
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {

@@ -1,0 +1,11 @@
+PREFIX ex: <http://example.org/>
+
+SELECT ?who ?what
+WHERE {
+    GRAPH <file://resources/ttl/coffee.ttl#rdf> {
+        ?who ex:drinks ?what .
+        ?who ex:eats ex:sushi .
+        OPTIONAL { ?who ex:age ?age. }
+        FILTER(?age > 30)
+    }
+}

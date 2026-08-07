@@ -610,6 +610,23 @@ class UnTagPtrLowering : public OpConversionPattern<util::UnTagPtr> {
       return success();
    }
 };
+class IntToPtrOpLowering : public OpConversionPattern<util::IntToPtrOp> {
+   public:
+   using OpConversionPattern<util::IntToPtrOp>::OpConversionPattern;
+   LogicalResult matchAndRewrite(util::IntToPtrOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      auto ptrType = mlir::LLVM::LLVMPointerType::get(getContext());
+      rewriter.replaceOpWithNewOp<LLVM::IntToPtrOp>(op, ptrType, adaptor.getVal());
+      return success();
+   }
+};
+class PtrToIntOpLowering : public OpConversionPattern<util::PtrToIntOp> {
+   public:
+   using OpConversionPattern<util::PtrToIntOp>::OpConversionPattern;
+   LogicalResult matchAndRewrite(util::PtrToIntOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      rewriter.replaceOpWithNewOp<LLVM::PtrToIntOp>(op, rewriter.getI64Type(), adaptor.getRef());
+      return success();
+   }
+};
 class SetBitConstLowering : public OpConversionPattern<util::SetBitConstOp> {
    public:
    using OpConversionPattern<util::SetBitConstOp>::OpConversionPattern;
@@ -693,6 +710,8 @@ void util::populateUtilToLLVMConversionPatterns(LLVMTypeConverter& typeConverter
    patterns.add<HashVarLenLowering>(typeConverter, patterns.getContext());
    patterns.add<PtrTagMatchesLowering>(typeConverter, patterns.getContext());
    patterns.add<UnTagPtrLowering>(typeConverter, patterns.getContext());
+   patterns.add<IntToPtrOpLowering>(typeConverter, patterns.getContext());
+   patterns.add<PtrToIntOpLowering>(typeConverter, patterns.getContext());
    patterns.add<BufferCreateOpLowering>(typeConverter, patterns.getContext());
    patterns.add<BufferGetMemRefOpLowering>(typeConverter, patterns.getContext());
    patterns.add<BufferGetElementRefLowering>(typeConverter, patterns.getContext());

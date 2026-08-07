@@ -185,17 +185,21 @@ public:
     };
     
     struct Metadata {
-        inline void set_identifier_mapping(std::function<std::string(int32_t)> identifier) { identifier_ = identifier; }
-        inline std::string identifier(int32_t id) const { return identifier_(id); }
+        inline void set_name_mapping(std::function<std::string(int32_t)> names) { names_ = names; }
+        inline void set_id_mapping(std::function<uint64_t(int32_t)> uid, std::function<int32_t(uint64_t)> local) { uid_ = uid; local_ = local; }
+        inline void set_type_id_mapping(std::function<int32_t(int32_t)> type_id) { typeid_ = type_id; }
+        inline std::string get_node_name(int32_t id) const { return names_(id); }
+        inline uint64_t uid(int32_t local_id) const { return uid_(local_id); }
+        inline int32_t local_id(uint64_t uid) const { return local_(uid); }
+        inline int32_t type_id(int32_t id) const { return typeid_(id); }
         inline const std::string& name() const { return name_; }
         inline void set_name(const std::string& n) { name_ = n; }
-        inline void set_rdf(const gengodb::semantics::RdfGraph* rdfGraph) { rdfGraph_ = rdfGraph; }
-        inline const RdfGraph* get_rdf() const { assert(rdfGraph_ && "should not happen"); return rdfGraph_; }
-
         private:
         std::string name_ = "";
-        std::function<std::string(int32_t)> identifier_ = [](int32_t i){ return std::to_string(i); };
-        const gengodb::semantics::RdfGraph* rdfGraph_;
+        std::function<std::string(int32_t)> names_ = [](int32_t i){ return "v" + std::to_string(i); };
+        std::function<uint64_t(int32_t)> uid_ = [](int32_t i){ assert(false && "missing index"); return -1; };
+        std::function<int32_t(uint64_t)> local_ = [](uint64_t i){ assert(false && "missing index"); return -1; };
+        std::function<int32_t(int32_t)> typeid_ = [](int32_t){ return -1; };
     };
 
     PropertyGraph(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);

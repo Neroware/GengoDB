@@ -18,8 +18,8 @@
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOpsAttributes.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOpsTypes.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
-#include "gengodb/compiler/Dialect/XSD/XSDDialect.h"
-#include "gengodb/compiler/Dialect/XSD/XSDOps.h"
+#include "gengodb/compiler/Dialect/Variant/VariantDialect.h"
+#include "gengodb/compiler/Dialect/Variant/VariantOps.h"
 #include "gengodb/semantics/Datatypes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -94,12 +94,13 @@ struct UnionPattern : PatternElement {
 // FILTER expressions
 // ------------------------------------------------------------
 // Scope: comparisons (=,!=,<,<=,>,>=), the logical connectives (&&,||,!), numeric
-// arithmetic (+,-,*,/, unary -), and literals/variable references -- the SPARQL
-// three-valued (TRUE/FALSE/ERROR) boolean core. The builtin test functions
-// (bound(), isIRI(), …) are not yet supported -- see
-// Translator::translateFilterExpr's default case.
+// arithmetic (+,-,*,/, unary -), literals/variable references, and the builtin
+// predicate functions BOUND() / LANGMATCHES() (spelled case-insensitively -- 
+// see Parser::parsePrimary), which compile onto `variant.predicate` (see 
+// Translator::translatePredicateCall). Other builtin test functions (isIRI(), …) 
+// are not yet supported -- see Translator::translateFilterExpr's default case.
 struct Expr {
-   enum class Kind { Variable, Literal, Not, And, Or, Compare, Arith, Negate };
+   enum class Kind { Variable, Literal, Not, And, Or, Compare, Arith, Negate, FunctionCall };
    virtual ~Expr() = default;
    virtual Kind kind() const = 0;
 };
@@ -111,8 +112,8 @@ struct VariableExpr : Expr {
 
 // A literal written directly in the query text -- its XSD datatype is known
 // at parse time (unlike a graph-bound variable's, which is only known at
-// runtime). `lexicalForm` is the literal's canonical XSD lexical form, passed
-// through unparsed to `xsd.compare_literal`'s runtime-side XSD parser.
+// runtime). `lexicalForm` is the literal's canonical XSD lexical form, parsed
+// into a typed MLIR constant by Translator::literalScalar.
 struct LiteralExpr : Expr {
    std::string lexicalForm;
    gengodb::semantics::xsd::Type xsdType{gengodb::semantics::xsd::Type::Unspecified};
@@ -156,6 +157,16 @@ struct ArithExpr : Expr {
 struct NegateExpr : Expr {
    std::unique_ptr<Expr> operand;
    Kind kind() const override { return Kind::Negate; }
+};
+
+// A builtin predicate test function call, e.g. BOUND(?x) or LANGMATCHES(?x, "en").
+// `name` is the canonical spelling used both here and as `variant.predicate`'s
+// `pred` array's first element ("BOUND" / "LANGMATCHES") -- see
+// Parser::parsePrimary for how surface spellings normalize onto it.
+struct FunctionCallExpr : Expr {
+   std::string name;
+   std::vector<std::unique_ptr<Expr>> args;
+   Kind kind() const override { return Kind::FunctionCall; }
 };
 
 struct FilterPattern : PatternElement {
@@ -416,6 +427,16 @@ class Parser {
          e->lexicalForm = kw("TRUE") ? "true" : "false";
          e->xsdType = gengodb::semantics::xsd::Type::Boolean;
          advance();
+         return e;
+      }
+      if (kw("BOUND") || kw("LANGMATCHES")) {
+         auto e = std::make_unique<sparql::FunctionCallExpr>();
+         e->name = kw("BOUND") ? "BOUND" : "LANGMATCHES";
+         advance();
+         eat(TK::LeftParen);
+         e->args.push_back(parseFilterExpr(pref));
+         while (is(TK::Comma)) { advance(); e->args.push_back(parseFilterExpr(pref)); }
+         eat(TK::RightParen);
          return e;
       }
       throw std::runtime_error("Expected FILTER expression term at line " + std::to_string(tok.line) + ", got '" + tok.value + "'");
@@ -1006,27 +1027,25 @@ class Translator {
    }
 
    // ---- FILTER translation ----
-   static xsd::XsdCmpPredicate toXsdPredicate(sparql::CompareOp op) {
+   static variant::VariantCmpPredicate toVariantCmpPredicate(sparql::CompareOp op) {
       switch (op) {
-         case sparql::CompareOp::Eq:  return xsd::XsdCmpPredicate::eq;
-         case sparql::CompareOp::Neq: return xsd::XsdCmpPredicate::neq;
-         case sparql::CompareOp::Lt:  return xsd::XsdCmpPredicate::lt;
-         case sparql::CompareOp::Lte: return xsd::XsdCmpPredicate::lte;
-         case sparql::CompareOp::Gt:  return xsd::XsdCmpPredicate::gt;
-         case sparql::CompareOp::Gte: return xsd::XsdCmpPredicate::gte;
+         case sparql::CompareOp::Eq:  return variant::VariantCmpPredicate::eq;
+         case sparql::CompareOp::Neq: return variant::VariantCmpPredicate::neq;
+         case sparql::CompareOp::Lt:  return variant::VariantCmpPredicate::lt;
+         case sparql::CompareOp::Lte: return variant::VariantCmpPredicate::lte;
+         case sparql::CompareOp::Gt:  return variant::VariantCmpPredicate::gt;
+         case sparql::CompareOp::Gte: return variant::VariantCmpPredicate::gte;
       }
       throw std::runtime_error("Unknown FILTER compare operator");
    }
-   // a OP b  <=>  b FLIP(OP) a -- used when a literal appears on the left of a
-   // comparison, since xsd.compare_literal always takes the variable first.
-   static sparql::CompareOp flipCompareOp(sparql::CompareOp op) {
+   static variant::VariantArithPredicate toVariantArithPredicate(sparql::ArithOp op) {
       switch (op) {
-         case sparql::CompareOp::Lt:  return sparql::CompareOp::Gt;
-         case sparql::CompareOp::Gt:  return sparql::CompareOp::Lt;
-         case sparql::CompareOp::Lte: return sparql::CompareOp::Gte;
-         case sparql::CompareOp::Gte: return sparql::CompareOp::Lte;
-         default: return op; // eq/neq are symmetric
+         case sparql::ArithOp::Add: return variant::VariantArithPredicate::add;
+         case sparql::ArithOp::Sub: return variant::VariantArithPredicate::sub;
+         case sparql::ArithOp::Mul: return variant::VariantArithPredicate::mul;
+         case sparql::ArithOp::Div: return variant::VariantArithPredicate::div;
       }
+      throw std::runtime_error("Unknown FILTER arithmetic operator");
    }
    // A variable referenced inside a FILTER must already be bound by an earlier
    // triple pattern (FILTER cannot introduce a new binding).
@@ -1037,55 +1056,72 @@ class Translator {
       auto ref = colMgr.createRef(it->second.getColumnPtr().get());
       return builder.create<tuples::GetColumnOp>(builder.getUnknownLoc(), ref.getColumn().type, ref, tupleArg);
    }
-   static xsd::XsdArithPredicate toXsdArithPredicate(sparql::ArithOp op) {
-      switch (op) {
-         case sparql::ArithOp::Add: return xsd::XsdArithPredicate::add;
-         case sparql::ArithOp::Sub: return xsd::XsdArithPredicate::sub;
-         case sparql::ArithOp::Mul: return xsd::XsdArithPredicate::mul;
-         case sparql::ArithOp::Div: return xsd::XsdArithPredicate::div;
+   // Materializes a FILTER literal as an MLIR value of one of the fixed-width
+   // scalar types variant.create_scalar's lowering can tag (see
+   // VariantToStd.cpp's tagForScalarType): bool/byte/short/int/long/float/double/
+   // string. There is no dedicated tag for arbitrary-precision xsd:integer or
+   // xsd:decimal, so those fold onto the closest fixed-width family member
+   // (Long / Double) -- the same fold every other fixed-width-only path in
+   // this dialect (e.g. create_scalar itself) already makes.
+   mlir::Value literalScalar(const sparql::LiteralExpr& lit, mlir::Location loc) {
+      using gengodb::semantics::xsd::Type;
+      switch (lit.xsdType) {
+         case Type::Boolean:
+            return builder.create<mlir::arith::ConstantIntOp>(loc, lit.lexicalForm == "true" ? 1 : 0, 1);
+         case Type::Byte:
+            return builder.create<mlir::arith::ConstantIntOp>(loc, std::stoll(lit.lexicalForm), 8);
+         case Type::Short:
+            return builder.create<mlir::arith::ConstantIntOp>(loc, std::stoll(lit.lexicalForm), 16);
+         case Type::Int:
+            return builder.create<mlir::arith::ConstantIntOp>(loc, std::stoll(lit.lexicalForm), 32);
+         case Type::Long:
+         case Type::Integer:
+            return builder.create<mlir::arith::ConstantIntOp>(loc, std::stoll(lit.lexicalForm), 64);
+         case Type::Float:
+            return builder.create<mlir::arith::ConstantOp>(loc, builder.getF32Type(), builder.getFloatAttr(builder.getF32Type(), std::stof(lit.lexicalForm)));
+         case Type::Double:
+         case Type::Decimal:
+            return builder.create<mlir::arith::ConstantOp>(loc, builder.getF64Type(), builder.getFloatAttr(builder.getF64Type(), std::stod(lit.lexicalForm)));
+         case Type::String:
+            return builder.create<db::ConstantOp>(loc, db::StringType::get(ctxt), builder.getStringAttr(lit.lexicalForm));
+         default:
+            throw std::runtime_error("FILTER literal datatype '" + gengodb::semantics::xsd::to_string(lit.xsdType) +
+               "' is not supported (only boolean, integer-family, float, double, decimal, and string literals are)");
       }
-      throw std::runtime_error("Unknown FILTER arithmetic operator");
    }
-   // Translates a numeric FILTER (sub-)expression into the dynamic XSD value pair
-   // `(lexicalForm, xsdType)` -- see xsd.arith's op-doc: an arithmetic
-   // sub-result's XSD type is only known at runtime (it depends on the runtime-bound
-   // datatype of any variable in the expression), unlike a comparison's result which
-   // is always statically boolean, so it can't be represented as a single typed value
-   // the way translateCompareExpr's result is.
-   std::pair<mlir::Value, mlir::Value> translateArithExpr(const sparql::Expr& expr, mlir::Value tupleArg) {
+   // Translates a FILTER (sub-)expression into a single `!variant.variant`
+   // value: a graph-bound variable is wrapped via variant.create_ref (its
+   // runtime RDF-term kind is resolved lazily, on first use), a literal via
+   // variant.create_scalar (its type is already known at parse time), and
+   // arithmetic recurses and combines through variant.arith -- which, like
+   // variant.cmp, dispatches on the operands' runtime tags itself, so unlike
+   // the old XSD dialect this translation no longer needs to track a
+   // separate (lexicalForm, xsdType) pair by hand.
+   mlir::Value translateArithExpr(const sparql::Expr& expr, mlir::Value tupleArg) {
       auto loc = builder.getUnknownLoc();
-      // The lexical form is deliberately the raw runtime `!util.varlen32` type, not
-      // the logical `!db.string` -- see XSDToControlFlow.cpp's `unwrapNullableVarLen`
-      // doc comment for why (DBToStd has no fallback for a leftover db.string bridging
-      // cast it didn't itself introduce).
-      auto lexType = db::NullableType::get(ctxt, util::VarLen32Type::get(ctxt));
-      auto typeType = db::NullableType::get(ctxt, builder.getI32Type());
+      auto variantType = variant::VariantType::get(ctxt);
       switch (expr.kind()) {
          case sparql::Expr::Kind::Variable: {
             mlir::Value ref = getFilterColumn(static_cast<const sparql::VariableExpr&>(expr).name, tupleArg);
-            auto op = builder.create<xsd::LiteralOfRefOp>(loc, lexType, typeType, ref);
-            return {op.getLexicalForm(), op.getXsdType()};
+            return builder.create<gpm::GetBindingOp>(loc, variantType, ref);
          }
          case sparql::Expr::Kind::Literal: {
             const auto& lit = static_cast<const sparql::LiteralExpr&>(expr);
-            mlir::Value lexConst = builder.create<util::CreateConstVarLen>(loc, util::VarLen32Type::get(ctxt), lit.lexicalForm);
-            mlir::Value lex = builder.create<db::AsNullableOp>(loc, lexType, lexConst);
-            mlir::Value typeConst = builder.create<mlir::arith::ConstantIntOp>(loc, gengodb::semantics::xsd::to_int32(lit.xsdType), 32);
-            mlir::Value typ = builder.create<db::AsNullableOp>(loc, typeType, typeConst);
-            return {lex, typ};
+            mlir::Value scalar = literalScalar(lit, loc);
+            return builder.create<variant::CreateScalarOp>(loc, variantType, scalar);
          }
          case sparql::Expr::Kind::Negate: {
             const auto& e = static_cast<const sparql::NegateExpr&>(expr);
-            auto [lex, typ] = translateArithExpr(*e.operand, tupleArg);
-            auto op = builder.create<xsd::NegateOp>(loc, lexType, typeType, lex, typ);
-            return {op.getLexicalForm(), op.getXsdTypeResult()};
+            mlir::Value operand = translateArithExpr(*e.operand, tupleArg);
+            mlir::Value zeroScalar = builder.create<mlir::arith::ConstantIntOp>(loc, 0, 64);
+            mlir::Value zero = builder.create<variant::CreateScalarOp>(loc, variantType, zeroScalar);
+            return builder.create<variant::ArithOp>(loc, variantType, variant::VariantArithPredicate::sub, zero, operand);
          }
          case sparql::Expr::Kind::Arith: {
             const auto& e = static_cast<const sparql::ArithExpr&>(expr);
-            auto [lhsLex, lhsTyp] = translateArithExpr(*e.lhs, tupleArg);
-            auto [rhsLex, rhsTyp] = translateArithExpr(*e.rhs, tupleArg);
-            auto op = builder.create<xsd::ArithOp>(loc, lexType, typeType, toXsdArithPredicate(e.op), lhsLex, lhsTyp, rhsLex, rhsTyp);
-            return {op.getLexicalForm(), op.getXsdType()};
+            mlir::Value lhs = translateArithExpr(*e.lhs, tupleArg);
+            mlir::Value rhs = translateArithExpr(*e.rhs, tupleArg);
+            return builder.create<variant::ArithOp>(loc, variantType, toVariantArithPredicate(e.op), lhs, rhs);
          }
          default:
             throw std::runtime_error("Expected a numeric FILTER expression (variable, literal, arithmetic, or unary '-')");
@@ -1094,33 +1130,40 @@ class Translator {
    mlir::Value translateCompareExpr(const sparql::CompareExpr& e, mlir::Value tupleArg) {
       auto loc = builder.getUnknownLoc();
       auto resType = db::NullableType::get(ctxt, builder.getI1Type());
-      bool lhsIsVar = e.lhs->kind() == sparql::Expr::Kind::Variable;
-      bool rhsIsVar = e.rhs->kind() == sparql::Expr::Kind::Variable;
-      bool lhsIsLit = e.lhs->kind() == sparql::Expr::Kind::Literal;
-      bool rhsIsLit = e.rhs->kind() == sparql::Expr::Kind::Literal;
-
-      // Either side is itself an arithmetic (sub-)expression -- neither the
-      // var/var nor the var/literal fast path applies, since both operands need to
-      // be evaluated into the dynamic XSD value pair first.
-      if (!(lhsIsVar || lhsIsLit) || !(rhsIsVar || rhsIsLit)) {
-         auto [lhsLex, lhsTyp] = translateArithExpr(*e.lhs, tupleArg);
-         auto [rhsLex, rhsTyp] = translateArithExpr(*e.rhs, tupleArg);
-         return builder.create<xsd::CompareDynOp>(loc, resType, toXsdPredicate(e.op), lhsLex, lhsTyp, rhsLex, rhsTyp);
+      mlir::Value lhs = translateArithExpr(*e.lhs, tupleArg);
+      mlir::Value rhs = translateArithExpr(*e.rhs, tupleArg);
+      return builder.create<variant::CmpOp>(loc, resType, toVariantCmpPredicate(e.op), lhs, rhs);
+   }
+   // Builtin predicate test functions -- BOUND(?x) / LANGMATCHES(?x, "en") --
+   // both compile onto a single `variant.predicate` op: its `pred` array's
+   // first element is the canonical function name (also FunctionCallExpr::name,
+   // see Parser::parsePrimary), any further elements are compile-time constant
+   // arguments packed alongside it (LANGMATCHES's language range). The result
+   // is `!db.nullable<i1>`, exactly like translateCompareExpr's, so it composes
+   // into &&/||/! the same way.
+   mlir::Value translatePredicateCall(const sparql::FunctionCallExpr& fc, mlir::Value tupleArg) {
+      auto loc = builder.getUnknownLoc();
+      auto resType = db::NullableType::get(ctxt, builder.getI1Type());
+      if (fc.name == "BOUND") {
+         if (fc.args.size() != 1 || fc.args[0]->kind() != sparql::Expr::Kind::Variable)
+            throw std::runtime_error("BOUND() requires exactly one variable argument, e.g. BOUND(?x)");
+         mlir::Value var = translateArithExpr(*fc.args[0], tupleArg);
+         auto pred = builder.getArrayAttr({builder.getStringAttr("BOUND")});
+         return builder.create<variant::PredicateOp>(loc, resType, var, pred);
       }
-      if (lhsIsVar && rhsIsVar) {
-         mlir::Value lhs = getFilterColumn(static_cast<const sparql::VariableExpr&>(*e.lhs).name, tupleArg);
-         mlir::Value rhs = getFilterColumn(static_cast<const sparql::VariableExpr&>(*e.rhs).name, tupleArg);
-         return builder.create<xsd::CompareOp>(loc, resType, toXsdPredicate(e.op), lhs, rhs);
+      if (fc.name == "LANGMATCHES") {
+         if (fc.args.size() != 2)
+            throw std::runtime_error("LANGMATCHES() requires exactly two arguments, e.g. LANGMATCHES(?x, \"en\")");
+         mlir::Value var = translateArithExpr(*fc.args[0], tupleArg);
+         if (fc.args[1]->kind() != sparql::Expr::Kind::Literal)
+            throw std::runtime_error("LANGMATCHES()'s second argument must be a string literal language range");
+         const auto& rangeLit = static_cast<const sparql::LiteralExpr&>(*fc.args[1]);
+         if (rangeLit.xsdType != gengodb::semantics::xsd::Type::String)
+            throw std::runtime_error("LANGMATCHES()'s second argument must be a string literal language range");
+         auto pred = builder.getArrayAttr({builder.getStringAttr("LANGMATCHES"), builder.getStringAttr(rangeLit.lexicalForm)});
+         return builder.create<variant::PredicateOp>(loc, resType, var, pred);
       }
-      if (lhsIsVar != rhsIsVar) {
-         bool literalOnLeft = !lhsIsVar;
-         mlir::Value var = getFilterColumn(static_cast<const sparql::VariableExpr&>(literalOnLeft ? *e.rhs : *e.lhs).name, tupleArg);
-         const auto& lit = static_cast<const sparql::LiteralExpr&>(literalOnLeft ? *e.lhs : *e.rhs);
-         auto op = literalOnLeft ? flipCompareOp(e.op) : e.op;
-         return builder.create<xsd::CompareLiteralOp>(loc, resType, toXsdPredicate(op), var,
-            lit.lexicalForm, gengodb::semantics::xsd::to_int32(lit.xsdType));
-      }
-      throw std::runtime_error("FILTER comparisons between two literals are not yet supported");
+      throw std::runtime_error("Unsupported FILTER function '" + fc.name + "'");
    }
    mlir::Value translateFilterExpr(const sparql::Expr& expr, mlir::Value tupleArg) {
       auto loc = builder.getUnknownLoc();
@@ -1143,8 +1186,10 @@ class Translator {
          }
          case sparql::Expr::Kind::Compare:
             return translateCompareExpr(static_cast<const sparql::CompareExpr&>(expr), tupleArg);
+         case sparql::Expr::Kind::FunctionCall:
+            return translatePredicateCall(static_cast<const sparql::FunctionCallExpr&>(expr), tupleArg);
          default:
-            throw std::runtime_error("Unsupported FILTER expression (only comparisons, &&, ||, !, and arithmetic +-*/ are implemented)");
+            throw std::runtime_error("Unsupported FILTER expression (only comparisons, &&, ||, !, arithmetic +-*/, and BOUND()/LANGMATCHES() are implemented)");
       }
    }
    // Wraps `inputStream` in a relalg.selection -- not a bespoke GPM-level op --
@@ -1371,7 +1416,7 @@ inline void registerSparqlDialects(mlir::MLIRContext& context) {
                    mlir::LLVM::LLVMDialect,
                    gpm::GPMDialect,
                    gsubop::GraphSubOpDialect,
-                   xsd::XSDDialect>();
+                   variant::VariantDialect>();
    context.appendDialectRegistry(registry);
    context.loadAllAvailableDialects();
 }

@@ -153,7 +153,7 @@ def GetIdentifierOp : GraphSubOp_Op<"get_identifier", [Pure]> {
 
 def IdentifiersEqualOp : GraphSubOp_Op<"identifiers_equal", [Pure]> {
     let summary = "identifier equality check between two node or edge references";
-    let arguments = (ins AnyType:$lhs, AnyType:$rhs);
+    let arguments = (ins Identifier:$lhs, Identifier:$rhs);
     let results = (outs I1:$result);
     let assemblyFormat = [{ $lhs `:` type($lhs) `,` $rhs `:` type($rhs) attr-dict }];
 }
@@ -180,44 +180,6 @@ def GraphRefToStringOp : GraphSubOp_Op<"ref_to_str", [Pure,SubOperator]> {
     let extraClassDeclaration = [{
         mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
     }];
-}
-
-//===----------------------------------------------------------------------===//
-// Nullable graph refs
-//===----------------------------------------------------------------------===//
-
-def WrapNullableRefOp : GraphSubOp_Op<"wrap_nullable_ref", [Pure]> {
-    let summary = "wrap a graph ref column as a non-null nullable value";
-    let arguments = (ins AnyGraphRef : $ref);
-    let results = (outs AnyType : $result);
-    let assemblyFormat = [{  $ref `:` type($ref) `->` type($result) attr-dict }];
-}
-
-def NullRefOp : GraphSubOp_Op<"null_ref", [Pure]> {
-    let summary = "produce a null nullable-graph-ref";
-    let results = (outs AnyType : $result);
-    let assemblyFormat = [{  `:` type($result) attr-dict }];
-}
-
-def IsNullRefOp : GraphSubOp_Op<"is_null_ref", [Pure]> {
-    let summary = "check whether a nullable graph ref is null";
-    let arguments = (ins AnyType : $ref);
-    let results = (outs I1 : $result);
-    let assemblyFormat = [{ $ref `:` type($ref) attr-dict }];
-}
-
-def UnwrapNullableRefOp : GraphSubOp_Op<"unwrap_nullable_ref", [Pure]> {
-    let summary = "unwrap a nullable graph ref";
-    let arguments = (ins AnyType : $ref);
-    let results = (outs AnyGraphRef : $result);
-    let assemblyFormat = [{  $ref `:` type($ref) `->` type($result) attr-dict }];
-}
-
-def GraphRefCompareOp : GraphSubOp_Op<"ref_compare", [Pure]> {
-    let summary = "compare two graph refs";
-    let arguments = (ins AnyType : $left, AnyType : $right, BoolAttr : $isEdge, BoolAttr : $nullable);
-    let results = (outs I8 : $res);
-    let assemblyFormat = [{ $left `:` type($left) `,` $right `:` type($right) attr-dict }];
 }
 
 #endif // GENGODB_DIALECT_GRAPHSUBOP_OPS

@@ -14,8 +14,9 @@
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpsTypes.h"
-#include "gengodb/compiler/Dialect/XSD/XSDDialect.h"
-#include "gengodb/compiler/Dialect/XSD/XSDOps.h"
+#include "gengodb/compiler/Dialect/Variant/VariantDialect.h"
+#include "gengodb/compiler/Dialect/Variant/VariantOps.h"
+#include "gengodb/compiler/Dialect/Variant/VariantOpsEnums.h"
 #include "lingodb/compiler/Dialect/SubOperator/Utils.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
 #include "lingodb/compiler/Dialect/util/FunctionHelper.h"
@@ -48,7 +49,6 @@ using namespace lingodb::compiler::dialect;
 using namespace gengodb::compiler::dialect;
 using Member = subop::Member;
 using DefMappingCollector = llvm::SmallVector<subop::DefMappingPairT>;
-using RefMappingCollector = llvm::SmallVector<subop::RefMappingPairT>;
 struct NamedGraphData {
    gsubop::GraphType graphType;
    tuples::Column* nodeSetColumn;
@@ -71,7 +71,7 @@ struct GPMToSubOpLoweringPass
 
    GPMToSubOpLoweringPass() {}
    void getDependentDialects(DialectRegistry& registry) const override {
-      registry.insert<LLVM::LLVMDialect, db::DBDialect, scf::SCFDialect, mlir::cf::ControlFlowDialect, util::UtilDialect, memref::MemRefDialect, arith::ArithDialect, gpm::GPMDialect, subop::SubOperatorDialect>();
+      registry.insert<LLVM::LLVMDialect, db::DBDialect, scf::SCFDialect, mlir::cf::ControlFlowDialect, util::UtilDialect, memref::MemRefDialect, arith::ArithDialect, gpm::GPMDialect, subop::SubOperatorDialect, gsubop::GraphSubOpDialect, variant::VariantDialect>();
    }
    void runOnOperation() final;
 };
@@ -116,10 +116,10 @@ inline static gsubop::NodeRefType createNodeRefType(MLIRContext* ctxt, std::stri
    auto incoming = createMember(ctxt, memberName(graph, group, "incoming"), edgeSetType0);
    auto outgoing = createMember(ctxt, memberName(graph, group, "outgoing"), edgeSetType1);
    auto property = createMember(ctxt, memberName(graph, group, "property"), gsubop::PropertyRefType::get(ctxt));
-   return gsubop::NodeRefType::get(ctxt, 
-      createStateMembersAttr(ctxt, {nodeId}), 
-      createStateMembersAttr(ctxt, {incoming}), 
-      createStateMembersAttr(ctxt, {outgoing}), 
+   return gsubop::NodeRefType::get(ctxt,
+      createStateMembersAttr(ctxt, {nodeId}),
+      createStateMembersAttr(ctxt, {incoming}),
+      createStateMembersAttr(ctxt, {outgoing}),
       createStateMembersAttr(ctxt, {property})
    );
 }
@@ -128,10 +128,10 @@ inline static gsubop::EdgeRefType createEdgeRefType(MLIRContext* ctxt, std::stri
    auto from = createMember(ctxt, memberName(graph, group, "from"), createNodeRefType(ctxt, group, graph));
    auto to = createMember(ctxt, memberName(graph, group, "to"), createNodeRefType(ctxt, group, graph));
    auto property = createMember(ctxt, memberName(graph, group, "property"), gsubop::PropertyRefType::get(ctxt));
-   return gsubop::EdgeRefType::get(ctxt, 
-      createStateMembersAttr(ctxt, {edgeId}), 
-      createStateMembersAttr(ctxt, {from}), 
-      createStateMembersAttr(ctxt, {to}), 
+   return gsubop::EdgeRefType::get(ctxt,
+      createStateMembersAttr(ctxt, {edgeId}),
+      createStateMembersAttr(ctxt, {from}),
+      createStateMembersAttr(ctxt, {to}),
       createStateMembersAttr(ctxt, {property})
    );
 }
@@ -189,11 +189,11 @@ static mlir::Value scanNamedGraph(ConversionPatternRewriter& rewriter, mlir::Loc
 // which change the behavior of the TriplePatternOp lowering pattern.
 enum class TermClass {
    // a constant identifier (e.g. IRI)
-   CONSTANT, 
+   CONSTANT,
    // first occurrence of a variable/bnode that requires a new binding.
-   FRESH, 
+   FRESH,
    // bound variable/bnode reused across triples.
-   EXTERNAL_CANDIDATE, 
+   EXTERNAL_CANDIDATE,
    // bound variable/bnode reused in the same triple patten.
    SAME_TRIPLE_REUSE,
 };
@@ -323,42 +323,44 @@ class TripleEmitter {
       ct.targetName = name.getLeafReference().str();
       return ct;
    }
-   tuples::ColumnDefAttr resolveTargetDef(const ClassifiedTerm& term, mlir::Type type) {
-      if (term.cls == TermClass::SAME_TRIPLE_REUSE) {
-         auto [def, ref] = createColumn(type, "nodes", "tmp");
-         (void) ref;
-         return def;
-      }
-      return createDef(columnManager, term.targetScope, term.targetName, type, false);
+   mlir::Value wrapVariant(mlir::Value stream, tuples::ColumnRefAttr rawRef, tuples::ColumnDefAttr variantDef) {
+      subop::MapCreationHelper helper(ctxt);
+      helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
+         mlir::Value rawVal = helper.access(rawRef, loc);
+         mlir::Value variantVal = b.create<variant::CreateNodeRefOp>(loc, variant::VariantType::get(ctxt), rawVal);
+         b.create<tuples::ReturnOp>(loc, variantVal);
+      });
+      auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({variantDef}), helper.getColRefs());
+      mapOp.getFn().push_back(helper.getMapBlock());
+      return mapOp.getResult();
    }
-   mlir::Value finishClassifiedTerm(mlir::Value stream, const ClassifiedTerm& term, tuples::ColumnDefAttr targetDef) {
-      auto ref = columnManager.createRef(targetDef.getColumnPtr().get());
-      if (term.cls == TermClass::SAME_TRIPLE_REUSE) {
-         return filterByIdentifier(stream, term.existingRef, ref);
+   mlir::Value filterVariantsEqual(mlir::Value stream, tuples::ColumnRefAttr left, tuples::ColumnRefAttr right) {
+      subop::MapCreationHelper helper(ctxt);
+      auto [eqDef, eqRef] = createColumn(rewriter.getI1Type(), "map", "selfeq");
+      helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
+         mlir::Value lhs = helper.access(left, loc);
+         mlir::Value rhs = helper.access(right, loc);
+         auto cmpType = db::NullableType::get(ctxt, b.getI1Type());
+         mlir::Value cmp = b.create<variant::CmpOp>(loc, cmpType, variant::VariantCmpPredicate::eq, lhs, rhs);
+         mlir::Value truth = b.create<db::DeriveTruth>(loc, b.getI1Type(), cmp);
+         b.create<tuples::ReturnOp>(loc, truth);
+      });
+      auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({eqDef}), helper.getColRefs());
+      mapOp.getFn().push_back(helper.getMapBlock());
+      return rewriter.create<subop::FilterOp>(loc, mapOp.getResult(), subop::FilterSemantic::all_true, rewriter.getArrayAttr({eqRef}));
+   }
+   mlir::Value finishVariableOrBNode(mlir::Value stream, const ClassifiedTerm& ct, tuples::ColumnRefAttr rawRef) {
+      if (ct.cls == TermClass::SAME_TRIPLE_REUSE) {
+         auto [tmpDef, tmpRef] = createColumn(variant::VariantType::get(ctxt), "nodes", "tmp");
+         stream = wrapVariant(stream, rawRef, tmpDef);
+         return filterVariantsEqual(stream, tmpRef, ct.existingRef);
       }
-      localTerms[&targetDef.getColumn()] = ref;
+      auto variantDef = createDef(columnManager, ct.targetScope, ct.targetName, variant::VariantType::get(ctxt), false);
+      stream = wrapVariant(stream, rawRef, variantDef);
+      if (ct.cls == TermClass::FRESH) {
+         localTerms[&variantDef.getColumn()] = columnManager.createRef(variantDef.getColumnPtr().get());
+      }
       return stream;
-   }
-   mlir::Value filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr left, tuples::ColumnRefAttr right) {
-      auto [filterDef, filterRef] = createColumn(rewriter.getI1Type(), "map", "selfeq");
-      auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({filterDef}), rewriter.getArrayAttr({left, right}));
-      auto* b = new Block();
-      auto lArg = b->addArgument(left.getColumn().type, loc);
-      auto rArg = b->addArgument(right.getColumn().type, loc);
-      mapOp.getRegion().push_back(b);
-      {
-         mlir::OpBuilder::InsertionGuard guard(rewriter);
-         rewriter.setInsertionPointToStart(b);
-         auto identType = gsubop::IdentifierType::get(ctxt);
-         auto leftIdent = rewriter.create<gsubop::GetIdentifierOp>(loc, identType, lArg);
-         auto rightIdent = rewriter.create<gsubop::GetIdentifierOp>(loc, identType, rArg);
-         auto leftI32 = rewriter.create<UnrealizedConversionCastOp>(loc, rewriter.getI32Type(), leftIdent.getResult()).getResult(0);
-         auto rightI32 = rewriter.create<UnrealizedConversionCastOp>(loc, rewriter.getI32Type(), rightIdent.getResult()).getResult(0);
-         auto eq = rewriter.create<arith::CmpIOp>(loc, rewriter.getI1Type(), arith::CmpIPredicate::eq, leftI32, rightI32);
-         rewriter.create<tuples::ReturnOp>(loc, eq.getResult());
-      }
-      stream = mapOp.getResult();
-      return rewriter.create<subop::FilterOp>(loc, stream, subop::FilterSemantic::all_true, rewriter.getArrayAttr({filterRef}));
    }
    mlir::Value scanFromConstantAnchor(mlir::Value stream, gpm::IdentifierTermAttr ident, EdgeDirection direction, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef) {
       auto& graphData = graphs[graphSym];
@@ -422,7 +424,7 @@ class TripleEmitter {
       auto nodeSetArg = b->addArgument(graphData.nodeSetColumn->type, loc);
       auto edgeArg = b->addArgument(edgeRef.getColumn().type, loc);
       nestedMapOp.getRegion().push_back(b);
-      auto targetDef = resolveTargetDef(ct, nodeRefType);
+      auto [rawDef, rawRef] = createColumn(nodeRefType, "nodes", "raw");
       {
          mlir::OpBuilder::InsertionGuard guard(rewriter);
          rewriter.setInsertionPointToStart(b);
@@ -431,11 +433,11 @@ class TripleEmitter {
          mlir::Value inner = generateTupleStream(rewriter, loc, scanIdentDef, [&](mlir::OpBuilder&) -> mlir::Value {
             return identVal;
          });
-         inner = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), inner, nodeSetArg, rewriter.getArrayAttr({scanIdentRef}), targetDef);
+         inner = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), inner, nodeSetArg, rewriter.getArrayAttr({scanIdentRef}), rawDef);
+         inner = finishVariableOrBNode(inner, ct, rawRef);
          rewriter.create<tuples::ReturnOp>(loc, inner);
       }
-      stream = nestedMapOp;
-      return finishClassifiedTerm(stream, ct, targetDef);
+      return nestedMapOp.getRes();
    }
    mlir::Value emitTerm(mlir::Value stream, mlir::Attribute term, mlir::StringRef pos, Member nodeMember, tuples::ColumnRefAttr edgeRef) {
       if (auto constTerm = mlir::dyn_cast<gpm::IdentifierTermAttr>(term)) {
@@ -445,9 +447,9 @@ class TripleEmitter {
          return rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, ref, ident);
       }
       auto ct = classify(pos, term);
-      auto targetDef = resolveTargetDef(ct, memberManager.getType(nodeMember));
-      stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(ctxt, {{nodeMember, targetDef}}));
-      return finishClassifiedTerm(stream, ct, targetDef);
+      auto [rawDef, rawRef] = createColumn(memberManager.getType(nodeMember), "nodes", "raw");
+      stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(ctxt, {{nodeMember, rawDef}}));
+      return finishVariableOrBNode(stream, ct, rawRef);
    }
 }; // TripleEmitter
 
@@ -473,29 +475,7 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       return success();
    }
 };
-// TODO move into custom pass
-static bool isStaleRefOperand(mlir::Value operand) {
-   auto getColOp = mlir::dyn_cast_or_null<tuples::GetColumnOp>(operand.getDefiningOp());
-   if (!getColOp) return false;
-   return getColOp.getAttr().getColumn().type != operand.getType();
-}
-class GpmIdentifiersEqualLowering : public OpConversionPattern<gpm::IdentifiersEqualOp> {
-   public:
-   using OpConversionPattern<gpm::IdentifiersEqualOp>::OpConversionPattern;
-   mlir::Value refreshIfStale(mlir::Value operand, ConversionPatternRewriter& rewriter) const {
-      auto getColOp = mlir::dyn_cast_or_null<tuples::GetColumnOp>(operand.getDefiningOp());
-      if (!getColOp) return operand;
-      mlir::Type liveType = getColOp.getAttr().getColumn().type;
-      if (liveType == operand.getType()) return operand;
-      return rewriter.create<tuples::GetColumnOp>(getColOp.getLoc(), liveType, getColOp.getAttr(), getColOp.getTuple());
-   }
-   LogicalResult matchAndRewrite(gpm::IdentifiersEqualOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
-      mlir::Value lhs = refreshIfStale(adaptor.getLhs(), rewriter);
-      mlir::Value rhs = refreshIfStale(adaptor.getRhs(), rewriter);
-      rewriter.replaceOpWithNewOp<gsubop::IdentifiersEqualOp>(op, rewriter.getI1Type(), lhs, rhs);
-      return success();
-   }
-};
+
 static mlir::Value refreshStaleRefOperand(mlir::Value operand, ConversionPatternRewriter& rewriter) {
    auto getColOp = mlir::dyn_cast_or_null<tuples::GetColumnOp>(operand.getDefiningOp());
    if (!getColOp) return operand;
@@ -503,35 +483,60 @@ static mlir::Value refreshStaleRefOperand(mlir::Value operand, ConversionPattern
    if (liveType == operand.getType()) return operand;
    return rewriter.create<tuples::GetColumnOp>(getColOp.getLoc(), liveType, getColOp.getAttr(), getColOp.getTuple());
 }
-class XsdCompareRefreshLowering : public OpConversionPattern<xsd::CompareOp> {
+class GpmIdentifiersEqualLowering : public OpConversionPattern<gpm::IdentifiersEqualOp> {
    public:
-   using OpConversionPattern<xsd::CompareOp>::OpConversionPattern;
-   LogicalResult matchAndRewrite(xsd::CompareOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+   using OpConversionPattern<gpm::IdentifiersEqualOp>::OpConversionPattern;
+   LogicalResult matchAndRewrite(gpm::IdentifiersEqualOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      auto* ctxt = rewriter.getContext();
+      auto loc = op.getLoc();
       mlir::Value lhs = refreshStaleRefOperand(adaptor.getLhs(), rewriter);
       mlir::Value rhs = refreshStaleRefOperand(adaptor.getRhs(), rewriter);
-      rewriter.replaceOpWithNewOp<xsd::CompareOp>(op, op.getResult().getType(), op.getPredicate(), lhs, rhs);
+      mlir::Value anyNull;
+      mlir::Value lhsRaw = lhs;
+      mlir::Value rhsRaw = rhs;
+      if (mlir::isa<db::NullableType>(lhs.getType())) {
+         anyNull = rewriter.create<db::IsNullOp>(loc, lhs);
+         lhsRaw = rewriter.create<db::NullableGetVal>(loc, lhs);
+      }
+      if (mlir::isa<db::NullableType>(rhs.getType())) {
+         mlir::Value isNull = rewriter.create<db::IsNullOp>(loc, rhs);
+         anyNull = anyNull ? rewriter.create<mlir::arith::OrIOp>(loc, anyNull, isNull).getResult() : isNull;
+         rhsRaw = rewriter.create<db::NullableGetVal>(loc, rhs);
+      }
+      auto cmpType = db::NullableType::get(ctxt, rewriter.getI1Type());
+      if (!anyNull) {
+         auto cmp = rewriter.create<variant::CmpOp>(loc, cmpType, variant::VariantCmpPredicate::eq, lhsRaw, rhsRaw);
+         rewriter.replaceOpWithNewOp<db::DeriveTruth>(op, rewriter.getI1Type(), cmp);
+         return success();
+      }
+      auto ifOp = rewriter.create<mlir::scf::IfOp>(
+         loc, anyNull,
+         [&](mlir::OpBuilder& b, mlir::Location l) {
+            b.create<mlir::scf::YieldOp>(l, b.create<mlir::arith::ConstantIntOp>(l, 0, 1).getResult());
+         },
+         [&](mlir::OpBuilder& b, mlir::Location l) {
+            auto cmp = b.create<variant::CmpOp>(l, cmpType, variant::VariantCmpPredicate::eq, lhsRaw, rhsRaw);
+            b.create<mlir::scf::YieldOp>(l, b.create<db::DeriveTruth>(l, b.getI1Type(), cmp).getResult());
+         });
+      rewriter.replaceOp(op, ifOp.getResult(0));
       return success();
    }
 };
-class XsdCompareLiteralRefreshLowering : public OpConversionPattern<xsd::CompareLiteralOp> {
+class GetBindingOpLowering : public OpConversionPattern<gpm::GetBindingOp> {
    public:
-   using OpConversionPattern<xsd::CompareLiteralOp>::OpConversionPattern;
-   LogicalResult matchAndRewrite(xsd::CompareLiteralOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
-      mlir::Value lhs = refreshStaleRefOperand(adaptor.getLhs(), rewriter);
-      rewriter.replaceOpWithNewOp<xsd::CompareLiteralOp>(op, op.getResult().getType(), op.getPredicate(), lhs, op.getRhsLexicalForm(), op.getRhsXsdType());
+   using OpConversionPattern<gpm::GetBindingOp>::OpConversionPattern;
+   LogicalResult matchAndRewrite(gpm::GetBindingOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      mlir::Value binding = refreshStaleRefOperand(adaptor.getVar(), rewriter);
+      if (mlir::isa<db::NullableType>(binding.getType())) {
+         auto loc = op.getLoc();
+         mlir::Value isNull = rewriter.create<db::IsNullOp>(loc, binding);
+         mlir::Value rawBinding = rewriter.create<db::NullableGetVal>(loc, binding);
+         binding = rewriter.create<variant::UnspecifiedIfOp>(loc, rawBinding.getType(), isNull, rawBinding);
+      }
+      rewriter.replaceOp(op, binding);
       return success();
    }
 };
-class XsdLiteralOfRefRefreshLowering : public OpConversionPattern<xsd::LiteralOfRefOp> {
-   public:
-   using OpConversionPattern<xsd::LiteralOfRefOp>::OpConversionPattern;
-   LogicalResult matchAndRewrite(xsd::LiteralOfRefOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
-      mlir::Value ref = refreshStaleRefOperand(adaptor.getRef(), rewriter);
-      rewriter.replaceOpWithNewOp<xsd::LiteralOfRefOp>(op, op.getLexicalForm().getType(), op.getXsdType().getType(), ref);
-      return success();
-   }
-};
-
 static void refreshOuterJoinMappingTypes(relalg::OuterJoinOp outerJoinOp) {
    for (mlir::Attribute attr : outerJoinOp.getMapping()) {
       auto defAttr = mlir::cast<tuples::ColumnDefAttr>(attr);
@@ -576,6 +581,7 @@ static void refreshNullableTypes(ModuleOp module) {
    });
 }
 
+
 static void addCommonLegalDialects(ConversionTarget& target) {
    target.addLegalDialect<gpu::GPUDialect>();
    target.addLegalDialect<async::AsyncDialect>();
@@ -593,7 +599,7 @@ static void addCommonLegalDialects(ConversionTarget& target) {
    target.addLegalDialect<cf::ControlFlowDialect>();
    target.addLegalDialect<scf::SCFDialect>();
    target.addLegalDialect<util::UtilDialect>();
-   target.addLegalDialect<xsd::XSDDialect>();
+   target.addLegalDialect<variant::VariantDialect>();
 }
 
 void GPMToSubOpLoweringPass::runOnOperation() {
@@ -605,6 +611,7 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    typeConverter.addConversion([](mlir::Type t) { return t; });
    auto* ctxt = &getContext();
    ctxt->loadDialect<gsubop::GraphSubOpDialect>();
+   ctxt->loadDialect<variant::VariantDialect>();
 
    NamedGraphMapper graphs;
    ExternalGraphMapper externalGraphs;
@@ -631,21 +638,10 @@ void GPMToSubOpLoweringPass::runOnOperation() {
       ConversionTarget target(getContext());
       addCommonLegalDialects(target);
       target.addIllegalDialect<gpm::GPMDialect>();
-      target.addDynamicallyLegalOp<xsd::CompareOp>([](xsd::CompareOp op) {
-         return !isStaleRefOperand(op.getLhs()) && !isStaleRefOperand(op.getRhs());
-      });
-      target.addDynamicallyLegalOp<xsd::CompareLiteralOp>([](xsd::CompareLiteralOp op) {
-         return !isStaleRefOperand(op.getLhs());
-      });
-      target.addDynamicallyLegalOp<xsd::LiteralOfRefOp>([](xsd::LiteralOfRefOp op) {
-         return !isStaleRefOperand(op.getRef());
-      });
 
       RewritePatternSet patterns(ctxt);
       patterns.insert<GpmIdentifiersEqualLowering>(typeConverter, ctxt);
-      patterns.insert<XsdCompareRefreshLowering>(typeConverter, ctxt);
-      patterns.insert<XsdCompareLiteralRefreshLowering>(typeConverter, ctxt);
-      patterns.insert<XsdLiteralOfRefRefreshLowering>(typeConverter, ctxt);
+      patterns.insert<GetBindingOpLowering>(typeConverter, ctxt);
 
       if (failed(applyFullConversion(module, target, std::move(patterns)))) {
          signalPassFailure();

@@ -11,6 +11,7 @@ add_mlir_conversion_library(MLIRDBToArrowStd
         date-rt-defs
         decimal-rt-defs
         ht-rt-defs
+        variant-rt-defs
         LINK_COMPONENTS
         Core
 
@@ -18,5 +19,6 @@ add_mlir_conversion_library(MLIRDBToArrowStd
         MLIRIR
         MLIRDB
         MLIRSCFTransforms
+        MLIRVariant
         runtime_funcs_ptr
 )

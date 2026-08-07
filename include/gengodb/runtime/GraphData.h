@@ -80,16 +80,10 @@ struct PropertyData {
 };
 
 struct GraphRefString {
-    // VarLen32 getDummyStr() { return VarLen32::fromString("hello world"); }
     static VarLen32 fromProp(PropertyGraph::PropRecord* prop);
     static VarLen32 fromRel(PropertyGraph::RelEntry* rel);
     static VarLen32 fromNode(PropertyGraph::NodeEntry* node);
-}; // GraphPropertyData
-
-struct GraphRefCompare {
-    static int8_t nodes(PropertyGraph::NodeEntry* a, PropertyGraph::NodeEntry* b);
-    static int8_t rels(PropertyGraph::RelEntry* a, PropertyGraph::RelEntry* b);
-}; // GraphRefCompare
+}; // GraphRefString
 
 } // namespace lingodb::runtime
 

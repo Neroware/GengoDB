@@ -6,6 +6,7 @@ namespace gengodb::semantics::xsd {
 
 namespace {
 constexpr std::string_view kXsdNamespace = "http://www.w3.org/2001/XMLSchema#";
+constexpr std::string_view kRdfLangStringIri = "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString";
 } // namespace
 
 Type from_iri(const rdf4cpp::IRI& iri) {
@@ -13,6 +14,9 @@ Type from_iri(const rdf4cpp::IRI& iri) {
         return Type::Unspecified;
     }
     const std::string_view id = iri.identifier();
+    if (id == kRdfLangStringIri) {
+        return Type::LangString;
+    }
     if (!id.starts_with(kXsdNamespace)) {
         return Type::Unspecified;
     }

@@ -9,7 +9,10 @@ module  {
             }
             %filtered = relalg.selection %bgp (%arg0 : !tuples.tuple){
                 %ageVal = tuples.getcol %arg0 @vars::@age : !gpm.variable_binding
-                %pred = xsd.compare_literal gt %ageVal : !gpm.variable_binding, "25" dtype 200 -> !db.nullable<i1>
+                %ageVar = gpm.get_binding %ageVal -> !variant.variant
+                %twentyFive = arith.constant 25 : i32
+                %litVar = variant.create_scalar %twentyFive : i32
+                %pred = variant.cmp gt %ageVar, %litVar -> !db.nullable<i1>
                 tuples.return %pred : !db.nullable<i1>
             }
             %res_table = relalg.materialize %filtered [@vars::@person, @vars::@food, @vars::@age] => ["person", "food", "age"] : !subop.local_table<[col1: !db.string, col2: !db.string, col3: !db.string],["person", "food", "age"]>

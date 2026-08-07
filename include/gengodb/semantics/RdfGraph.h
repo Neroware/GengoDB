@@ -166,6 +166,7 @@ public:
     inline int32_t resolve(const BlankNode& b);
     inline int32_t resolve(const IRI& iri);
     inline int32_t resolve(const Literal& l);
+    LiteralKey literalKeyFor(int32_t id) const;
 };
 class RdfGraph {
 private:

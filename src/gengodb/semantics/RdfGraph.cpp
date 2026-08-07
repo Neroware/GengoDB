@@ -128,6 +128,48 @@ inline int32_t NodeHelper::resolve(const Literal& l) {
     g->literalNodes.emplace(LiteralKey{persistedData, persistedLen, datatypeNode}, id);
     return id;
 }
+LiteralKey NodeHelper::literalKeyFor(int32_t id) const {
+    RdfDatatypeInlineHelper inlineHelper;
+    RdfDatatypeFixedHelper fixedHelper;
+    auto& propData = g->storage->storage().getPropData();
+
+    const auto& n = g->storage->storage().node(id);
+    assert(n.payload >= 0 && "literal node missing data property");
+    const auto& p = g->storage->storage().prop(n.payload);
+    const IRI datatype = g->getIri(static_cast<int32_t>(p.key));
+    const int32_t datatypeNode = static_cast<int32_t>(p.key);
+
+    const char* data = nullptr;
+    size_t len = 0;
+    if (inlineHelper.isInlined(datatype)) {
+        data = reinterpret_cast<const char*>(&p.value);
+        len = sizeof(p.value);
+    }
+    else if (const auto fixedKind = fixedHelper.kindOf(datatype)) {
+        const auto idx = static_cast<int32_t>(p.value);
+        switch (*fixedKind) {
+            case RdfDatatypeFixedHelper::Kind::Int64:
+            case RdfDatatypeFixedHelper::Kind::Date:
+                data = reinterpret_cast<const char*>(propData.get_i64_ptr(idx));
+                len = sizeof(int64_t);
+                break;
+            case RdfDatatypeFixedHelper::Kind::UInt64:
+                data = reinterpret_cast<const char*>(propData.get_ui64_ptr(idx));
+                len = sizeof(uint64_t);
+                break;
+            case RdfDatatypeFixedHelper::Kind::Double:
+                data = reinterpret_cast<const char*>(propData.get_double_ptr(idx));
+                len = sizeof(double);
+                break;
+        }
+    }
+    else {
+        auto [ptr, blobLen] = propData.get_blob<xsd::Type::String>(static_cast<int32_t>(p.value));
+        data = reinterpret_cast<const char*>(ptr);
+        len = blobLen;
+    }
+    return LiteralKey{data, len, datatypeNode};
+}
 void RdfGraph::addTriple(const IRI& s, const IRI& p, const IRI& o) {
     storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
@@ -189,7 +231,7 @@ void RdfGraph::ensureLoaded() {
             rebuildLiteralNodeCache();
         }
         storage->storage().getMetadata().set_name(iri.identifier().data());
-        storage->storage().getMetadata().set_identifier_mapping([&](int32_t id) {
+        storage->storage().getMetadata().set_name_mapping([&](int32_t id) {
             auto nodeId = getNodes().get(id);
             switch(nodeId.type) {
                 case RDFNodeType::IRI:      return static_cast<std::string>(nodeId.iri);
@@ -198,51 +240,17 @@ void RdfGraph::ensureLoaded() {
                 default: return std::string();
             }
         });
-        storage->storage().getMetadata().set_rdf(this);
+        storage->storage().getMetadata().set_type_id_mapping([&](int32_t id) {
+            return static_cast<int32_t>(getNodes().get(id).type);
+        });
     }
 }
 void RdfGraph::rebuildLiteralNodeCache() {
-    RdfDatatypeInlineHelper inlineHelper;
-    RdfDatatypeFixedHelper fixedHelper;
-    auto& propData = storage->storage().getPropData();
     for (int32_t id = 0; id < static_cast<int32_t>(nodes->size()); id++) {
         if (nodes->get(id).type != RDFNodeType::Literal) continue;
         const auto& n = storage->storage().node(id);
         if (n.payload < 0) continue;
-        const auto& p = storage->storage().prop(n.payload);
-        const IRI datatype = getIri(static_cast<int32_t>(p.key));
-        const int32_t datatypeNode = static_cast<int32_t>(p.key);
-
-        const char* data = nullptr;
-        size_t len = 0;
-        if (inlineHelper.isInlined(datatype)) {
-            data = reinterpret_cast<const char*>(&p.value);
-            len = sizeof(p.value);
-        }
-        else if (const auto fixedKind = fixedHelper.kindOf(datatype)) {
-            const auto idx = static_cast<int32_t>(p.value);
-            switch (*fixedKind) {
-                case RdfDatatypeFixedHelper::Kind::Int64:
-                case RdfDatatypeFixedHelper::Kind::Date:
-                    data = reinterpret_cast<const char*>(propData.get_i64_ptr(idx));
-                    len = sizeof(int64_t);
-                    break;
-                case RdfDatatypeFixedHelper::Kind::UInt64:
-                    data = reinterpret_cast<const char*>(propData.get_ui64_ptr(idx));
-                    len = sizeof(uint64_t);
-                    break;
-                case RdfDatatypeFixedHelper::Kind::Double:
-                    data = reinterpret_cast<const char*>(propData.get_double_ptr(idx));
-                    len = sizeof(double);
-                    break;
-            }
-        }
-        else {
-            auto [ptr, blobLen] = propData.get_blob<xsd::Type::String>(static_cast<int32_t>(p.value));
-            data = reinterpret_cast<const char*>(ptr);
-            len = blobLen;
-        }
-        literalNodes.emplace(LiteralKey{data, len, datatypeNode}, id);
+        literalNodes.emplace(nodeHelper.literalKeyFor(id), id);
     }
 }
 Literal RdfGraph::getLiteral(int32_t id) const {

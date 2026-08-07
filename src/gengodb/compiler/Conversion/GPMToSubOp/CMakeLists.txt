@@ -11,7 +11,7 @@ add_mlir_conversion_library(MLIRGPMToSubOp
         LINK_LIBS PUBLIC
         MLIRIR
         MLIRGPM
-        MLIRXSD
+        MLIRVariant
         MLIRSubOperator
         runtime_funcs_ptr
 )

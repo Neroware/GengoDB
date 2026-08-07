@@ -3,9 +3,6 @@ using namespace gengodb::compiler::dialect;
 
 void gsubop::registerGraphSubOpTransformations() {
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
-      return gsubop::createStringifyMaterializedGraphRefsPass();
-   });
-   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
-      return gsubop::createGraphSubOpCleanupPass();
+      return gsubop::createStringifyVariantsPass();
    });
 }

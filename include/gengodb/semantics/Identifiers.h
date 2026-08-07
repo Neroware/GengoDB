@@ -1,10 +1,14 @@
 #ifndef GENGODB_SEMANTICS_IDENTIFIERS_H
 #define GENGODB_SEMANTICS_IDENTIFIERS_H
 
+#include <cassert>
+
 #include <rdf4cpp.hpp>
 #include <rdf4cpp/storage/identifier/RDFNodeType.hpp>
 
 #include "gengodb/catalog/CreateRdfGraphDef.h"
+
+#include "llvm/ADT/DenseMap.h"
 
 namespace gengodb::semantics {
 using namespace lingodb;
@@ -51,10 +55,10 @@ class NodeIdDict {
     private:
     static inline NodeId node_id(const Node& node) {
         if (node.is_iri())
-            return NodeId{ RDFNodeType::IRI, node.as_iri(), std::string() };
+            return NodeId{ RDFNodeType::IRI, node.as_iri(), std::string{} };
         else if (node.is_blank_node())
             return NodeId{ RDFNodeType::BNode, IRI{}, node.as_blank_node().identifier().data() };
-        return NodeId { RDFNodeType::Literal, IRI{}, std::string() };
+        return NodeId { RDFNodeType::Literal, IRI{}, std::string{} };
     }
     public:
     NodeIdDict(const std::initializer_list<Node>& l) {
@@ -97,6 +101,72 @@ class NodeIdDict {
     void serialize(utility::Serializer& serializer) const;
     static std::unique_ptr<NodeIdDict> deserialize(utility::Deserializer& deserializer);
 }; // NodeIdDict
+
+class NodeIdMapping {
+    public:
+    using global_id_t = int64_t;
+    using local_id_t = int32_t;
+    private:
+    std::vector<global_id_t> local_to_global;
+    llvm::DenseMap<global_id_t, local_id_t> global_to_local;
+    public:
+    NodeIdMapping() = default;
+    ~NodeIdMapping() = default;
+    local_id_t insert(const global_id_t gid) {
+        local_id_t lid = static_cast<local_id_t>(local_to_global.size());
+        local_to_global.push_back(gid);
+        global_to_local.insert({gid, lid});
+        return lid;
+    }
+    local_id_t get_local_safe(const global_id_t gid) const {
+        auto it = global_to_local.find(gid);
+        if (it == global_to_local.end())
+            return -1;
+        return it->second;
+    }
+    local_id_t get_local(const global_id_t gid) const {
+        auto it = global_to_local.find(gid);
+        assert(it != global_to_local.end() && "unknown global id");
+        return it->second;
+    }
+    global_id_t get_global_safe(const local_id_t id) const {
+        if (id < 0 || static_cast<size_t>(id) >= local_to_global.size()) {
+            return -1;
+        }
+        return local_to_global[id];
+    }
+    global_id_t get_global(const local_id_t id) const {
+        return local_to_global[id];
+    }
+    size_t size() const { return local_to_global.size(); }
+    void serialize(utility::Serializer& serializer) const;
+    static std::unique_ptr<NodeIdMapping> deserialize(utility::Deserializer& deserializer);
+}; // NodeIdMapping
+
+class RdfGraph;
+class GraphNodeIndex {
+    std::unordered_map<std::string, std::unique_ptr<NodeIdMapping>> index;
+    public:
+    GraphNodeIndex() = default;
+    ~GraphNodeIndex() = default;
+
+    const NodeIdMapping& getIndex(const std::string& graphName) const { return *index.at(graphName); }
+    bool hasIndex(const std::string& graphName) const { return index.contains(graphName); }
+
+    std::vector<std::string> getGraphNames() const {
+        std::vector<std::string> names;
+        names.reserve(index.size());
+        for (const auto& [name, mapping] : index) {
+            names.push_back(name);
+        }
+        return names;
+    }
+
+    static std::unique_ptr<GraphNodeIndex> build(const std::vector<std::pair<std::string, const RdfGraph*>>& rdfGraphs);
+
+    void serialize(utility::Serializer& serializer) const;
+    static std::unique_ptr<GraphNodeIndex> deserialize(utility::Deserializer& deserializer);
+}; // GraphNodeIndex
 
 } // namespace gengodb::semantics
 

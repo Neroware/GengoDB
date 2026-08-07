@@ -1,4 +1,5 @@
 #include "gengodb/semantics/Identifiers.h"
+#include "gengodb/semantics/RdfGraph.h"
 
 namespace gengodb::semantics {
 using namespace rdf4cpp;
@@ -62,6 +63,20 @@ static NodeIdStore buildStore(const std::vector<NodeId>& nodes) {
     }
     return store;
 }
+struct GlobalLiteralKey {
+    const char* data;
+    size_t len;
+    int64_t datatypeGlobalId;
+    bool operator==(const GlobalLiteralKey& other) const noexcept {
+        return datatypeGlobalId == other.datatypeGlobalId && std::string(data, len) == std::string(other.data, other.len);
+    }
+};
+struct GlobalLiteralKeyHash {
+    std::size_t operator()(const GlobalLiteralKey& k) const noexcept {
+        return std::hash<int64_t>{}(k.datatypeGlobalId) ^ (std::hash<std::string>{}(std::string(k.data, k.len)) << 1);
+    }
+};
+
 static std::vector<NodeId> readStore(const NodeIdStore& store) {
     std::vector<NodeId> nodes;
     nodes.reserve(store.entries.size());
@@ -96,6 +111,78 @@ std::unique_ptr<NodeIdDict> NodeIdDict::deserialize(lingodb::utility::Deserializ
     for (size_t id = 0; id < result->id_to_node.size(); id++) {
         result->node_to_id.emplace(result->id_to_node[id], static_cast<int32_t>(id));
     }
+    return result;
+}
+
+void NodeIdMapping::serialize(lingodb::utility::Serializer& serializer) const {
+    serializer.writeProperty(1, local_to_global);
+}
+std::unique_ptr<NodeIdMapping> NodeIdMapping::deserialize(lingodb::utility::Deserializer& deserializer) {
+    auto local_to_global = deserializer.readProperty<std::vector<global_id_t>>(1);
+    auto result = std::make_unique<NodeIdMapping>();
+    result->local_to_global = std::move(local_to_global);
+    for (size_t i = 0; i < result->local_to_global.size(); i++) {
+        result->global_to_local.insert({result->local_to_global[i], static_cast<local_id_t>(i)});
+    }
+    return result;
+}
+
+std::unique_ptr<GraphNodeIndex> GraphNodeIndex::build(const std::vector<std::pair<std::string, const RdfGraph*>>& rdfGraphs) {
+    auto index = std::make_unique<GraphNodeIndex>();
+    NodeIdMapping::global_id_t nextGlobalId = 0;
+    std::unordered_map<NodeId, NodeIdMapping::global_id_t, NodeId::NodeIdHash> iriToGlobal;
+    std::unordered_map<GlobalLiteralKey, NodeIdMapping::global_id_t, GlobalLiteralKeyHash> literalToGlobal;
+    for (const auto& [explicitName, graph] : rdfGraphs) {
+        std::string key = explicitName.empty() ? std::string{graph->getIri().identifier()} : explicitName;
+        const auto& nodes = graph->getNodes();
+        std::vector<NodeIdMapping::global_id_t> globalIds(nodes.size(), -1);
+        for (int32_t id = 0; id < static_cast<int32_t>(nodes.size()); id++) {
+            const auto nodeId = nodes.get(id);
+            if (nodeId.type == RDFNodeType::IRI) {
+                auto it = iriToGlobal.find(nodeId);
+                if (it == iriToGlobal.end()) {
+                    NodeIdMapping::global_id_t globalId = nextGlobalId++;
+                    iriToGlobal.emplace(nodeId, globalId);
+                    globalIds[id] = globalId;
+                } else {
+                    globalIds[id] = it->second;
+                }
+            } else if (nodeId.type == RDFNodeType::BNode || nodeId.type == RDFNodeType::Variable) {
+                // Blank nodes/variables are graph-local by spec: never deduplicated.
+                globalIds[id] = nextGlobalId++;
+            }
+        }
+        NodeHelper helper(const_cast<RdfGraph*>(graph));
+        for (int32_t id = 0; id < static_cast<int32_t>(nodes.size()); id++) {
+            if (nodes.get(id).type != RDFNodeType::Literal) continue;
+            const LiteralKey localKey = helper.literalKeyFor(id);
+            const NodeIdMapping::global_id_t datatypeGlobalId = globalIds[localKey.dataType];
+            GlobalLiteralKey litKey{localKey.data, localKey.len, datatypeGlobalId};
+            auto it = literalToGlobal.find(litKey);
+            if (it == literalToGlobal.end()) {
+                NodeIdMapping::global_id_t globalId = nextGlobalId++;
+                literalToGlobal.emplace(litKey, globalId);
+                globalIds[id] = globalId;
+            } else {
+                globalIds[id] = it->second;
+            }
+        }
+        auto mapping = std::make_unique<NodeIdMapping>();
+        for (const auto gid : globalIds) {
+            mapping->insert(gid);
+        }
+        index->index[std::move(key)] = std::move(mapping);
+    }
+    return index;
+}
+
+void GraphNodeIndex::serialize(lingodb::utility::Serializer& serializer) const {
+    serializer.writeProperty(1, index);
+}
+std::unique_ptr<GraphNodeIndex> GraphNodeIndex::deserialize(lingodb::utility::Deserializer& deserializer) {
+    auto index = deserializer.readProperty<std::unordered_map<std::string, std::unique_ptr<NodeIdMapping>>>(1);
+    auto result = std::make_unique<GraphNodeIndex>();
+    result->index = std::move(index);
     return result;
 }
 
