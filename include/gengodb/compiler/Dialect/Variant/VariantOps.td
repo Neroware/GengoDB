@@ -159,9 +159,59 @@ def ArithOp : Variant_Op<"arith", [Pure]> {
 
 def CastOp : Variant_Op<"cast", [Pure]> {
     let summary = "converts between variant dynamic types";
+    let description = [{
+        Casts `var` to the XSD type named by `typeId` (a
+        gengodb::semantics::xsd::Type int32 tag, see Datatypes.h), following
+        XPath/XSD numeric-cast value semantics (via rdf4cpp::Literal::cast).
+
+        `typeId` must be a compile-time constant -- VariantToStd's lowering
+        pattern-matches it via an arith.constant and fails conversion
+        outright if it isn't one; there is no dynamic-target-type dispatch.
+        This matches the op's only intended use (SPARQL's xsd:TYPE(...)
+        constructor-function syntax, where the target type is always known
+        from the query text at parse time -- only `var`'s runtime tag is
+        dynamic).
+
+        The supported target set is currently limited to
+        `xsd::Type::Boolean` and the fixed-width numeric family (see
+        VariantToStd.cpp's fixedNumericTags()) -- exactly the tags
+        `variant.create_scalar`'s lowering can itself produce. Arbitrary-
+        precision xsd:integer/xsd:decimal targets are not directly
+        supported at this layer; the SPARQL frontend folds them onto
+        Long/Double before emitting this op (mirroring
+        Translator::literalScalar's existing fold for FILTER literals).
+        Any other target tag is a lowering failure.
+
+        `var` (the source) may carry any tag, including RDFNode and
+        Unspecified. A cast that cannot be reconstructed as an XSD literal
+        (RDFNode, Unspecified) or that rdf4cpp's cast rules reject (e.g. an
+        out-of-range numeric narrowing, or a non-numeric string) produces a
+        variant tagged `xsd::Type::Unspecified` -- the same "no value"
+        sentinel ArithOp's lowering already uses; there is exactly one way
+        to represent "no result" in this dialect.
+    }];
     let arguments = (ins Variant:$var, I32:$typeId);
     let results = (outs Variant:$result);
     let assemblyFormat = [{ $var `{` `type` `=` $typeId `}` attr-dict }];
+}
+
+def StrCastOp : Variant_Op<"str_cast", [Pure]> {
+    let summary = "cast any variant to string";
+    let description = [{
+        SPARQL's STR(): the universal cast-to-lexical-string. Unlike
+        `cast`, this always succeeds and needs no target type -- it works
+        uniformly on literals (numeric family, string, blob-shaped rare
+        tags) and RDFNode refs (IRI/blank node), and per SPARQL semantics
+        always drops any datatype/language tag, producing a plain
+        `xsd::Type::String` result. Shares its runtime dispatch with
+        `variant.to_string` (see VariantToStd.cpp's computeLexicalForm) --
+        the only difference is that this op repackages the resulting
+        lexical form as a `!variant.variant` instead of materializing a
+        raw `!db.string`.
+    }];
+    let arguments = (ins Variant:$var);
+    let results = (outs Variant:$result);
+    let assemblyFormat = [{ $var attr-dict }];
 }
 
 def PredicateOp : Variant_Op<"predicate", [Pure]> {

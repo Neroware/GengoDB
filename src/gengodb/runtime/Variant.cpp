@@ -304,7 +304,13 @@ uint8_t* VariantRuntime::allocScratch(int64_t bytes) {
 VarLen32 VariantRuntime::toStringNumeric(int64_t payload, int32_t tag) {
     auto lit = getLiteralFromNumeric(reinterpret_cast<uint8_t*>(&payload), tag);
     if (lit.null()) return emptyVarLen32();
-    return VarLen32::fromString(static_cast<std::string>(lit));
+    // lexical_form(), not the plain std::string conversion: the latter is
+    // rdf4cpp's N-Triples-style serialization ('"42"^^<xsd:long>'), not the
+    // bare canonical XSD lexical form ("42", "3.5E0" for xsd:double, ...)
+    // this op promises. (Literal::simplified_lexical_form() is a distinct,
+    // *non*-canonical "more user friendly" form -- e.g. "21.5" rather than
+    // xsd:float's canonical "2.15E1" -- and is not what's wanted here.)
+    return VarLen32::fromString(lit.lexical_form().into_owned());
 }
 
 VarLen32 VariantRuntime::toStringNodeRef(PropertyGraph::NodeEntry* ref) {
@@ -316,7 +322,12 @@ VarLen32 VariantRuntime::toStringNodeRef(PropertyGraph::NodeEntry* ref) {
 VarLen32 VariantRuntime::toStringBlobLiteral(PropertyGraph::NodeEntry* ref) {
     auto lit = reconstructBlobLiteral(ref);
     if (!lit.has_value()) return emptyVarLen32();
-    return VarLen32::fromString(static_cast<std::string>(*lit));
+    // See toStringNumeric's note: lexical_form() strips the N-Triples
+    // quoting/@lang/^^datatype decoration the plain std::string conversion
+    // would otherwise add for language-tagged and non-xsd:string-typed
+    // literals -- by definition, neither the datatype nor the language tag
+    // are part of the lexical form.
+    return VarLen32::fromString(lit->lexical_form().into_owned());
 }
 
 int8_t VariantRuntime::compareNodeRefRef(PropertyGraph::NodeEntry* lhs, PropertyGraph::NodeEntry* rhs, int32_t predicate) {
@@ -401,6 +412,18 @@ int8_t VariantRuntime::compareOrder(int64_t lhsPayload, int32_t lhsTag, Property
     if (ord == std::strong_ordering::less) return -1;
     if (ord == std::strong_ordering::greater) return 1;
     return 0;
+}
+
+int32_t VariantRuntime::castLiteral(int64_t payload, int32_t srcTag, PropertyGraph::NodeEntry* ref, int32_t targetTag, uint8_t* outPtr) {
+    auto srcLit = reconstructLiteral(payload, srcTag, ref);
+    if (!srcLit.has_value()) return xsd::to_int32(xsd::Type::Unspecified);
+    auto targetT = xsd::from_int32(targetTag);
+    if (!targetT.has_value()) return xsd::to_int32(xsd::Type::Unspecified);
+    rdf4cpp::Literal casted = srcLit->cast(toDatatypeIri(*targetT));
+    if (casted.null()) return xsd::to_int32(xsd::Type::Unspecified);
+    auto resultTag = static_cast<int32_t>(xsd::from_iri(casted.datatype()));
+    if (!extractNumericByTag(casted, resultTag, outPtr)) return xsd::to_int32(xsd::Type::Unspecified);
+    return resultTag;
 }
 
 int8_t VariantRuntime::langMatches(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref, VarLen32 langRange) {
