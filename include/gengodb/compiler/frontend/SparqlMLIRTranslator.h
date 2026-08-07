@@ -94,13 +94,17 @@ struct UnionPattern : PatternElement {
 // FILTER expressions
 // ------------------------------------------------------------
 // Scope: comparisons (=,!=,<,<=,>,>=), the logical connectives (&&,||,!), numeric
-// arithmetic (+,-,*,/, unary -), literals/variable references, and the builtin
-// predicate functions BOUND() / LANGMATCHES() (spelled case-insensitively -- 
-// see Parser::parsePrimary), which compile onto `variant.predicate` (see 
-// Translator::translatePredicateCall). Other builtin test functions (isIRI(), …) 
-// are not yet supported -- see Translator::translateFilterExpr's default case.
+// arithmetic (+,-,*,/, unary -), literals/variable references, the builtin
+// predicate functions BOUND() / LANGMATCHES() (spelled case-insensitively --
+// see Parser::parsePrimary), which compile onto `variant.predicate` (see
+// Translator::translatePredicateCall), and casts -- xsd:TYPE(expr) constructor-
+// function casts to a statically-known XSD type (variant.cast) and STR(expr),
+// the universal cast-to-lexical-string (variant.str_cast) -- see
+// Translator::translateArithExpr's Cast case. Other builtin test functions
+// (isIRI(), …) are not yet supported -- see Translator::translateFilterExpr's
+// default case.
 struct Expr {
-   enum class Kind { Variable, Literal, Not, And, Or, Compare, Arith, Negate, FunctionCall };
+   enum class Kind { Variable, Literal, Not, And, Or, Compare, Arith, Negate, FunctionCall, Cast };
    virtual ~Expr() = default;
    virtual Kind kind() const = 0;
 };
@@ -167,6 +171,18 @@ struct FunctionCallExpr : Expr {
    std::string name;
    std::vector<std::unique_ptr<Expr>> args;
    Kind kind() const override { return Kind::FunctionCall; }
+};
+
+// xsd:TYPE(expr) constructor-function cast (target type resolved and
+// validated at parse time -- see Parser::parsePrimary) or STR(expr) universal
+// cast-to-lexical-string when targetType is nullopt. One AST node covers both
+// since they compile to near-identical control flow in
+// Translator::translateArithExpr: build the operand variant, then emit either
+// variant.cast{type=X} or variant.str_cast.
+struct CastExpr : Expr {
+   std::unique_ptr<Expr> operand;
+   std::optional<gengodb::semantics::xsd::Type> targetType; // nullopt = STR()
+   Kind kind() const override { return Kind::Cast; }
 };
 
 struct FilterPattern : PatternElement {
@@ -378,6 +394,45 @@ class Parser {
       return (it != pref.end()) ? it->second + raw.substr(col + 1) : raw;
    }
 
+   // Resolves a (already prefix-expanded) datatype IRI down to its
+   // gengodb::semantics::xsd::Type: strips to the local name after the last
+   // '#'/'/' and looks it up via xsd::from_string. Shared by the '^^'
+   // datatype-literal suffix and xsd:TYPE(...) cast-call target resolution.
+   static std::optional<gengodb::semantics::xsd::Type> resolveXsdTypeFromIri(const std::string& iri) {
+      std::string localName = iri;
+      auto sep = localName.find_last_of("#/");
+      if (sep != std::string::npos) localName = localName.substr(sep + 1);
+      return gengodb::semantics::xsd::from_string(localName);
+   }
+
+   // xsd:integer/xsd:decimal are arbitrary-precision and have no dedicated
+   // fixed-width variant tag; fold them onto the closest fixed-width family
+   // member, the same way Translator::literalScalar already does for FILTER
+   // literals. Applied only to cast *targets* -- source-side literal parsing
+   // keeps using literalScalar's own (already-folding) switch untouched.
+   static gengodb::semantics::xsd::Type foldCastTargetType(gengodb::semantics::xsd::Type t) {
+      using gengodb::semantics::xsd::Type;
+      if (t == Type::Integer) return Type::Long;
+      if (t == Type::Decimal) return Type::Double;
+      return t;
+   }
+
+   // Whether `t` is a valid variant.cast target -- Boolean plus the fixed-
+   // width numeric family (mirrors VariantToStd.cpp's isSupportedCastTarget /
+   // fixedNumericTags()). xsd:string(...)/date/time targets etc. are not yet
+   // supported at this layer -- use STR() for string conversion.
+   static bool isSupportedCastTarget(gengodb::semantics::xsd::Type t) {
+      using gengodb::semantics::xsd::Type;
+      switch (t) {
+         case Type::Boolean: case Type::Byte: case Type::Short: case Type::Int: case Type::Long:
+         case Type::UnsignedByte: case Type::UnsignedShort: case Type::UnsignedInt: case Type::UnsignedLong:
+         case Type::Float: case Type::Double:
+            return true;
+         default:
+            return false;
+      }
+   }
+
    // ---- FILTER expression parsing ----
    // Precedence, loosest to tightest: || , && , comparisons (non-chaining),
    // unary ! , primary (parenthesized expr / variable / literal).
@@ -413,13 +468,43 @@ class Parser {
             if (is(TK::IRI))               { dtIri = tok.value; advance(); }
             else if (is(TK::PrefixedName)) { dtIri = expandPrefix(tok.value, pref); advance(); }
             else throw std::runtime_error("Expected datatype IRI after '^^' at line " + std::to_string(tok.line));
-            std::string localName = dtIri;
-            auto sep = localName.find_last_of("#/");
-            if (sep != std::string::npos) localName = localName.substr(sep + 1);
-            auto parsed = gengodb::semantics::xsd::from_string(localName);
+            auto parsed = resolveXsdTypeFromIri(dtIri);
             if (!parsed) throw std::runtime_error("Unsupported XSD datatype '" + dtIri + "' at line " + std::to_string(tok.line));
             e->xsdType = *parsed;
          }
+         return e;
+      }
+      // xsd:TYPE(expr) constructor-function cast. A PrefixedName/IRI in
+      // primary position is not otherwise a valid FILTER primary, so it can
+      // be assumed to start a cast-call -- error immediately if not
+      // immediately followed by '('.
+      if (is(TK::PrefixedName) || is(TK::IRI)) {
+         std::string iri = is(TK::IRI) ? tok.value : expandPrefix(tok.value, pref);
+         size_t line = tok.line;
+         advance();
+         if (!is(TK::LeftParen))
+            throw std::runtime_error("Expected '(' after datatype IRI '" + iri + "' (only xsd:TYPE(...) cast-constructor calls are supported here) at line " + std::to_string(line));
+         advance();
+         auto resolved = resolveXsdTypeFromIri(iri);
+         if (!resolved)
+            throw std::runtime_error("Unsupported cast target datatype '" + iri + "' at line " + std::to_string(line));
+         auto target = foldCastTargetType(*resolved);
+         if (!isSupportedCastTarget(target))
+            throw std::runtime_error("Unsupported xsd cast target '" + gengodb::semantics::xsd::to_string(*resolved) +
+               "' at line " + std::to_string(line) + " (only boolean/numeric xsd cast targets are currently supported; use STR() for string conversion)");
+         auto e = std::make_unique<sparql::CastExpr>();
+         e->targetType = target;
+         e->operand = parseFilterExpr(pref);
+         eat(TK::RightParen);
+         return e;
+      }
+      if (kw("STR")) {
+         advance();
+         eat(TK::LeftParen);
+         auto e = std::make_unique<sparql::CastExpr>();
+         e->targetType = std::nullopt;
+         e->operand = parseFilterExpr(pref);
+         eat(TK::RightParen);
          return e;
       }
       if (kw("TRUE") || kw("FALSE")) {
@@ -1123,8 +1208,20 @@ class Translator {
             mlir::Value rhs = translateArithExpr(*e.rhs, tupleArg);
             return builder.create<variant::ArithOp>(loc, variantType, toVariantArithPredicate(e.op), lhs, rhs);
          }
+         // xsd:TYPE(expr) / STR(expr) -- see sparql::CastExpr. The parser
+         // already resolved/folded/validated `targetType`, so this needs no
+         // further checking (Parser validates surface syntax, Translator
+         // trusts the AST, the same split every other Expr case here makes).
+         case sparql::Expr::Kind::Cast: {
+            const auto& e = static_cast<const sparql::CastExpr&>(expr);
+            mlir::Value operand = translateArithExpr(*e.operand, tupleArg);
+            if (!e.targetType.has_value())
+               return builder.create<variant::StrCastOp>(loc, variantType, operand);
+            mlir::Value typeId = builder.create<mlir::arith::ConstantIntOp>(loc, gengodb::semantics::xsd::to_int32(*e.targetType), 32);
+            return builder.create<variant::CastOp>(loc, variantType, operand, typeId);
+         }
          default:
-            throw std::runtime_error("Expected a numeric FILTER expression (variable, literal, arithmetic, or unary '-')");
+            throw std::runtime_error("Expected a numeric FILTER expression (variable, literal, arithmetic, cast, or unary '-')");
       }
    }
    mlir::Value translateCompareExpr(const sparql::CompareExpr& e, mlir::Value tupleArg) {

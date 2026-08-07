@@ -27,6 +27,9 @@ struct VariantRuntime {
     static VarLen32 toStringNodeRef(PropertyGraph::NodeEntry* ref);
     static VarLen32 toStringBlobLiteral(PropertyGraph::NodeEntry* ref);
 
+    // string cast fallback
+    static int32_t castLiteral(int64_t payload, int32_t srcTag, PropertyGraph::NodeEntry* ref, int32_t targetTag, uint8_t* outPtr);
+
     // Node-ref comparison: resolves both sides' global UID (possibly from
     // different graphs) and compares those.
     static int8_t compareNodeRefRef(PropertyGraph::NodeEntry* lhs, PropertyGraph::NodeEntry* rhs, int32_t predicate);
