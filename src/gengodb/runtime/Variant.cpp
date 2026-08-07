@@ -387,15 +387,11 @@ int8_t VariantRuntime::compareOrder(int64_t lhsPayload, int32_t lhsTag, Property
     const auto [rhsRank, rhsBlank] = rankOf(rhsIsNode, rhsRef);
     if (lhsRank != rhsRank) return lhsRank < rhsRank ? -1 : 1;
     if (lhsRank != 2) {
-        if (lhsBlank) {
-            const std::string lhsName = propertyGraphOf(lhsRef)->getMetadata().get_node_name(GraphStorage::nodeId(reinterpret_cast<uint8_t*>(lhsRef)));
-            const std::string rhsName = propertyGraphOf(rhsRef)->getMetadata().get_node_name(GraphStorage::nodeId(reinterpret_cast<uint8_t*>(rhsRef)));
-            if (lhsName != rhsName) return lhsName < rhsName ? -1 : 1;
-            return 0;
-        }
-        const int64_t lhsUid = resolveNodeRef(lhsRef);
-        const int64_t rhsUid = resolveNodeRef(rhsRef);
-        if (lhsUid != rhsUid) return lhsUid < rhsUid ? -1 : 1;
+        const std::string lhsName = propertyGraphOf(lhsRef)->getMetadata()
+            .get_node_name(GraphStorage::nodeId(reinterpret_cast<uint8_t*>(lhsRef)));
+        const std::string rhsName = propertyGraphOf(rhsRef)->getMetadata()
+            .get_node_name(GraphStorage::nodeId(reinterpret_cast<uint8_t*>(rhsRef)));
+        if (lhsName != rhsName) return lhsName < rhsName ? -1 : 1;
         return 0;
     }
     auto lhsLit = reconstructLiteral(lhsPayload, lhsTag, lhsRef);
