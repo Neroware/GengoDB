@@ -153,4 +153,22 @@ def ArithOp : Variant_Op<"arith", [Pure]> {
     let assemblyFormat = [{ $predicate $lhs `,` $rhs attr-dict }];
 }
 
+//===----------------------------------------------------------------------===//
+// Variant dynamic types properties
+//===----------------------------------------------------------------------===//
+
+def CastOp : Variant_Op<"cast", [Pure]> {
+    let summary = "converts between variant dynamic types";
+    let arguments = (ins Variant:$var, I32:$typeId);
+    let results = (outs Variant:$result);
+    let assemblyFormat = [{ $var `{` `type` `=` $typeId `}` attr-dict }];
+}
+
+def PredicateOp : Variant_Op<"predicate", [Pure]> {
+    let summary = "a tri-booled predicate";
+    let arguments = (ins Variant:$var, ArrayAttr:$pred);
+    let results = (outs AnyType:$result);
+    let assemblyFormat = [{ $var `pred` `:` $pred `->` type($result) attr-dict }];
+}
+
 #endif // GENGODB_DIALECT_VARIANT_OPS

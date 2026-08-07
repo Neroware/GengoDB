@@ -304,7 +304,7 @@ uint8_t* VariantRuntime::allocScratch(int64_t bytes) {
 VarLen32 VariantRuntime::toStringNumeric(int64_t payload, int32_t tag) {
     auto lit = getLiteralFromNumeric(reinterpret_cast<uint8_t*>(&payload), tag);
     if (lit.null()) return emptyVarLen32();
-    return VarLen32::fromString(std::string(lit.lexical_form()));
+    return VarLen32::fromString(static_cast<std::string>(lit));
 }
 
 VarLen32 VariantRuntime::toStringNodeRef(PropertyGraph::NodeEntry* ref) {
@@ -316,7 +316,7 @@ VarLen32 VariantRuntime::toStringNodeRef(PropertyGraph::NodeEntry* ref) {
 VarLen32 VariantRuntime::toStringBlobLiteral(PropertyGraph::NodeEntry* ref) {
     auto lit = reconstructBlobLiteral(ref);
     if (!lit.has_value()) return emptyVarLen32();
-    return VarLen32::fromString(std::string(lit->lexical_form()));
+    return VarLen32::fromString(static_cast<std::string>(*lit));
 }
 
 int8_t VariantRuntime::compareNodeRefRef(PropertyGraph::NodeEntry* lhs, PropertyGraph::NodeEntry* rhs, int32_t predicate) {
