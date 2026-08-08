@@ -12,8 +12,8 @@ GengoDB is a fork of [LingoDB](https://www.lingo-db.com), a cutting-edge data pr
 We refer to LingoDB's [documentation website](https://www.lingo-db.com/docs/) for set-up instructions.
 1. Set up the [LingoDB](https://www.lingo-db.com/docs/ForDevelopers/Dependencies) dependencies first.
 2. Install [rdf4cpp 0.1.13](https://github.com/tentris/rdf4cpp/releases/tag/v0.1.13).
-3. Use the tool `gen-rdf-catalog` to generate the `db.lingodb` from Turtle files.
-4. Run SPARQL queries with `run-sparql <SPARQL_FILE> <DB_DIR>`.
+3. Use the `sparql <DB_DIR>` tool to load Turtle files into `db.lingodb` and run SPARQL queries interactively.
+4. Alternatively, run a single SPARQL file non-interactively with `run-sparql <SPARQL_FILE> <DB_DIR>`.
 
 We also provide a Dockerfile with all required dependencies:
 

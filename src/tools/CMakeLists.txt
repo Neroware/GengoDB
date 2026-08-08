@@ -58,11 +58,12 @@ target_link_libraries(run-sql PUBLIC ${COMMON_LIBS} gengodb)
 set_target_properties(run-sql PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 target_compile_definitions(run-sql PRIVATE ${COMPILE_DEFS})
 
-# gen-rdf-catalog
-add_executable(gen-rdf-catalog gen-rdf-catalog.cpp)
-target_link_libraries(gen-rdf-catalog PUBLIC runner runtime utility mlir-support scheduler gengodb)
-set_target_properties(gen-rdf-catalog PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
-target_compile_definitions(gen-rdf-catalog PRIVATE ${COMPILE_DEFS})
+# sparql
+add_executable(sparql sparql.cpp)
+# sparql needs linenoise-ng in addition to the common libs
+target_link_libraries(sparql PRIVATE ${COMMON_LIBS} linenoise-ng gengodb)
+set_target_properties(sparql PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+target_compile_definitions(sparql PRIVATE ${COMPILE_DEFS})
 
 # run-sparql
 add_executable(run-sparql run-sparql.cpp)
