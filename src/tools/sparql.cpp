@@ -30,6 +30,13 @@ namespace fs = std::filesystem;
 
 using LoadedGraphs = std::vector<std::pair<std::string, const RdfGraph*>>;
 
+struct ToolState {
+   std::shared_ptr<runtime::Session> session;
+   std::string dbDir;
+   LoadedGraphs loadedGraphs;
+   std::string defaultGraph;
+};
+
 class StatementAccumulator {
    std::string buf;
    int depth{0};
@@ -89,8 +96,7 @@ const std::regex& loadStatementRegex() {
    return re;
 }
 
-void handleLoad(std::shared_ptr<runtime::Session>& session, LoadedGraphs& loadedGraphs,
-                 const std::string& sourceIri, const std::string& graphIri) {
+void handleLoad(ToolState& state, const std::string& sourceIri, const std::string& graphIri) {
    // Only Turtle sources are supported for now.
    static const std::string ttlExt = ".ttl";
    if (sourceIri.size() < ttlExt.size() || sourceIri.compare(sourceIri.size() - ttlExt.size(), ttlExt.size(), ttlExt) != 0)
@@ -100,24 +106,24 @@ void handleLoad(std::shared_ptr<runtime::Session>& session, LoadedGraphs& loaded
 
    std::string name = uriAlias(graphIri);
 
-   std::string dbDir = session->getCatalog()->getDbDir();
-   std::string expectedPath = dbDir + name + ttlExt;
+   std::string expectedPath = state.dbDir + name + ttlExt;
    if (!fs::exists(expectedPath))
       throw std::runtime_error("LOAD: expected RDF file at '" + expectedPath + "' (derived from GRAPH <" + graphIri + ">) but it was not found");
 
-   if (auto existing = session->getCatalog()->getTypedEntry<RDFGraphCatalogEntry>(name)) {
+   auto& catalog = *state.session->getCatalog();
+   if (auto existing = catalog.getTypedEntry<RDFGraphCatalogEntry>(name)) {
       auto entry = existing.value();
       if (entry->getFormat() != RDFFileFormat::BINARY) entry->ensureFullyLoaded();
-      loadedGraphs.push_back({entry->getName(), &entry->getGraph()});
+      state.loadedGraphs.push_back({entry->getName(), &entry->getGraph()});
       std::cout << "Graph <" << graphIri << "> already loaded as '" << name << "'." << std::endl;
       return;
    }
 
    CreateRdfGraphDef def{name, rdf4cpp::IRI{graphIri}, RDFFileFormat::TURTLE};
    auto graphEntry = RDFGraphCatalogEntry::createFromCreateRdfGraphDef(def);
-   session->getCatalog()->insertEntry(graphEntry);
+   catalog.insertEntry(graphEntry);
    graphEntry->ensureFullyLoaded();
-   loadedGraphs.push_back({graphEntry->getName(), &graphEntry->getGraph()});
+   state.loadedGraphs.push_back({graphEntry->getName(), &graphEntry->getGraph()});
    std::cout << "Loaded <" << sourceIri << "> into graph '" << name << "' (<" << graphIri << ">)." << std::endl;
 }
 
@@ -141,61 +147,81 @@ bool hasSettingsDirective(const std::string& stmt, const std::string& localName,
    return std::regex_search(stmt, re);
 }
 
-struct SettingsDirectives { bool persists{false}; bool initialize{false}; };
+std::optional<std::string> settingsDirectiveIri(const std::string& stmt, const std::string& localName, const std::optional<std::string>& label) {
+   std::string pattern = "<" + settingsNamespace() + localName + ">\\s*<([^>]+)>";
+   if (label) pattern += "|\\b" + *label + ":" + localName + "\\s*<([^>]+)>";
+   std::regex re(pattern, std::regex::icase);
+   std::smatch m;
+   if (!std::regex_search(stmt, m, re)) return std::nullopt;
+   return m[1].matched ? m[1].str() : m[2].str();
+}
+
+struct SettingsDirectives {
+   bool persists{false};
+   bool initialize{false};
+   std::optional<std::string> defaultGraph;
+};
 
 std::optional<SettingsDirectives> detectSettingsDirectives(const std::string& stmt) {
    std::optional<std::string> label;
    for (auto& [l, iri] : extractPrefixes(stmt)) {
       if (iri == settingsNamespace()) { label = l; break; }
    }
-   SettingsDirectives directives{hasSettingsDirective(stmt, "persists", label), hasSettingsDirective(stmt, "initialize", label)};
-   if (!directives.persists && !directives.initialize) return std::nullopt;
+   SettingsDirectives directives{
+      hasSettingsDirective(stmt, "persists", label),
+      hasSettingsDirective(stmt, "initialize", label),
+      settingsDirectiveIri(stmt, "defaultGraph", label)};
+   if (!directives.persists && !directives.initialize && !directives.defaultGraph) return std::nullopt;
    return directives;
 }
 
-void handleSettings(std::shared_ptr<runtime::Session>& session, const std::string& dbDir, LoadedGraphs& loadedGraphs, const SettingsDirectives& directives) {
+void handleSettings(ToolState& state, const SettingsDirectives& directives) {
    if (directives.initialize) {
-      auto indexEntry = GraphNodeIndexCatalogEntry::build(loadedGraphs);
-      session->getCatalog()->insertEntry(indexEntry, /*replace=*/true);
-      std::cout << "Rebuilt graph node index over " << loadedGraphs.size() << " graph(s)." << std::endl;
+      auto indexEntry = GraphNodeIndexCatalogEntry::build(state.loadedGraphs);
+      state.session->getCatalog()->insertEntry(indexEntry, /*replace=*/true);
+      std::cout << "Rebuilt graph node index over " << state.loadedGraphs.size() << " graph(s)." << std::endl;
    }
    if (directives.persists) {
-      session->getCatalog()->setShouldPersist(true);
-      session->getCatalog()->persist();
+      state.session->getCatalog()->setShouldPersist(true);
+      state.session->getCatalog()->persist();
       std::cout << "Persisted catalog to disk." << std::endl;
       std::vector<std::string> names;
-      for (auto& [name, graph] : loadedGraphs) names.push_back(name);
-      session = runtime::Session::createSession(dbDir, /*eagerLoading=*/true);
-      loadedGraphs.clear();
+      for (auto& [name, graph] : state.loadedGraphs) names.push_back(name);
+      state.session = runtime::Session::createSession(state.dbDir, /*eagerLoading=*/true);
+      state.loadedGraphs.clear();
       for (auto& name : names) {
-         if (auto entry = session->getCatalog()->getTypedEntry<RDFGraphCatalogEntry>(name))
-            loadedGraphs.push_back({name, &entry.value()->getGraph()});
+         if (auto entry = state.session->getCatalog()->getTypedEntry<RDFGraphCatalogEntry>(name))
+            state.loadedGraphs.push_back({name, &entry.value()->getGraph()});
       }
+   }
+   if (directives.defaultGraph) {
+      state.defaultGraph = *directives.defaultGraph;
+      std::cout << "Default graph set to <" << state.defaultGraph << ">." << std::endl;
    }
 }
 
-void handleQuery(runtime::Session& session, const std::string& stmt) {
+void handleQuery(ToolState& state, const std::string& stmt) {
    std::string mlirText;
    try {
-      mlirText = translateSparqlToMLIRString(stmt);
+      mlirText = translateSparqlToMLIRString(stmt, state.defaultGraph);
    } catch (const std::exception& e) {
       std::cerr << "Error translating SPARQL: " << e.what() << std::endl;
       return;
    }
    auto queryExecutionConfig = execution::createQueryExecutionConfig(execution::getExecutionMode(), false);
-   auto executer = execution::QueryExecuter::createDefaultExecuter(std::move(queryExecutionConfig), session);
+   auto executer = execution::QueryExecuter::createDefaultExecuter(std::move(queryExecutionConfig), *state.session);
    executer->fromData(mlirText);
    scheduler::awaitEntryTask(std::make_unique<execution::QueryExecutionTask>(std::move(executer)));
 }
 
-void handleStatement(std::shared_ptr<runtime::Session>& session, const std::string& dbDir, LoadedGraphs& loadedGraphs, const std::string& rawStmt) {
+void handleStatement(ToolState& state, const std::string& rawStmt) {
    std::string stmt = trim(rawStmt);
    if (stmt.empty()) return;
 
    std::smatch m;
    if (std::regex_match(stmt, m, loadStatementRegex())) {
       try {
-         handleLoad(session, loadedGraphs, m[1].str(), m[2].str());
+         handleLoad(state, m[1].str(), m[2].str());
       } catch (const std::exception& e) {
          std::cerr << "Error: " << e.what() << std::endl;
       }
@@ -204,14 +230,14 @@ void handleStatement(std::shared_ptr<runtime::Session>& session, const std::stri
 
    if (auto directives = detectSettingsDirectives(stmt)) {
       try {
-         handleSettings(session, dbDir, loadedGraphs, *directives);
+         handleSettings(state, *directives);
       } catch (const std::exception& e) {
          std::cerr << "Error: " << e.what() << std::endl;
       }
       return;
    }
 
-   handleQuery(*session, stmt);
+   handleQuery(state, stmt);
 }
 
 } // namespace
@@ -225,13 +251,12 @@ int main(int argc, char** argv) {
       std::cerr << "USAGE: sparql database" << std::endl;
       return 1;
    }
-   std::string dbDir = argv[1];
-   auto session = runtime::Session::createSession(dbDir, true);
+   ToolState state;
+   state.dbDir = argv[1];
+   state.session = runtime::Session::createSession(state.dbDir, true);
 
    compiler::support::eval::init();
    auto scheduler = scheduler::startScheduler();
-
-   LoadedGraphs loadedGraphs;
 
    linenoiseSetMultiLine(true);
    StatementAccumulator acc;
@@ -251,7 +276,7 @@ int main(int argc, char** argv) {
       auto statements = acc.feed(line + "\n");
       for (auto& stmt : statements) {
          linenoiseHistoryAdd(stmt.c_str());
-         handleStatement(session, dbDir, loadedGraphs, stmt);
+         handleStatement(state, stmt);
       }
    }
    if (acc.hasPending()) std::cerr << "Warning: trailing input not terminated by ';', ignoring it." << std::endl;

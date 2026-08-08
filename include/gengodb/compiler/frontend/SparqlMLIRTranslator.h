@@ -731,7 +731,11 @@ class Parser {
    public:
    explicit Parser(std::string input) : tz(std::move(input)) { advance(); }
 
-   sparql::Query parse() {
+   // `defaultGraph`, if non-empty, is the graph URI implicitly assigned to
+   // every triple/group not already inside an explicit GRAPH clause — lets a
+   // caller (e.g. the sparql CLI's "db:defaultGraph" directive) query a
+   // single graph without wrapping every statement in "GRAPH <iri> { ... }".
+   sparql::Query parse(const std::string& defaultGraph = "") {
       sparql::Query q;
 
       // Prologue: PREFIX / BASE
@@ -775,7 +779,7 @@ class Parser {
       while (kw("FROM")) { advance(); if (kw("NAMED")) advance(); if (is(TK::IRI) || is(TK::PrefixedName)) advance(); }
 
       if (kw("WHERE")) advance();
-      parseGroup(q.patterns, q.prefixes, "");
+      parseGroup(q.patterns, q.prefixes, defaultGraph);
 
       // Solution modifiers. ORDER BY is mapped onto relalg.sort (see
       // Translator::translate) -- each order condition is either a bare
@@ -1519,7 +1523,10 @@ inline void registerSparqlDialects(mlir::MLIRContext& context) {
 }
 
 // Translate a SPARQL query string to an MLIR module, printing it to `out`.
-inline void translateSparqlToMLIR(const std::string& sparqlQuery, llvm::raw_ostream& out) {
+// `defaultGraph`, if non-empty, is forwarded to Parser::parse (see its doc
+// comment) -- the graph implicitly used by triples outside any explicit
+// GRAPH clause.
+inline void translateSparqlToMLIR(const std::string& sparqlQuery, llvm::raw_ostream& out, const std::string& defaultGraph = "") {
    mlir::MLIRContext context;
    registerSparqlDialects(context);
 
@@ -1533,7 +1540,7 @@ inline void translateSparqlToMLIR(const std::string& sparqlQuery, llvm::raw_ostr
       builder.setInsertionPointToStart(queryBlock);
 
       Parser parser(sparqlQuery);
-      sparql::Query query = parser.parse();
+      sparql::Query query = parser.parse(defaultGraph);
 
       Translator translator(&context, builder);
       translator.translate(query);
@@ -1553,10 +1560,10 @@ inline void translateSparqlToMLIR(const std::string& sparqlQuery, llvm::raw_ostr
 }
 
 // Convenience overload: returns the MLIR module as a string.
-inline std::string translateSparqlToMLIRString(const std::string& sparqlQuery) {
+inline std::string translateSparqlToMLIRString(const std::string& sparqlQuery, const std::string& defaultGraph = "") {
    std::string result;
    llvm::raw_string_ostream os(result);
-   translateSparqlToMLIR(sparqlQuery, os);
+   translateSparqlToMLIR(sparqlQuery, os, defaultGraph);
    return result;
 }
 
