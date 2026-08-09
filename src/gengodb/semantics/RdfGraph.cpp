@@ -192,7 +192,7 @@ void RdfGraph::loadTriples() {
     if (!loadedFromRdfFile) {
         return;
     }
-    RDFFileParser parser(dbDir + fileName + getRDFFileExtension(rdfParseFlags), rdfParseFlags);
+    RDFFileParser parser(dbDir + sourceFileName + getRDFFileExtension(rdfParseFlags), rdfParseFlags);
     for (const auto &v : parser) {
         if (!v.has_value())
             break;
@@ -200,9 +200,9 @@ void RdfGraph::loadTriples() {
         this->addTriple(quad.subject(), quad.predicate(), quad.object());
     }
 }
-std::unique_ptr<RdfGraph> RdfGraph::create(const std::string& name, const IRI& iri) {
+std::unique_ptr<RdfGraph> RdfGraph::create(const std::string& name, const IRI& iri, const std::string& sourceFileName) {
     auto storage = runtime::GengoDBGraph::create(name);
-    auto rdfGraph = std::make_unique<RdfGraph>(iri.null() ? extra_namespaces().GENGODB + name : iri, std::move(storage), name);
+    auto rdfGraph = std::make_unique<RdfGraph>(iri.null() ? extra_namespaces().GENGODB + name : iri, std::move(storage), name, sourceFileName);
     return rdfGraph;
 }
 void RdfGraph::flush() {
@@ -213,7 +213,7 @@ void RdfGraph::ensureLoaded() {
         loaded = true;
         bool loadedFromCache = false;
         if (loadedFromRdfFile) {
-            const std::string sourcePath = dbDir + fileName + getRDFFileExtension(rdfParseFlags);
+            const std::string sourcePath = dbDir + sourceFileName + getRDFFileExtension(rdfParseFlags);
             if (storage->hasFreshCache(sourcePath)) {
                 loadedFromCache = true;
             } 
@@ -307,13 +307,15 @@ void RdfGraph::serialize(lingodb::utility::Serializer& serializer) const {
     serializer.writeProperty(2, storage);
     serializer.writeProperty(3, fileName);
     serializer.writeProperty(4, nodes);
+    serializer.writeProperty(5, sourceFileName);
 }
 std::unique_ptr<RdfGraph> RdfGraph::deserialize(lingodb::utility::Deserializer& deserializer) {
     auto iri = deserializer.readProperty<std::string>(1);
     auto storage = deserializer.readProperty<std::unique_ptr<lingodb::runtime::GengoDBGraph>>(2);
     auto fileName = deserializer.readProperty<std::string>(3);
     auto nodes = deserializer.readProperty<std::unique_ptr<NodeIdDict>>(4);
-    auto graph = std::make_unique<RdfGraph>(IRI{iri}, std::move(storage), fileName);
+    auto sourceFileName = deserializer.readProperty<std::string>(5);
+    auto graph = std::make_unique<RdfGraph>(IRI{iri}, std::move(storage), fileName, sourceFileName);
     graph->nodes = std::move(nodes);
     return graph;
 }

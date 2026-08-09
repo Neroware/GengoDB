@@ -1,7 +1,7 @@
 module  {
     func.func @main() {
         %res = subop.execution_group (){
-            %0 = gpm.named_graph column : @graphs::@ref({type = !gpm.graph_ref<"coffee", "file://resources/ttl/coffee.ttl#rdf">})
+            %0 = gpm.named_graph column : @graphs::@ref({type = !gpm.graph_ref<"coffee", "file://resources/ttl/coffee/coffee.ttl#rdf">})
             %bgp = gpm.basic_graph_pattern %0 (%arg : !tuples.tuplestream){
                 %1 = gpm.triple_pattern %arg @graphs::@ref(id{"http://example.org/bob"}, ?{@vars::@what({type = !gpm.variable_binding})}, id{"http://example.org/coffee"})
                 %2 = gpm.triple_pattern %1 @graphs::@ref(?{@vars::@what}, id{"http://example.org/type"}, id{"http://example.org/relation"})

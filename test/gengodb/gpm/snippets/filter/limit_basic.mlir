@@ -1,7 +1,7 @@
 module {
   func.func @main() {
     %0 = relalg.query (){
-      %g0 = gpm.named_graph column : @graphs::@ref({type = !gpm.graph_ref<"coffee", "file://resources/ttl/coffee.ttl#rdf">})
+      %g0 = gpm.named_graph column : @graphs::@ref({type = !gpm.graph_ref<"coffee", "file://resources/ttl/coffee/coffee.ttl#rdf">})
       %gpm0 = gpm.basic_graph_pattern %g0 (%arg0: !tuples.tuplestream){
         %4 = gpm.triple_pattern %arg0 @graphs::@ref(?{@vars::@who({type = !gpm.variable_binding})}, id{"http://example.org/drinks"}, ?{@vars::@what({type = !gpm.variable_binding})})
         tuples.return %4 : !tuples.tuplestream

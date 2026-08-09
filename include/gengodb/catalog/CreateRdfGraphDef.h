@@ -11,6 +11,7 @@ struct CreateRdfGraphDef {
     std::string name;
     rdf4cpp::IRI iri;
     semantics::RDFFileFormat format;
+    std::string sourceFileName;
 
     void serialize(utility::Serializer& serializer) const;
     static CreateRdfGraphDef deserialize(utility::Deserializer& deserializer);

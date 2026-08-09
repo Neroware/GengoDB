@@ -2,7 +2,7 @@ PREFIX ex: <http://example.org/>
 
 SELECT ?a ?b ?c
 WHERE {
-    GRAPH <file://resources/ttl/coffee.ttl#rdf> {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
         ?a ex:rel ?b.
         ?b ex:rel ?c.
         ?c ex:rel ?a.

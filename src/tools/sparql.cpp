@@ -105,10 +105,11 @@ void handleLoad(ToolState& state, const std::string& sourceIri, const std::strin
       throw std::runtime_error("LOAD: only file:// source IRIs are supported for now: <" + sourceIri + ">");
 
    std::string name = uriAlias(graphIri);
+   std::string filename = uriAlias(sourceIri);
 
-   std::string expectedPath = state.dbDir + name + ttlExt;
+   std::string expectedPath = state.dbDir + filename + ttlExt;
    if (!fs::exists(expectedPath))
-      throw std::runtime_error("LOAD: expected RDF file at '" + expectedPath + "' (derived from GRAPH <" + graphIri + ">) but it was not found");
+      throw std::runtime_error("LOAD: expected RDF file at '" + expectedPath + "' (derived from GRAPH <" + sourceIri + ">) but it was not found");
 
    auto& catalog = *state.session->getCatalog();
    if (auto existing = catalog.getTypedEntry<RDFGraphCatalogEntry>(name)) {
@@ -119,7 +120,7 @@ void handleLoad(ToolState& state, const std::string& sourceIri, const std::strin
       return;
    }
 
-   CreateRdfGraphDef def{name, rdf4cpp::IRI{graphIri}, RDFFileFormat::TURTLE};
+   CreateRdfGraphDef def{name, rdf4cpp::IRI{graphIri}, RDFFileFormat::TURTLE, filename};
    auto graphEntry = RDFGraphCatalogEntry::createFromCreateRdfGraphDef(def);
    catalog.insertEntry(graphEntry);
    graphEntry->ensureFullyLoaded();

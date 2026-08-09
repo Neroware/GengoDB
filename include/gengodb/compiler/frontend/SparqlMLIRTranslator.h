@@ -841,7 +841,7 @@ using namespace lingodb::compiler::dialect;
 using namespace gengodb::compiler::dialect;
 
 // Produce a short, MLIR-identifier-safe alias from a URI using the filename.
-// file://resources/ttl/coffee.ttl#rdf -> "coffee"
+// file://resources/ttl/coffee/coffee.ttl#rdf -> "coffee"
 static std::string uriAlias(const std::string& uri) {
    // Strip fragment
    std::string name = uri;
@@ -1329,7 +1329,7 @@ class Translator {
          if (elemPtr->kind() == sparql::PatternElement::Kind::Graph) {
             const auto& gp = static_cast<const sparql::GraphPattern&>(*elemPtr);
             if (gp.graphUri.empty())
-               throw std::runtime_error("Triple patterns without an explicit GRAPH clause are not yet supported");
+               throw std::runtime_error("Triple patterns without an explicit GRAPH clause are not supported. Did you forget to define a default graph?");
 
             auto [alias, graphStream] = namedGraph(gp.graphUri);
             auto graphRef = colMgr.createRef("graphs", alias);
@@ -1559,8 +1559,10 @@ inline void translateSparqlToMLIR(const std::string& sparqlQuery, llvm::raw_ostr
    moduleOp.erase();
 }
 
+constexpr const char* DEFAULT_RDF_GRAPH = "gengodb://sparql/settings/defaultGraph#rdf";
+
 // Convenience overload: returns the MLIR module as a string.
-inline std::string translateSparqlToMLIRString(const std::string& sparqlQuery, const std::string& defaultGraph = "") {
+inline std::string translateSparqlToMLIRString(const std::string& sparqlQuery, const std::string& defaultGraph = DEFAULT_RDF_GRAPH) {
    std::string result;
    llvm::raw_string_ostream os(result);
    translateSparqlToMLIR(sparqlQuery, os, defaultGraph);
