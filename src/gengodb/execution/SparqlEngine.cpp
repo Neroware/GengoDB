@@ -1,4 +1,4 @@
-#include "gengodb/engine/SparqlEngine.h"
+#include "gengodb/execution/SparqlEngine.h"
 
 #include "lingodb/execution/Execution.h"
 #include "lingodb/scheduler/Scheduler.h"
@@ -19,7 +19,7 @@ using namespace lingodb;
 using namespace gengodb::catalog;
 using namespace gengodb::semantics;
 
-namespace gengodb::engine {
+namespace gengodb::execution {
 
 namespace {
 namespace fs = std::filesystem;
@@ -182,11 +182,11 @@ StatementKind classifyStatement(const std::string& rawStmt) {
    return StatementKind::Query;
 }
 
-std::shared_ptr<execution::Error> handleQuery(
+std::shared_ptr<lingodb::execution::Error> handleQuery(
    EngineState& state,
    const std::string& stmt,
    std::optional<std::string> defaultGraphOverride,
-   std::unique_ptr<execution::ResultProcessor> resultProcessor,
+   std::unique_ptr<lingodb::execution::ResultProcessor> resultProcessor,
    bool exitOnError,
    bool throwOnError) {
    std::string mlirText;
@@ -197,24 +197,24 @@ std::shared_ptr<execution::Error> handleQuery(
       std::cerr << "Error translating SPARQL: " << e.what() << std::endl;
       return nullptr;
    }
-   auto queryExecutionConfig = execution::createQueryExecutionConfig(execution::getExecutionMode(), false);
+   auto queryExecutionConfig = lingodb::execution::createQueryExecutionConfig(lingodb::execution::getExecutionMode(), false);
    if (resultProcessor) queryExecutionConfig->resultProcessor = std::move(resultProcessor);
-   auto executer = execution::QueryExecuter::createDefaultExecuter(std::move(queryExecutionConfig), *state.session);
+   auto executer = lingodb::execution::QueryExecuter::createDefaultExecuter(std::move(queryExecutionConfig), *state.session);
    executer->fromData(mlirText);
    executer->setExitOnError(exitOnError);
-   std::shared_ptr<execution::Error> errorPtr = executer->getError();
-   scheduler::awaitEntryTask(std::make_unique<execution::QueryExecutionTask>(std::move(executer)));
+   std::shared_ptr<lingodb::execution::Error> errorPtr = executer->getError();
+   scheduler::awaitEntryTask(std::make_unique<lingodb::execution::QueryExecutionTask>(std::move(executer)));
    if (throwOnError && errorPtr && *errorPtr) {
       throw std::runtime_error(errorPtr->getMessage());
    }
    return errorPtr;
 }
 
-std::shared_ptr<execution::Error> handleStatement(
+std::shared_ptr<lingodb::execution::Error> handleStatement(
    EngineState& state,
    const std::string& rawStmt,
    std::optional<std::string> defaultGraphOverride,
-   std::unique_ptr<execution::ResultProcessor> resultProcessor,
+   std::unique_ptr<lingodb::execution::ResultProcessor> resultProcessor,
    bool exitOnError,
    bool throwOnError) {
    std::string stmt = trim(rawStmt);
@@ -244,4 +244,4 @@ std::shared_ptr<execution::Error> handleStatement(
    return handleQuery(state, stmt, defaultGraphOverride, std::move(resultProcessor), exitOnError, throwOnError);
 }
 
-} // namespace gengodb::engine
+} // namespace gengodb::execution

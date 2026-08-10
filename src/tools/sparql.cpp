@@ -4,13 +4,13 @@
 #include "lingodb/compiler/mlir-support/eval.h"
 #include "lingodb/scheduler/Scheduler.h"
 
-#include "gengodb/engine/SparqlEngine.h"
+#include "gengodb/execution/SparqlEngine.h"
 
 #include <iostream>
 #include <string>
 
 using namespace lingodb;
-using namespace gengodb::engine;
+using namespace gengodb::execution;
 
 int main(int argc, char** argv) {
    if (argc == 2 && std::string(argv[1]) == "--features") {

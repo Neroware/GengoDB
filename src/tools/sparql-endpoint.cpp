@@ -5,14 +5,10 @@
 //   POST /sparql-update  - LOAD / settings-directive statements (see below)
 //   GET|POST /sparql     - SPARQL SELECT queries
 //
-// Known, permanent limitation: the compiler pipeline (StringifyVariants pass)
-// stringifies every bound RDF term before it reaches the result table, but the
-// stringified form does preserve enough syntax to recover term *kind*: IRIs
-// are rendered as "<iri>" and blank nodes as "_:label" (see
-// classifyTerm() below), so the SPARQL JSON writer uses that convention to set
-// "type": "uri"/"bnode"/"literal". Datatype IRIs and language tags are NOT
-// preserved anywhere in the pipeline and cannot be recovered here - the JSON
-// output is best-effort, not spec-complete.
+// The SPARQL JSON writer parses GengoDB output, which is a string column table,
+// back apart to set "type": "uri"/"bnode"/"literal" plus, for literals, the
+// optional "datatype"/"xml:lang" fields per the SPARQL 1.1 Query Results
+// JSON Format spec.
 
 #include "features.h"
 
@@ -20,7 +16,7 @@
 #include "lingodb/execution/ResultProcessing.h"
 #include "lingodb/scheduler/Scheduler.h"
 
-#include "gengodb/engine/SparqlEngine.h"
+#include "gengodb/execution/SparqlEngine.h"
 
 #include <boost/asio.hpp>
 #include <boost/beast/core.hpp>
@@ -39,6 +35,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -48,7 +45,7 @@ namespace asio = boost::asio;
 using tcp = asio::ip::tcp;
 
 using namespace lingodb;
-using namespace gengodb::engine;
+using namespace gengodb::execution;
 
 namespace {
 
@@ -228,14 +225,52 @@ std::string toTsv(const TableRows& t) {
 struct TermInfo {
    std::string type;
    std::string value;
+   std::optional<std::string> datatype;
+   std::optional<std::string> lang;
 };
+
+std::string unescapeLexicalForm(std::string_view escaped) {
+   std::string out;
+   out.reserve(escaped.size());
+   for (size_t i = 0; i < escaped.size(); i++) {
+      if (escaped[i] == '\\' && i + 1 < escaped.size()) {
+         switch (escaped[i + 1]) {
+            case '"': out += '"'; i++; continue;
+            case '\\': out += '\\'; i++; continue;
+            case 'n': out += '\n'; i++; continue;
+            case 'r': out += '\r'; i++; continue;
+            default: break;
+         }
+      }
+      out += escaped[i];
+   }
+   return out;
+}
 
 TermInfo classifyTerm(const std::string& lexical) {
    if (lexical.size() >= 2 && lexical.front() == '<' && lexical.back() == '>')
-      return {"uri", lexical.substr(1, lexical.size() - 2)};
+      return {"uri", lexical.substr(1, lexical.size() - 2), std::nullopt, std::nullopt};
    if (lexical.rfind("_:", 0) == 0)
-      return {"bnode", lexical.substr(2)};
-   return {"literal", lexical};
+      return {"bnode", lexical.substr(2), std::nullopt, std::nullopt};
+   if (!lexical.empty() && lexical.front() == '"') {
+      size_t i = 1;
+      while (i < lexical.size() && lexical[i] != '"') {
+         if (lexical[i] == '\\' && i + 1 < lexical.size()) i++;
+         i++;
+      }
+      if (i < lexical.size()) {
+         std::string value = unescapeLexicalForm(std::string_view(lexical).substr(1, i - 1));
+         std::string_view suffix(lexical.data() + i + 1, lexical.size() - i - 1);
+         if (!suffix.empty() && suffix.front() == '@') {
+            return {"literal", value, std::nullopt, std::string(suffix.substr(1))};
+         }
+         if (suffix.size() >= 4 && suffix.rfind("^^<", 0) == 0 && suffix.back() == '>') {
+            return {"literal", value, std::string(suffix.substr(3, suffix.size() - 4)), std::nullopt};
+         }
+         return {"literal", value, std::nullopt, std::nullopt};
+      }
+   }
+   return {"literal", lexical, std::nullopt, std::nullopt};
 }
 
 std::string toSparqlJson(const TableRows& t) {
@@ -245,11 +280,13 @@ std::string toSparqlJson(const TableRows& t) {
    for (auto& row : t.rows) {
       nlohmann::json binding = nlohmann::json::object();
       for (size_t i = 0; i < t.vars.size() && i < row.size(); i++) {
-         if (!row[i]) continue; // unbound variable: omitted, per the SPARQL Results JSON spec
+         if (!row[i]) continue;
          auto term = classifyTerm(*row[i]);
          nlohmann::json b;
          b["type"] = term.type;
          b["value"] = term.value;
+         if (term.datatype) b["datatype"] = *term.datatype;
+         if (term.lang) b["xml:lang"] = *term.lang;
          binding[t.vars[i]] = std::move(b);
       }
       j["results"]["bindings"].push_back(std::move(binding));
