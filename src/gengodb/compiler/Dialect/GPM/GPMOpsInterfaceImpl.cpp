@@ -1,4 +1,5 @@
 #include "lingodb/compiler/Dialect/DB/IR/DBOps.h"
+#include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgOps.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
 
 #include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
@@ -95,7 +96,8 @@ inline bool isAllowedGraphPatternBodyOp(const mlir::Operation& nested) {
     return mlir::isa<gengodb::compiler::dialect::gpm::TriplePatternOp,
         gengodb::compiler::dialect::gpm::BasicGraphPatternOp,
         gengodb::compiler::dialect::gpm::OptionalGraphPatternOp,
-        gengodb::compiler::dialect::gpm::BagOp, 
+        gengodb::compiler::dialect::gpm::BagOp,
+        relalg::SelectionOp,
         tuples::ReturnOp>(nested);
 }
 
@@ -103,7 +105,7 @@ mlir::LogicalResult verifyGraphPatternBody(mlir::Operation* op) {
     auto patternOp = mlir::cast<GraphPatternOp>(op);
     bool valid = std::all_of(patternOp.getPattern().getOps().begin(), patternOp.getPattern().getOps().end(), isAllowedGraphPatternBodyOp);
     if (!valid) {
-        return op->emitOpError("A graph pattern must only contain triples or nested graph patterns.");
+        return op->emitOpError("A graph pattern must only contain triples, nested graph patterns, or FILTER expressions.");
     }
     return mlir::success();
 }

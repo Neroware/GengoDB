@@ -101,6 +101,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       } 
       else {
          auto* savedInsertPoint = insertPoint;
+         if (isNestedInGraphPattern(op)) op->moveBefore(insertPoint);
          insertPoint = op;
          bool readsStream = false;
          bool readsOnlySeeds = true;
@@ -122,6 +123,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          signalPassFailure();
          return result;
       }
+      rewritten[v] = result;
       rewritten[result] = result;
       op->getResult(0).replaceAllUsesWith(result);
       op->erase();
@@ -347,7 +349,10 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          auto join = builder.create<relalg::OuterJoinOp>(loc, streamType, accumulator, elementStream, mapping);
          join.initPredicate();
          addSharedVariablePredicate(join, accumulator, elementStream, loc);
-         remapColumnsEverywhere(join.getOperation(), nullableColMap);
+         llvm::SmallPtrSet<mlir::Operation*, 32> preMergeOps;
+         collectSubtreeOps(accumulator, preMergeOps);
+         collectSubtreeOps(elementStream, preMergeOps);
+         remapColumnsEverywhere(join.getOperation(), nullableColMap, &preMergeOps);
          return join.getResult();
       }
       if (elementKind == gpm::PatternKind::minus) {
