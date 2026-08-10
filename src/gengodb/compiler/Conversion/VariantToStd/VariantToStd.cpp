@@ -352,13 +352,38 @@ Value computeLexicalForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value ta
     return guarded.getResult(0);
 }
 
+Value computeFullForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value tag, Value ref) {
+    auto tp = computeTagPredicates(b, loc, tag);
+    Value payload = b.create<util::PtrToIntOp>(loc, b.getI64Type(), ref);
+    auto guarded = b.create<scf::IfOp>(
+        loc, tp.isUnspecified,
+        [&](OpBuilder& b1, Location l1) {
+            Value empty = b1.create<util::CreateConstVarLen>(l1, getVarlen32Type(ctxt), b1.getStringAttr(""));
+            b1.create<scf::YieldOp>(l1, empty);
+        },
+        [&](OpBuilder& b1, Location l1) {
+            auto result = b1.create<scf::IfOp>(
+                l1, tp.isRDFNode,
+                [&](OpBuilder& b2, Location l2) {
+                    b2.create<scf::YieldOp>(l2, rt::VariantRuntime::toStringNodeRef(b2, l2)({ref})[0]);
+                },
+                [&](OpBuilder& b2, Location l2) {
+                    b2.create<scf::YieldOp>(l2, rt::VariantRuntime::toStringFull(b2, l2)({payload, tag, ref})[0]);
+                });
+            b1.create<scf::YieldOp>(l1, result.getResult(0));
+        });
+    return guarded.getResult(0);
+}
+
 class ToStringOpLowering : public OpConversionPattern<variant::ToStringOp> {
     public:
     using OpConversionPattern<variant::ToStringOp>::OpConversionPattern;
     LogicalResult matchAndRewrite(variant::ToStringOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
         auto loc = op->getLoc();
         auto [tag, ref] = unpackVariant(rewriter, loc, adaptor.getVal());
-        Value lex = computeLexicalForm(rewriter, loc, getContext(), tag, ref);
+        Value lex = op->hasAttr("full")
+            ? computeFullForm(rewriter, loc, getContext(), tag, ref)
+            : computeLexicalForm(rewriter, loc, getContext(), tag, ref);
         Value asDbString = rewriter.create<mlir::UnrealizedConversionCastOp>(loc, op.getResult().getType(), lex).getResult(0);
         rewriter.replaceOp(op, asDbString);
         return success();

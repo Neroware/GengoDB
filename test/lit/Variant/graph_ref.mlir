@@ -1,4 +1,4 @@
-// RUN: run-mlir %s %S/../../../resources/ttl | FileCheck %s
+// RUN: run-mlir %s %S/../../../resources/ttl/coffee | FileCheck %s
 
 // `variant.create_node_ref` against a *real*, RDF-catalog-backed graph
 // (loaded from resources/ttl/coffee.ttl, the same fixture the GPM/SPARQL

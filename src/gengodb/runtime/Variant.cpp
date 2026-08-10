@@ -8,6 +8,7 @@
 
 #include <cstring>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 
@@ -317,6 +318,14 @@ VarLen32 VariantRuntime::toStringBlobLiteral(PropertyGraph::NodeEntry* ref) {
     auto lit = reconstructBlobLiteral(ref);
     if (!lit.has_value()) return emptyVarLen32();
     return VarLen32::fromString(lit->lexical_form().into_owned());
+}
+
+VarLen32 VariantRuntime::toStringFull(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref) {
+    auto lit = reconstructLiteral(payload, tag, ref);
+    if (!lit.has_value()) return emptyVarLen32();
+    std::ostringstream os;
+    os << *lit;
+    return VarLen32::fromString(os.str());
 }
 
 int8_t VariantRuntime::compareNodeRefRef(PropertyGraph::NodeEntry* lhs, PropertyGraph::NodeEntry* rhs, int32_t predicate) {

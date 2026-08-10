@@ -38,6 +38,15 @@ module {
         //CHECK: string("passthrough")
         db.runtime_call "DumpValue" (%sStr) : (!db.string) -> ()
 
+        // The "full" UnitAttr requests the full literal form
+        %siFull = variant.to_string %vi -> !db.string {full}
+        //CHECK: string(""42"^^<http://www.w3.org/2001/XMLSchema#long>")
+        db.runtime_call "DumpValue" (%siFull) : (!db.string) -> ()
+
+        %sStrFull = variant.to_string %vStr -> !db.string {full}
+        //CHECK: string(""passthrough"")
+        db.runtime_call "DumpValue" (%sStrFull) : (!db.string) -> ()
+
         return
     }
 }

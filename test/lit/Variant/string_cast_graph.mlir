@@ -1,4 +1,4 @@
-// RUN: run-mlir %s %S/../../../resources/ttl | FileCheck %s
+// RUN: run-mlir %s %S/../../../resources/ttl/coffee | FileCheck %s
 
 module {
     func.func @main() {
