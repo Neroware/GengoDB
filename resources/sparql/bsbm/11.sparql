@@ -1,0 +1,12 @@
+PREFIX bsbm-inst: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/>
+
+SELECT ?property ?hasValue ?isValueOf
+WHERE {
+    {
+        bsbm-inst:Offer4711 ?property ?hasValue
+    }
+    UNION
+    {
+        ?isValueOf ?property bsbm-inst:Offer4711
+    }
+}
