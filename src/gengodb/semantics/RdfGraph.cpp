@@ -4,6 +4,7 @@
 
 #include <rdf4cpp/Graph.hpp>
 #include <rdf4cpp/datatypes/xsd/time/Date.hpp>
+#include <rdf4cpp/datatypes/xsd/time/DateTime.hpp>
 #include <rdf4cpp/parser/RDFFileParser.hpp>
 
 #include <cstdio>
@@ -63,6 +64,10 @@ inline int32_t NodeHelper::resolve(const Literal& l) {
                 fixedI64 = RdfDatatypeFixedHelper::packDate(fixedHelper.extract<std::pair<rdf4cpp::YearMonthDay, rdf4cpp::OptionalTimezone>>(anyValue));
                 data.assign(reinterpret_cast<const char*>(&fixedI64), sizeof(fixedI64));
                 break;
+            case RdfDatatypeFixedHelper::Kind::DateTime:
+                fixedI64 = RdfDatatypeFixedHelper::packDateTime(fixedHelper.extract<std::pair<rdf4cpp::TimePoint, rdf4cpp::OptionalTimezone>>(anyValue));
+                data.assign(reinterpret_cast<const char*>(&fixedI64), sizeof(fixedI64));
+                break;
         }
     }
     else {
@@ -91,7 +96,8 @@ inline int32_t NodeHelper::resolve(const Literal& l) {
         auto& propData = g->storage->storage().getPropData();
         switch (*fixedKind) {
             case RdfDatatypeFixedHelper::Kind::Int64:
-            case RdfDatatypeFixedHelper::Kind::Date: {
+            case RdfDatatypeFixedHelper::Kind::Date:
+            case RdfDatatypeFixedHelper::Kind::DateTime: {
                 const int32_t idx = propData.add_i64(fixedI64);
                 value = static_cast<uint32_t>(idx);
                 persistedData = reinterpret_cast<const char*>(propData.get_i64_ptr(idx));
@@ -150,6 +156,7 @@ LiteralKey NodeHelper::literalKeyFor(int32_t id) const {
         switch (*fixedKind) {
             case RdfDatatypeFixedHelper::Kind::Int64:
             case RdfDatatypeFixedHelper::Kind::Date:
+            case RdfDatatypeFixedHelper::Kind::DateTime:
                 data = reinterpret_cast<const char*>(propData.get_i64_ptr(idx));
                 len = sizeof(int64_t);
                 break;
@@ -287,6 +294,9 @@ Literal RdfGraph::getLiteral(int32_t id) const {
             }
             case RdfDatatypeFixedHelper::Kind::Date:
                 lex = std::string(Literal::make_typed_from_value<datatypes::xsd::Date>(RdfDatatypeFixedHelper::unpackDate(propData.get_i64(idx))).lexical_form());
+                break;
+            case RdfDatatypeFixedHelper::Kind::DateTime:
+                lex = std::string(Literal::make_typed_from_value<datatypes::xsd::DateTime>(RdfDatatypeFixedHelper::unpackDateTime(propData.get_i64(idx))).lexical_form());
                 break;
         }
         return Literal::make_typed(lex, datatype);

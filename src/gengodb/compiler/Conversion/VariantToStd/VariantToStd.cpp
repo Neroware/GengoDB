@@ -202,9 +202,15 @@ class CreateScalarOpLowering : public OpConversionPattern<variant::CreateScalarO
         auto loc = op->getLoc();
         auto* ctxt = getContext();
         auto valType = adaptor.getValue().getType();
-        auto tagOpt = tagForScalarType(valType);
-        if (!tagOpt) return rewriter.notifyMatchFailure(op, "unsupported scalar type for variant.create_scalar (see tagForScalarType)");
-        Value tag = constI32(rewriter, loc, *tagOpt);
+        int32_t tagValue;
+        if (auto explicitTag = op.getTypeId()) {
+            tagValue = static_cast<int32_t>(*explicitTag);
+        } else {
+            auto tagOpt = tagForScalarType(valType);
+            if (!tagOpt) return rewriter.notifyMatchFailure(op, "unsupported scalar type for variant.create_scalar (see tagForScalarType)");
+            tagValue = *tagOpt;
+        }
+        Value tag = constI32(rewriter, loc, tagValue);
         if (isInlineScalarType(valType)) {
             rewriter.replaceOp(op, packVariant(rewriter, loc, tag, packInline(rewriter, loc, adaptor.getValue())));
             return success();

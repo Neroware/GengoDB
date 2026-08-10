@@ -20,6 +20,9 @@
 #include "gengodb/compiler/Dialect/Variant/VariantDialect.h"
 #include "gengodb/compiler/Dialect/Variant/VariantOps.h"
 #include "gengodb/semantics/Datatypes.h"
+#include "gengodb/semantics/RdfGraph.h"
+
+#include <rdf4cpp/datatypes/xsd/time/DateTime.hpp>
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -941,6 +944,11 @@ class Translator {
       auto ref = colMgr.createRef(it->second.getColumnPtr().get());
       return builder.create<tuples::GetColumnOp>(builder.getUnknownLoc(), ref.getColumn().type, ref, tupleArg);
    }
+   mlir::Value packedDateTimeScalar(const std::string& lexicalForm, mlir::Location loc) {
+      auto value = rdf4cpp::datatypes::xsd::DateTime::from_string(lexicalForm);
+      int64_t packed = gengodb::semantics::RdfDatatypeFixedHelper::packDateTime(value);
+      return builder.create<mlir::arith::ConstantIntOp>(loc, packed, 64);
+   }
    mlir::Value literalScalar(const sparql::LiteralExpr& lit, mlir::Location loc) {
       using gengodb::semantics::xsd::Type;
       switch (lit.xsdType) {
@@ -977,6 +985,11 @@ class Translator {
          }
          case sparql::Expr::Kind::Literal: {
             const auto& lit = static_cast<const sparql::LiteralExpr&>(expr);
+            if (lit.xsdType == gengodb::semantics::xsd::Type::DateTime) {
+               mlir::Value packed = packedDateTimeScalar(lit.lexicalForm, loc);
+               auto typeIdAttr = builder.getI32IntegerAttr(gengodb::semantics::xsd::to_int32(gengodb::semantics::xsd::Type::DateTime));
+               return builder.create<variant::CreateScalarOp>(loc, variantType, packed, typeIdAttr);
+            }
             mlir::Value scalar = literalScalar(lit, loc);
             return builder.create<variant::CreateScalarOp>(loc, variantType, scalar);
          }

@@ -44,16 +44,23 @@ def VariantArithPredicateAttr : I64EnumAttr<"VariantArithPredicate", "",
 def CreateScalarOp : Variant_Op<"create_scalar", [Pure]> {
     let summary = "wrap a statically-typed scalar value in a variant";
     let description = [{
-        `value`'s MLIR type must map to a fixed-width `xsd::Type` tag (see the
-        VariantToStd lowering's type table). Lowering allocates a stack slot,
-        stores `value` into it, and packs `{tag, ref-to-slot}`; no runtime
-        call. The op is `Pure` even though its lowering emits a stack write:
-        from the variant IR's perspective the resulting value is a pure
-        function of its operand.
+        By default `value`'s MLIR type must map to a fixed-width `xsd::Type`
+        tag (see the VariantToStd lowering's type table). Lowering allocates
+        a stack slot, stores `value` into it, and packs `{tag, ref-to-slot}`;
+        no runtime call. The op is `Pure` even though its lowering emits a
+        stack write: from the variant IR's perspective the resulting value
+        is a pure function of its operand.
+        The optional `typeId` attribute overrides the tag that would
+        otherwise be inferred from `value`'s MLIR type.
     }];
-    let arguments = (ins AnyType:$value);
+    let arguments = (ins AnyType:$value, OptionalAttr<I32Attr>:$typeId);
     let results = (outs Variant:$result);
-    let assemblyFormat = [{ $value `:` type($value) attr-dict }];
+    let assemblyFormat = [{ $value `:` type($value) (`{` `type` `=` $typeId^ `}`)? attr-dict }];
+    let builders = [
+        OpBuilder<(ins "mlir::Type":$result, "mlir::Value":$value), [{
+            build($_builder, $_state, result, value, mlir::IntegerAttr());
+        }]>
+    ];
 }
 
 def CreateNodeRefOp : Variant_Op<"create_node_ref", [Pure]> {

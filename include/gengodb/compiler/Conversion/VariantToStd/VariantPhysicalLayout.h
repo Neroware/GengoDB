@@ -94,7 +94,8 @@ inline TagPredicates computeTagPredicates(mlir::OpBuilder& b, mlir::Location loc
    mlir::Value isULong = getEqTag(b, loc, tag, xsd::Type::UnsignedLong);
    mlir::Value isFloat = getEqTag(b, loc, tag, xsd::Type::Float);
    mlir::Value isDate = getEqTag(b, loc, tag, xsd::Type::Date);
-   p.isNumericFamily = orAll(b, loc, {p.isBool, p.isLong, p.isDouble, isByte, isShort, isInt, isUByte, isUShort, isUInt, isULong, isFloat, isDate});
+   mlir::Value isDateTime = getEqTag(b, loc, tag, xsd::Type::DateTime);
+   p.isNumericFamily = orAll(b, loc, {p.isBool, p.isLong, p.isDouble, isByte, isShort, isInt, isUByte, isUShort, isUInt, isULong, isFloat, isDate, isDateTime});
    p.isScratchPayload = orAll(b, loc, {p.isNumericFamily, p.isRDFNode, p.isString});
    return p;
 }

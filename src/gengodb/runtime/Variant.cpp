@@ -118,6 +118,12 @@ inline rdf4cpp::Literal getLiteralFromNumeric(uint8_t* ptr, int32_t tag) {
             return rdf4cpp::Literal::make_typed_from_value<rdf4cpp::datatypes::xsd::Date>(
                 gengodb::semantics::RdfDatatypeFixedHelper::unpackDate(packed));
         }
+        case xsd::Type::DateTime: {
+            int64_t packed;
+            std::memcpy(&packed, ptr, sizeof(packed));
+            return rdf4cpp::Literal::make_typed_from_value<rdf4cpp::datatypes::xsd::DateTime>(
+                gengodb::semantics::RdfDatatypeFixedHelper::unpackDateTime(packed));
+        }
         default: return rdf4cpp::Literal::make_null();
     }
 }
@@ -186,6 +192,12 @@ inline bool extractNumericByTag(const rdf4cpp::Literal& lit, int32_t tag, uint8_
             std::memcpy(outPtr, &packed, sizeof(packed));
             return true;
         }
+        case xsd::Type::DateTime: {
+            int64_t packed = gengodb::semantics::RdfDatatypeFixedHelper::packDateTime(
+                lit.template value<rdf4cpp::datatypes::xsd::DateTime>());
+            std::memcpy(outPtr, &packed, sizeof(packed));
+            return true;
+        }
         default: return false;
     }
 }
@@ -214,6 +226,7 @@ constexpr StorageInfo classifyStorage(xsd::Type t) {
         case xsd::Type::Float: return {StorageShape::Inline32, sizeof(float)};
         case xsd::Type::Long: return {StorageShape::Int64, sizeof(int64_t)};
         case xsd::Type::Date: return {StorageShape::Int64, sizeof(int64_t)}; // packed, see RdfDatatypeFixedHelper
+        case xsd::Type::DateTime: return {StorageShape::Int64, sizeof(int64_t)}; // packed, see RdfDatatypeFixedHelper
         case xsd::Type::UnsignedLong: return {StorageShape::UInt64, sizeof(uint64_t)};
         case xsd::Type::Double: return {StorageShape::Double, sizeof(double)};
         default: return {StorageShape::Blob, 0};
@@ -360,7 +373,7 @@ int64_t VariantRuntime::hashNumeric(int64_t payload, int32_t tag) {
     uint8_t* ptr = reinterpret_cast<uint8_t*>(&payload);
     auto t = xsd::from_int32(tag);
     if (!t.has_value()) return 0;
-    if (*t == xsd::Type::Date) return payload;
+    if (*t == xsd::Type::Date || *t == xsd::Type::DateTime) return payload;
     auto lit = getLiteralFromNumeric(ptr, tag);
     if (lit.null()) return 0;
     auto asDouble = lit.cast_to_value<rdf4cpp::datatypes::xsd::Double>();

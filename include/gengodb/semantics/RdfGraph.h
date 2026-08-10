@@ -102,7 +102,7 @@ struct RdfDatatypeInlineHelper {
     }
 };
 struct RdfDatatypeFixedHelper {
-    enum class Kind { Int64, UInt64, Double, Date };
+    enum class Kind { Int64, UInt64, Double, Date, DateTime };
     static constexpr int32_t kDateTzBias = 841;
     std::optional<Kind> kindOf(const IRI& datatype) const {
         const Namespace xsd = extra_namespaces().XSD;
@@ -110,6 +110,7 @@ struct RdfDatatypeFixedHelper {
         if (datatype == xsd + "unsignedLong")  return Kind::UInt64;
         if (datatype == xsd + "double")        return Kind::Double;
         if (datatype == xsd + "date")          return Kind::Date;
+        if (datatype == xsd + "dateTime")      return Kind::DateTime;
         return std::nullopt;
     }
     template<typename T>
@@ -142,6 +143,33 @@ struct RdfDatatypeFixedHelper {
             tzOpt = rdf4cpp::Timezone{std::chrono::minutes{static_cast<int>(tz) - kDateTzBias}};
         }
         return {rdf4cpp::YearMonthDay{rdf4cpp::Year{year}, std::chrono::month{month}, std::chrono::day{day}}, tzOpt};
+    }
+    // TODO Move into custom header
+    static constexpr int64_t kDateTimeMillisMin = -(int64_t{1} << 47);
+    static constexpr int64_t kDateTimeMillisMax = (int64_t{1} << 47) - 1;
+    static int64_t packDateTime(const std::pair<rdf4cpp::TimePoint, rdf4cpp::OptionalTimezone>& v) {
+        const auto nanosSinceEpoch = v.first.time_since_epoch().count();
+        const auto millisWide = nanosSinceEpoch / 1'000'000;
+        assert(millisWide >= kDateTimeMillisMin && millisWide <= kDateTimeMillisMax && "xsd:dateTime out of fixed-storage range");
+        const auto millis = static_cast<int64_t>(millisWide);
+        const uint64_t millisBits = static_cast<uint64_t>(millis) & 0xFFFFFFFFFFFFULL;
+        const uint32_t tz = v.second.has_value() ? static_cast<uint32_t>(v.second->offset.count() + kDateTzBias) : 0u;
+        const uint64_t bits = (millisBits << 16) | static_cast<uint64_t>(tz & 0xFFFF);
+        return static_cast<int64_t>(bits);
+    }
+    static std::pair<rdf4cpp::TimePoint, rdf4cpp::OptionalTimezone> unpackDateTime(int64_t packed) {
+        const auto bits = static_cast<uint64_t>(packed);
+        const auto millisBits = bits >> 16;
+        const int64_t millis = (millisBits & (uint64_t{1} << 47))
+            ? static_cast<int64_t>(millisBits | ~uint64_t{0xFFFFFFFFFFFFULL}) // sign-extend from bit 47
+            : static_cast<int64_t>(millisBits);
+        const auto tz = static_cast<uint32_t>(bits & 0xFFFF);
+        rdf4cpp::OptionalTimezone tzOpt = std::nullopt;
+        if (tz != 0) {
+            tzOpt = rdf4cpp::Timezone{std::chrono::minutes{static_cast<int>(tz) - kDateTzBias}};
+        }
+        rdf4cpp::DurationNano timeSinceEpoch{boost::multiprecision::checked_int128_t{millis} * 1'000'000};
+        return {rdf4cpp::TimePoint{timeSinceEpoch}, tzOpt};
     }
 };
 struct LiteralKey {
