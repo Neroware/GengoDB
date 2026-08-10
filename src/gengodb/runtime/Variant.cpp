@@ -418,5 +418,13 @@ int32_t VariantRuntime::castLiteral(int64_t payload, int32_t srcTag, PropertyGra
 int8_t VariantRuntime::langMatches(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref, VarLen32 langRange) {
     auto lit = reconstructLiteral(payload, tag, ref);
     if (!lit.has_value()) return -1;
-    return triBoolToInt8(lit->language_tag_matches_range(std::string_view(langRange.data(), langRange.getLen())));
+    const std::string_view langTagStr = lit->lexical_form().view();
+    const std::string_view range(langRange.data(), langRange.getLen());
+    return rdf4cpp::lang_matches(langTagStr, range) ? 1 : 0;
+}
+
+VarLen32 VariantRuntime::langTag(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref) {
+    auto lit = reconstructLiteral(payload, tag, ref);
+    if (!lit.has_value()) return emptyVarLen32();
+    return VarLen32::fromString(std::string(lit->language_tag()));
 }

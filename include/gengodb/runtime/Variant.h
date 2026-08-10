@@ -51,6 +51,9 @@ struct VariantRuntime {
 
     // xsd:string language tag filter
     static int8_t langMatches(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref, VarLen32 langRange);
+
+    // SPARQL LANG(): a literal's language tag as xsd:string, or the empty string if it has none
+    static VarLen32 langTag(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref);
 };
 
 } // namespace lingodb::runtime

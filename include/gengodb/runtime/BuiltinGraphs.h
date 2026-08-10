@@ -235,6 +235,7 @@ public:
     size_t freeProps() const { return freeProps_.size(); }
 
     void registerGraph();
+    void setPersists(bool persists) { persists_ = persists; }
 
     static PropertyGraph* create(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);
     static void destroy(PropertyGraph* g);
@@ -255,6 +256,7 @@ private:
     int32_t nodeCap_, relCap_;
     PropertyData propData_;
     Metadata metadata_;
+    bool persists_ = false;
 
 }; // PropertyGraph
 

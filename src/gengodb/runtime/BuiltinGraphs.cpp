@@ -28,17 +28,24 @@ int64_t BuiltinGraph::typeId(const void* ptr) {
 }
 
 void PropertyGraph::registerGraph() {
-    GraphStorage::add(nodeStorePtr(), nodeCap_ * sizeof(PropertyGraph::Base::NodeEntry), 
+    if (persists_) {
+        if (GraphStorage::knowsGraph(reinterpret_cast<const uint8_t*>(this)))
+            return;
+    }
+    else {
+        getCurrentExecutionContext()->registerState({this, [&](void* ptr){
+            GraphStorage::remove(reinterpret_cast<const uint8_t*>(this));
+            delete reinterpret_cast<PropertyGraph*>(ptr);
+        }});
+    }
+    GraphStorage::add(nodeStorePtr(), nodeCap_ * sizeof(PropertyGraph::Base::NodeEntry),
         reinterpret_cast<const uint8_t*>(this));
-    GraphStorage::add(relStorePtr(), relCap_ * sizeof(PropertyGraph::Base::RelEntry), 
+    GraphStorage::add(relStorePtr(), relCap_ * sizeof(PropertyGraph::Base::RelEntry),
         reinterpret_cast<const uint8_t*>(this));
-    GraphStorage::add(propStorePtr(), propCap_ * sizeof(PropertyGraph::PropRecord), 
+    GraphStorage::add(propStorePtr(), propCap_ * sizeof(PropertyGraph::PropRecord),
         reinterpret_cast<const uint8_t*>(this));
-    getCurrentExecutionContext()->registerState({this, [&](void* ptr){
-        GraphStorage::remove(reinterpret_cast<const uint8_t*>(this));
-        delete reinterpret_cast<PropertyGraph*>(ptr);
-    }});
 }
+
 PropertyGraph::PropertyGraph(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity)
     : graph_(nodeCapacity, relCapacity), props_(propCapacity), 
     propMark_(0), propCap_(propCapacity), 

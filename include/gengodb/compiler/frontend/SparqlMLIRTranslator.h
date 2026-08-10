@@ -133,7 +133,10 @@ struct FunctionCallExpr : Expr {
 
 struct CastExpr : Expr {
    std::unique_ptr<Expr> operand;
-   std::optional<gengodb::semantics::xsd::Type> targetType; // nullopt = STR()
+   // nullopt = STR() (or LANG(), see isLangCast)
+   std::optional<gengodb::semantics::xsd::Type> targetType;
+   // true iff this is LANG() rather than STR();
+   bool isLangCast{false}; 
    Kind kind() const override { return Kind::Cast; }
 };
 
@@ -406,11 +409,13 @@ class Parser {
          eat(TK::RightParen);
          return e;
       }
-      if (kw("STR")) {
+      if (kw("STR") || kw("LANG")) {
+         bool isLang = kw("LANG");
          advance();
          eat(TK::LeftParen);
          auto e = std::make_unique<sparql::CastExpr>();
          e->targetType = std::nullopt;
+         e->isLangCast = isLang;
          e->operand = parseFilterExpr(pref);
          eat(TK::RightParen);
          return e;
@@ -991,6 +996,11 @@ class Translator {
          case sparql::Expr::Kind::Cast: {
             const auto& e = static_cast<const sparql::CastExpr&>(expr);
             mlir::Value operand = translateArithExpr(*e.operand, tupleArg);
+            if (e.isLangCast) {
+               auto castOp = builder.create<variant::StrCastOp>(loc, variantType, operand);
+               castOp->setAttr("isLangCast", builder.getUnitAttr());
+               return castOp;
+            }
             if (!e.targetType.has_value())
                return builder.create<variant::StrCastOp>(loc, variantType, operand);
             mlir::Value typeId = builder.create<mlir::arith::ConstantIntOp>(loc, gengodb::semantics::xsd::to_int32(*e.targetType), 32);

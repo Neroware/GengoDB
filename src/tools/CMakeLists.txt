@@ -76,3 +76,10 @@ add_executable(sparql-to-mlir sparql-to-mlir.cpp)
 target_link_libraries(sparql-to-mlir PUBLIC ${LIBS} ${COMMON_LIBS} gengodb)
 set_target_properties(sparql-to-mlir PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 target_compile_definitions(sparql-to-mlir PRIVATE ${COMPILE_DEFS})
+
+# sparql-endpoint
+find_package(Threads REQUIRED)
+add_executable(sparql-endpoint sparql-endpoint.cpp)
+target_link_libraries(sparql-endpoint PRIVATE ${COMMON_LIBS} gengodb Boost::headers Boost::system Threads::Threads)
+set_target_properties(sparql-endpoint PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+target_compile_definitions(sparql-endpoint PRIVATE ${COMPILE_DEFS})

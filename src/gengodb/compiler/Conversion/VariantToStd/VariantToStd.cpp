@@ -422,6 +422,25 @@ class StrCastOpLowering : public OpConversionPattern<variant::StrCastOp> {
     }
 };
 
+class LangCastOpLowering : public OpConversionPattern<variant::StrCastOp> {
+    public:
+    using OpConversionPattern<variant::StrCastOp>::OpConversionPattern;
+    LogicalResult matchAndRewrite(variant::StrCastOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+        if (!op->hasAttr("isLangCast")) return rewriter.notifyMatchFailure(op, "not a LANG() cast -- defer to the plain str_cast lowering");
+        auto loc = op->getLoc();
+        auto* ctxt = getContext();
+        auto [tag, ref] = unpackVariant(rewriter, loc, adaptor.getVar());
+        Value payload = rewriter.create<util::PtrToIntOp>(loc, rewriter.getI64Type(), ref);
+        Value lang = rt::VariantRuntime::langTag(rewriter, loc)({payload, tag, ref})[0];
+        Value scratch = allocScratch(rewriter, loc, getVarlen32Type(ctxt));
+        Value typedScratch = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, getVarlen32Type(ctxt)), scratch);
+        rewriter.create<util::StoreOp>(loc, lang, typedScratch, Value());
+        Value strTag = constI32(rewriter, loc, xsd::to_int32(xsd::Type::String));
+        rewriter.replaceOp(op, packVariant(rewriter, loc, strTag, scratch));
+        return success();
+    }
+};
+
 class CmpOpLowering : public OpConversionPattern<variant::CmpOp> {
     public:
     using OpConversionPattern<variant::CmpOp>::OpConversionPattern;
@@ -672,6 +691,7 @@ struct VariantToStdLoweringPass
         patterns.insert<VariantGetValOpLowering>(typeConverter, ctxt);
         patterns.insert<ToStringOpLowering>(typeConverter, ctxt);
         patterns.insert<StrCastOpLowering>(typeConverter, ctxt);
+        patterns.insert<LangCastOpLowering>(typeConverter, ctxt, PatternBenefit(2));
         patterns.insert<CastOpLowering>(typeConverter, ctxt);
         patterns.insert<CmpOpLowering>(typeConverter, ctxt);
         patterns.insert<OrderOpLowering>(typeConverter, ctxt);
