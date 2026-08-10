@@ -100,6 +100,13 @@ RUN git clone https://github.com/tentris/rdf4cpp.git && \
     make install
 
 # ------------------------------------------------------------
+# Java OpenJDK
+# ------------------------------------------------------------
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openjdk-17-jdk \
+    && rm -rf /var/lib/apt/lists/*
+
+# ------------------------------------------------------------
 # SSH setup
 # ------------------------------------------------------------
 RUN mkdir -p /root/.ssh && \
