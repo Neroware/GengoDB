@@ -1,0 +1,31 @@
+PREFIX bsbm-inst: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX rev: <http://purl.org/stuff/rev#>
+PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+PREFIX bsbm: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/vocabulary/>
+PREFIX bsbm-export: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/vocabulary/export/>
+PREFIX dc: <http://purl.org/dc/elements/1.1/>
+
+CONSTRUCT {
+    bsbm-inst:Offer4711 bsbm-export:product ?productURI .
+    bsbm-inst:Offer4711 bsbm-export:productlabel ?productlabel .
+    bsbm-inst:Offer4711 bsbm-export:vendor ?vendorname .
+    bsbm-inst:Offer4711 bsbm-export:vendorhomepage ?vendorhomepage .
+    bsbm-inst:Offer4711 bsbm-export:offerURL ?offerURL .
+    bsbm-inst:Offer4711 bsbm-export:price ?price .
+    bsbm-inst:Offer4711 bsbm-export:deliveryDays ?deliveryDays .
+    bsbm-inst:Offer4711 bsbm-export:validuntil ?validTo
+}
+WHERE {
+    bsbm-inst:Offer4711 bsbm:product ?productURI .
+    ?productURI rdfs:label ?productlabel .
+
+    bsbm-inst:Offer4711 bsbm:vendor ?vendorURI .
+    ?vendorURI rdfs:label ?vendorname .
+    ?vendorURI foaf:homepage ?vendorhomepage .
+
+    bsbm-inst:Offer4711 bsbm:offerWebpage ?offerURL .
+    bsbm-inst:Offer4711 bsbm:price ?price .
+    bsbm-inst:Offer4711 bsbm:deliveryDays ?deliveryDays .
+    bsbm-inst:Offer4711 bsbm:validTo ?validTo
+}

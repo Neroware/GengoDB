@@ -243,6 +243,11 @@ private:
     static const GraphT* lookupGraph(const uint8_t* ref) {
         assert(false && "unsupported graph type");
     }
+public:
+    static bool knowsGraph(const uint8_t* ref) {
+        return std::any_of(mem_.begin(), mem_.end(), [&](const auto& tup) -> bool { return std::get<0>(tup) == ref; });
+    }
+private:
     // Stores allocated memory ranges
     static std::vector<std::tuple<const uint8_t*, size_t, const uint8_t*>> mem_;
 }; // GraphStorage

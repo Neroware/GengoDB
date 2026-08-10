@@ -1,0 +1,7 @@
+PREFIX bsbm-inst: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/>
+PREFIX rev: <http://purl.org/stuff/rev#>
+
+DESCRIBE ?x
+WHERE {
+  bsbm-inst:Review4711 rev:reviewer ?x
+}

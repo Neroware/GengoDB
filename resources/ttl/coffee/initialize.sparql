@@ -1,0 +1,9 @@
+LOAD <file://resources/ttl/coffee/coffee.ttl> INTO GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf>;
+LOAD <file://resources/ttl/coffee/coffee.ttl> INTO GRAPH <gengodb://sparql/settings/defaultGraph#rdf>;
+
+PREFIX db: <gengodb://sparql/settings/>
+DESCRIBE ?entity WHERE {
+    ?entity db:persists true .
+    ?entity db:defaultGraph <file://resources/ttl/coffee/coffee.ttl#rdf> .
+    ?entity db:initialize true . 
+};

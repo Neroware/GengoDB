@@ -22,7 +22,7 @@ public:
          : storage_(PropertyGraph::create(nodeCapacity, relCapacity, propCapacity)),
          fileName_(std::move(fileName)) { }
 
-   virtual ~GengoDBGraph() = default;
+   virtual ~GengoDBGraph();
 
    PropertyGraph& storage() { return *storage_; }
    const PropertyGraph& storage() const { return *storage_; }

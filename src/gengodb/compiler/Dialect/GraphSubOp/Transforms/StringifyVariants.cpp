@@ -70,11 +70,13 @@ static mlir::Value buildToStringExpr(mlir::OpBuilder& b, mlir::Location loc, mli
            [&](mlir::OpBuilder& b2, mlir::Location l) {
               auto nonNull = b2.create<db::NullableGetVal>(l, val);
               mlir::Value str = b2.create<variant::ToStringOp>(l, dbStringType, nonNull);
+              str.getDefiningOp()->setAttr("full", mlir::UnitAttr::get(ctxt));
               b2.create<mlir::scf::YieldOp>(l, str);
            });
         raw = ifOp.getResult(0);
     } else {
         raw = b.create<variant::ToStringOp>(loc, dbStringType, val);
+        raw.getDefiningOp()->setAttr("full", mlir::UnitAttr::get(ctxt));
     }
     if (!mlir::isa<db::NullableType>(strType))
         return raw;

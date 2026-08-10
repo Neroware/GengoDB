@@ -175,8 +175,8 @@ private:
     std::unique_ptr<NodeIdDict> nodes;
     std::unordered_map<LiteralKey, int32_t, LiteralKeyHash> literalNodes;
 public:
-    RdfGraph(const IRI& iri, std::unique_ptr<runtime::GengoDBGraph> storage, std::string fileName) 
-        : iri(iri), storage(std::move(storage)), nodes(std::make_unique<NodeIdDict>()), persist(false), fileName(std::move(fileName)), loadedFromRdfFile(false), rdfParseFlags(parser::ParsingFlag::Turtle), nodeHelper(this) {}
+    RdfGraph(const IRI& iri, std::unique_ptr<runtime::GengoDBGraph> storage, std::string fileName, std::string sourceFileName = "")
+        : iri(iri), storage(std::move(storage)), nodes(std::make_unique<NodeIdDict>()), persist(false), fileName(fileName), sourceFileName(sourceFileName.empty() ? fileName : std::move(sourceFileName)), loadedFromRdfFile(false), rdfParseFlags(parser::ParsingFlag::Turtle), nodeHelper(this) {}
     void setPersist(bool persist) {
         this->persist = persist;
         if (persist) {
@@ -199,7 +199,7 @@ public:
     virtual void setRdfParseFlags(parser::ParsingFlag rdfParseFlags) {
         this->rdfParseFlags = rdfParseFlags;
     }
-    static std::unique_ptr<RdfGraph> create(const std::string& name, const IRI& iri);
+    static std::unique_ptr<RdfGraph> create(const std::string& name, const IRI& iri, const std::string& sourceFileName = "");
     void loadTriples();
     void addTriple(const Node& s, const Node& p, const Node& o) {
         if (!p.is_iri()) assert(false && "predicate must be an IRI");
@@ -242,6 +242,7 @@ public:
 private:
     bool persist;
     std::string fileName;
+    std::string sourceFileName;
     std::string dbDir;
     bool loadedFromRdfFile;
     parser::ParsingFlag rdfParseFlags;

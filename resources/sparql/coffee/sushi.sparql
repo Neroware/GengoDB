@@ -1,0 +1,11 @@
+PREFIX ex: <http://example.org/>
+
+SELECT DISTINCT ?who ?name ?age
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?who ex:eats ex:sushi .
+        OPTIONAL { ?who ex:nickname ?name . }
+        OPTIONAL { ?who ex:age ?age. }
+        FILTER(LANGMATCHES(LANG(?name), "en"))
+    }
+}

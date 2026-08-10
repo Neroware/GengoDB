@@ -164,6 +164,13 @@ def CastOp : Variant_Op<"cast", [Pure]> {
     let assemblyFormat = [{ $var `{` `type` `=` $typeId `}` attr-dict }];
 }
 
+def StrCastOp : Variant_Op<"str_cast", [Pure]> {
+    let summary = "cast any variant to string";
+    let arguments = (ins Variant:$var);
+    let results = (outs Variant:$result);
+    let assemblyFormat = [{ $var attr-dict }];
+}
+
 def PredicateOp : Variant_Op<"predicate", [Pure]> {
     let summary = "a tri-booled predicate";
     let arguments = (ins Variant:$var, ArrayAttr:$pred);

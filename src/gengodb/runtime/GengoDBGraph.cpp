@@ -19,6 +19,13 @@ static std::string graphPath(const std::string& dbDir, const std::string& fileNa
 //   [props]   propCount × sizeof(Neo4JGraph::PropRecord) bytes (21 bytes each, packed)
 static constexpr uint32_t GRAPH_FILE_MAGIC = 0x47524150; // "GRAP"
 
+GengoDBGraph::~GengoDBGraph() {
+   if (storage_) {
+      GraphStorage::remove(reinterpret_cast<const uint8_t*>(storage_));
+      PropertyGraph::destroy(storage_);
+   }
+}
+
 void GengoDBGraph::flush() {
    if (!storage_ || dbDir_.empty() || fileName_.empty()) return;
    std::string path = graphPath(dbDir_, fileName_);

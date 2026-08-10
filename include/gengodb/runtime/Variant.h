@@ -26,6 +26,10 @@ struct VariantRuntime {
     static VarLen32 toStringNumeric(int64_t payload, int32_t tag);
     static VarLen32 toStringNodeRef(PropertyGraph::NodeEntry* ref);
     static VarLen32 toStringBlobLiteral(PropertyGraph::NodeEntry* ref);
+    static VarLen32 toStringFull(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref);
+
+    // string cast fallback
+    static int32_t castLiteral(int64_t payload, int32_t srcTag, PropertyGraph::NodeEntry* ref, int32_t targetTag, uint8_t* outPtr);
 
     // Node-ref comparison: resolves both sides' global UID (possibly from
     // different graphs) and compares those.
@@ -48,6 +52,9 @@ struct VariantRuntime {
 
     // xsd:string language tag filter
     static int8_t langMatches(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref, VarLen32 langRange);
+
+    // SPARQL LANG(): a literal's language tag as xsd:string, or the empty string if it has none
+    static VarLen32 langTag(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref);
 };
 
 } // namespace lingodb::runtime

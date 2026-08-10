@@ -313,43 +313,157 @@ class VariantGetValOpLowering : public OpConversionPattern<variant::VariantGetVa
     }
 };
 
+Value computeLexicalForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value tag, Value ref) {
+    auto tp = computeTagPredicates(b, loc, tag);
+    auto guarded = b.create<scf::IfOp>(
+        loc, tp.isUnspecified,
+        [&](OpBuilder& b1, Location l1) {
+            Value empty = b1.create<util::CreateConstVarLen>(l1, getVarlen32Type(ctxt), b1.getStringAttr(""));
+            b1.create<scf::YieldOp>(l1, empty);
+        },
+        [&](OpBuilder& b1, Location l1) {
+            auto result = b1.create<scf::IfOp>(
+                l1, tp.isNumericFamily,
+                [&](OpBuilder& b2, Location l2) {
+                    Value payload = b2.create<util::PtrToIntOp>(l2, b2.getI64Type(), ref);
+                    b2.create<scf::YieldOp>(l2, rt::VariantRuntime::toStringNumeric(b2, l2)({payload, tag})[0]);
+                },
+                [&](OpBuilder& b2, Location l2) {
+                    auto ifRDFNode = b2.create<scf::IfOp>(
+                        l2, tp.isRDFNode,
+                        [&](OpBuilder& b3, Location l3) {
+                            b3.create<scf::YieldOp>(l3, rt::VariantRuntime::toStringNodeRef(b3, l3)({ref})[0]);
+                        },
+                        [&](OpBuilder& b3, Location l3) {
+                            auto ifString = b3.create<scf::IfOp>(
+                                l3, tp.isString,
+                                [&](OpBuilder& b4, Location l4) {
+                                    b4.create<scf::YieldOp>(l4, loadTyped(b4, l4, ref, getVarlen32Type(ctxt)));
+                                },
+                                [&](OpBuilder& b4, Location l4) {
+                                    b4.create<scf::YieldOp>(l4, rt::VariantRuntime::toStringBlobLiteral(b4, l4)({ref})[0]);
+                                });
+                            b3.create<scf::YieldOp>(l3, ifString.getResult(0));
+                        });
+                    b2.create<scf::YieldOp>(l2, ifRDFNode.getResult(0));
+                });
+            b1.create<scf::YieldOp>(l1, result.getResult(0));
+        });
+    return guarded.getResult(0);
+}
+
+Value computeFullForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value tag, Value ref) {
+    auto tp = computeTagPredicates(b, loc, tag);
+    Value payload = b.create<util::PtrToIntOp>(loc, b.getI64Type(), ref);
+    auto guarded = b.create<scf::IfOp>(
+        loc, tp.isUnspecified,
+        [&](OpBuilder& b1, Location l1) {
+            Value empty = b1.create<util::CreateConstVarLen>(l1, getVarlen32Type(ctxt), b1.getStringAttr(""));
+            b1.create<scf::YieldOp>(l1, empty);
+        },
+        [&](OpBuilder& b1, Location l1) {
+            auto result = b1.create<scf::IfOp>(
+                l1, tp.isRDFNode,
+                [&](OpBuilder& b2, Location l2) {
+                    b2.create<scf::YieldOp>(l2, rt::VariantRuntime::toStringNodeRef(b2, l2)({ref})[0]);
+                },
+                [&](OpBuilder& b2, Location l2) {
+                    b2.create<scf::YieldOp>(l2, rt::VariantRuntime::toStringFull(b2, l2)({payload, tag, ref})[0]);
+                });
+            b1.create<scf::YieldOp>(l1, result.getResult(0));
+        });
+    return guarded.getResult(0);
+}
+
 class ToStringOpLowering : public OpConversionPattern<variant::ToStringOp> {
     public:
     using OpConversionPattern<variant::ToStringOp>::OpConversionPattern;
     LogicalResult matchAndRewrite(variant::ToStringOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
         auto loc = op->getLoc();
         auto [tag, ref] = unpackVariant(rewriter, loc, adaptor.getVal());
-        auto tp = computeTagPredicates(rewriter, loc, tag);
-
-        auto result = rewriter.create<scf::IfOp>(
-            loc, tp.isNumericFamily,
-            [&](OpBuilder& b, Location l) {
-                Value payload = b.create<util::PtrToIntOp>(l, b.getI64Type(), ref);
-                b.create<scf::YieldOp>(l, rt::VariantRuntime::toStringNumeric(b, l)({payload, tag})[0]);
-            },
-            [&](OpBuilder& b, Location l) {
-                auto ifRDFNode = b.create<scf::IfOp>(
-                    l, tp.isRDFNode,
-                    [&](OpBuilder& b2, Location l2) {
-                        b2.create<scf::YieldOp>(l2, rt::VariantRuntime::toStringNodeRef(b2, l2)({ref})[0]);
-                    },
-                    [&](OpBuilder& b2, Location l2) {
-                        auto ifString = b2.create<scf::IfOp>(
-                            l2, tp.isString,
-                            [&](OpBuilder& b3, Location l3) {
-                            b3.create<scf::YieldOp>(l3, loadTyped(b3, l3, ref, getVarlen32Type(getContext())));
-                            },
-                            [&](OpBuilder& b3, Location l3) {
-                                b3.create<scf::YieldOp>(l3, rt::VariantRuntime::toStringBlobLiteral(b3, l3)({ref})[0]);
-                            });
-                        b2.create<scf::YieldOp>(l2, ifString.getResult(0));
-                    });
-                b.create<scf::YieldOp>(l, ifRDFNode.getResult(0));
-            });
-        Value asDbString = rewriter.create<mlir::UnrealizedConversionCastOp>(loc, op.getResult().getType(), result.getResult(0)).getResult(0);
+        Value lex = op->hasAttr("full")
+            ? computeFullForm(rewriter, loc, getContext(), tag, ref)
+            : computeLexicalForm(rewriter, loc, getContext(), tag, ref);
+        Value asDbString = rewriter.create<mlir::UnrealizedConversionCastOp>(loc, op.getResult().getType(), lex).getResult(0);
         rewriter.replaceOp(op, asDbString);
         return success();
    }
+};
+
+class CastOpLowering : public OpConversionPattern<variant::CastOp> {
+    public:
+    using OpConversionPattern<variant::CastOp>::OpConversionPattern;
+    LogicalResult matchAndRewrite(variant::CastOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+        auto loc = op->getLoc();
+        llvm::APInt constVal;
+        if (!mlir::matchPattern(adaptor.getTypeId(), mlir::m_ConstantInt(&constVal)))
+            return rewriter.notifyMatchFailure(op, "variant.cast requires a compile-time-constant typeId (target type must be statically known)");
+        auto targetOpt = xsd::from_int32(static_cast<int32_t>(constVal.getSExtValue()));
+        if (!targetOpt || !isSupportedCastTarget(*targetOpt))
+            return rewriter.notifyMatchFailure(op, "variant.cast: unsupported target type (only boolean/fixed-width-numeric targets are supported at this layer -- fold xsd:integer/xsd:decimal in the frontend first)");
+        xsd::Type target = *targetOpt;
+
+        Value targetTagConst = constI32(rewriter, loc, xsd::to_int32(target));
+        auto [srcTag, srcRef] = unpackVariant(rewriter, loc, adaptor.getVar());
+        Value sameTag = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, srcTag, targetTagConst);
+
+        auto result = rewriter.create<scf::IfOp>(
+            loc, sameTag,
+            [&](OpBuilder& b, Location l) {
+                b.create<scf::YieldOp>(l, adaptor.getVar());
+            },
+            [&](OpBuilder& b, Location l) {
+                Value payload = b.create<util::PtrToIntOp>(l, b.getI64Type(), srcRef);
+                Value outSlot = allocStack(rewriter, op, b.getIntegerType(8), 8);
+                Value resultTag = rt::VariantRuntime::castLiteral(b, l)({payload, srcTag, srcRef, targetTagConst, outSlot})[0];
+                b.create<scf::YieldOp>(l, packVariant(b, l, resultTag, inlineFromScratch(b, l, outSlot)));
+            });
+        rewriter.replaceOp(op, result.getResult(0));
+        return success();
+    }
+    private:
+    inline static bool isSupportedCastTarget(xsd::Type t) {
+        if (t == xsd::Type::Boolean) return true;
+        for (const FixedNumericTag& n : fixedNumericTags())
+            if (n.type == t) return true;
+        return false;
+    }
+};
+
+class StrCastOpLowering : public OpConversionPattern<variant::StrCastOp> {
+    public:
+    using OpConversionPattern<variant::StrCastOp>::OpConversionPattern;
+    LogicalResult matchAndRewrite(variant::StrCastOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+        auto loc = op->getLoc();
+        auto* ctxt = getContext();
+        auto [tag, ref] = unpackVariant(rewriter, loc, adaptor.getVar());
+        Value lex = computeLexicalForm(rewriter, loc, ctxt, tag, ref);
+        Value scratch = allocScratch(rewriter, loc, getVarlen32Type(ctxt));
+        Value typedScratch = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, getVarlen32Type(ctxt)), scratch);
+        rewriter.create<util::StoreOp>(loc, lex, typedScratch, Value());
+        Value strTag = constI32(rewriter, loc, xsd::to_int32(xsd::Type::String));
+        rewriter.replaceOp(op, packVariant(rewriter, loc, strTag, scratch));
+        return success();
+    }
+};
+
+class LangCastOpLowering : public OpConversionPattern<variant::StrCastOp> {
+    public:
+    using OpConversionPattern<variant::StrCastOp>::OpConversionPattern;
+    LogicalResult matchAndRewrite(variant::StrCastOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+        if (!op->hasAttr("isLangCast")) return rewriter.notifyMatchFailure(op, "not a LANG() cast -- defer to the plain str_cast lowering");
+        auto loc = op->getLoc();
+        auto* ctxt = getContext();
+        auto [tag, ref] = unpackVariant(rewriter, loc, adaptor.getVar());
+        Value payload = rewriter.create<util::PtrToIntOp>(loc, rewriter.getI64Type(), ref);
+        Value lang = rt::VariantRuntime::langTag(rewriter, loc)({payload, tag, ref})[0];
+        Value scratch = allocScratch(rewriter, loc, getVarlen32Type(ctxt));
+        Value typedScratch = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, getVarlen32Type(ctxt)), scratch);
+        rewriter.create<util::StoreOp>(loc, lang, typedScratch, Value());
+        Value strTag = constI32(rewriter, loc, xsd::to_int32(xsd::Type::String));
+        rewriter.replaceOp(op, packVariant(rewriter, loc, strTag, scratch));
+        return success();
+    }
 };
 
 class CmpOpLowering : public OpConversionPattern<variant::CmpOp> {
@@ -601,6 +715,9 @@ struct VariantToStdLoweringPass
         patterns.insert<VariantIsAOpLowering>(typeConverter, ctxt);
         patterns.insert<VariantGetValOpLowering>(typeConverter, ctxt);
         patterns.insert<ToStringOpLowering>(typeConverter, ctxt);
+        patterns.insert<StrCastOpLowering>(typeConverter, ctxt);
+        patterns.insert<LangCastOpLowering>(typeConverter, ctxt, PatternBenefit(2));
+        patterns.insert<CastOpLowering>(typeConverter, ctxt);
         patterns.insert<CmpOpLowering>(typeConverter, ctxt);
         patterns.insert<OrderOpLowering>(typeConverter, ctxt);
         patterns.insert<ArithOpLowering>(typeConverter, ctxt);
