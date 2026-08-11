@@ -24,7 +24,9 @@ struct EngineState {
    std::string dbDir;
    LoadedGraphs loadedGraphs;
    std::string defaultGraph = "gengodb://sparql/settings/defaultGraph#rdf";
-   int32_t graphCapacity = DEFAULT_NODE_CAPACITY;
+   int32_t nodeCapacity = DEFAULT_NODE_CAPACITY;
+   int32_t relCapacity = DEFAULT_REL_CAPACITY;
+   int32_t propCapacity = DEFAULT_PROP_CAPACITY;
 };
 
 class StatementAccumulator {
@@ -49,7 +51,15 @@ struct SettingsDirectives {
    bool persists{false};
    bool initialize{false};
    std::optional<std::string> defaultGraph;
+   // From `db:capacity <n>`: max number of nodes/relationships/properties the native
+   // property graph storage of graphs LOADed after this point is allocated for. Sets all
+   // three dimensions uniformly; the individual directives below override just one.
    std::optional<int32_t> capacity;
+   // From `db:nodeCapacity <n>` / `db:edgeCapacity <n>` / `db:propCapacity <n>`: override
+   // the node/relationship/property capacity individually, taking precedence over `capacity`.
+   std::optional<int32_t> nodeCapacity;
+   std::optional<int32_t> relCapacity;
+   std::optional<int32_t> propCapacity;
 };
 
 std::optional<SettingsDirectives> detectSettingsDirectives(const std::string& stmt);

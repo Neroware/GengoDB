@@ -138,7 +138,7 @@ void handleLoad(EngineState& state, const std::string& sourceIri, const std::str
    }
 
    CreateRdfGraphDef def{name, rdf4cpp::IRI{graphIri}, RDFFileFormat::TURTLE, filename,
-      state.graphCapacity, state.graphCapacity, state.graphCapacity};
+      state.nodeCapacity, state.relCapacity, state.propCapacity};
    auto graphEntry = RDFGraphCatalogEntry::createFromCreateRdfGraphDef(def);
    catalog.insertEntry(graphEntry);
    graphEntry->ensureFullyLoaded();
@@ -155,16 +155,35 @@ std::optional<SettingsDirectives> detectSettingsDirectives(const std::string& st
       hasSettingsDirective(stmt, "persists", label),
       hasSettingsDirective(stmt, "initialize", label),
       settingsDirectiveIri(stmt, "defaultGraph", label),
-      settingsDirectiveInt(stmt, "capacity", label)};
-   if (!directives.persists && !directives.initialize && !directives.defaultGraph && !directives.capacity) return std::nullopt;
+      settingsDirectiveInt(stmt, "capacity", label),
+      settingsDirectiveInt(stmt, "nodeCapacity", label),
+      settingsDirectiveInt(stmt, "edgeCapacity", label),
+      settingsDirectiveInt(stmt, "propCapacity", label)};
+   if (!directives.persists && !directives.initialize && !directives.defaultGraph && !directives.capacity &&
+      !directives.nodeCapacity && !directives.relCapacity && !directives.propCapacity) return std::nullopt;
    return directives;
 }
 
 void handleSettings(EngineState& state, const SettingsDirectives& directives) {
    if (directives.capacity) {
       if (*directives.capacity <= 0) throw std::runtime_error("capacity must be a positive integer");
-      state.graphCapacity = *directives.capacity;
-      std::cout << "Graph storage capacity set to " << state.graphCapacity << " nodes/relationships/properties." << std::endl;
+      state.nodeCapacity = state.relCapacity = state.propCapacity = *directives.capacity;
+      std::cout << "Graph storage capacity set to " << *directives.capacity << " nodes/relationships/properties." << std::endl;
+   }
+   if (directives.nodeCapacity) {
+      if (*directives.nodeCapacity <= 0) throw std::runtime_error("nodeCapacity must be a positive integer");
+      state.nodeCapacity = *directives.nodeCapacity;
+      std::cout << "Graph node storage capacity set to " << state.nodeCapacity << "." << std::endl;
+   }
+   if (directives.relCapacity) {
+      if (*directives.relCapacity <= 0) throw std::runtime_error("edgeCapacity must be a positive integer");
+      state.relCapacity = *directives.relCapacity;
+      std::cout << "Graph edge storage capacity set to " << state.relCapacity << "." << std::endl;
+   }
+   if (directives.propCapacity) {
+      if (*directives.propCapacity <= 0) throw std::runtime_error("propCapacity must be a positive integer");
+      state.propCapacity = *directives.propCapacity;
+      std::cout << "Graph property storage capacity set to " << state.propCapacity << "." << std::endl;
    }
    if (directives.initialize) {
       auto indexEntry = GraphNodeIndexCatalogEntry::build(state.loadedGraphs);
