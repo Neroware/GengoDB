@@ -35,6 +35,9 @@ struct VariantRuntime {
     // different graphs) and compares those.
     static int8_t compareNodeRefRef(PropertyGraph::NodeEntry* lhs, PropertyGraph::NodeEntry* rhs, int32_t predicate);
 
+    // Constant-IRI-literal vs graph-bound RDF term comparison
+    static int8_t compareIriNodeRef(VarLen32 iri, PropertyGraph::NodeEntry* ref, int32_t predicate);
+
     // Rare-tag literal comparison fallback (needs full XSD value semantics).
     static int8_t compareBlobLiteralRefRef(PropertyGraph::NodeEntry* lhs, PropertyGraph::NodeEntry* rhs, int32_t predicate);
 

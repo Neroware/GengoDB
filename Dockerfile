@@ -61,6 +61,9 @@ RUN apt-get update && \
         clang-tidy-20 && \
     rm -rf /var/lib/apt/lists/*
 
+ENV CC=clang-20
+ENV CXX=clang++-20
+
 # ------------------------------------------------------------
 # Apache Arrow 24
 # ------------------------------------------------------------
@@ -92,12 +95,13 @@ RUN git clone https://github.com/tentris/rdf4cpp.git && \
     git checkout v0.1.13 && \
     wget https://github.com/conan-io/cmake-conan/raw/develop2/conan_provider.cmake \
         -O conan_provider.cmake && \
-    cmake -B build_dir \
+    cmake -S . -B build_dir \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=conan_provider.cmake && \
-    cmake --build build_dir -j$(nproc) && \
-    cd build_dir && \
-    make install
+        -DCMAKE_C_COMPILER=clang-20 \
+        -DCMAKE_CXX_COMPILER=clang++-20 \
+        -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="$PWD/conan_provider.cmake" && \
+    cmake --build build_dir --parallel "$(nproc)" && \
+    cmake --install build_dir
 
 # ------------------------------------------------------------
 # SSH setup

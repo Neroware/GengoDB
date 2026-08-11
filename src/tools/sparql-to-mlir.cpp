@@ -8,6 +8,8 @@
 #include <sstream>
 #include <string>
 
+constexpr const char* DEFAULT_GRAPH = "gengodb://settings/defaultGraph#rdf";
+
 int main(int argc, char** argv) {
    if (argc == 2 && std::string(argv[1]) == "--features") {
       printFeatures();
@@ -25,7 +27,7 @@ int main(int argc, char** argv) {
    std::stringstream buf;
    buf << istream.rdbuf();
    try {
-      translateSparqlToMLIR(buf.str(), llvm::outs());
+      translateSparqlToMLIR(buf.str(), llvm::outs(), DEFAULT_GRAPH);
    } catch (const std::exception& e) {
       std::cerr << "Error: " << e.what() << std::endl;
       return 1;

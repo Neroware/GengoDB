@@ -44,7 +44,7 @@ inline mlir::Value orAll(mlir::OpBuilder& b, mlir::Location loc, llvm::ArrayRef<
 }
 
 struct TagPredicates {
-   mlir::Value isBool, isLong, isDouble, isRDFNode, isString, isUnspecified, isNumericFamily, isScratchPayload;
+   mlir::Value isBool, isLong, isDouble, isRDFNode, isString, isIri, isUnspecified, isNumericFamily, isScratchPayload;
 };
 
 struct FixedNumericTag {
@@ -84,6 +84,7 @@ inline TagPredicates computeTagPredicates(mlir::OpBuilder& b, mlir::Location loc
    p.isDouble = getEqTag(b, loc, tag, xsd::Type::Double);
    p.isRDFNode = getEqTag(b, loc, tag, xsd::Type::RDFNode);
    p.isString = getEqTag(b, loc, tag, xsd::Type::String);
+   p.isIri = getEqTag(b, loc, tag, xsd::Type::AnyIRI);
    p.isUnspecified = getEqTag(b, loc, tag, xsd::Type::Unspecified);
    mlir::Value isByte = getEqTag(b, loc, tag, xsd::Type::Byte);
    mlir::Value isShort = getEqTag(b, loc, tag, xsd::Type::Short);
@@ -94,8 +95,9 @@ inline TagPredicates computeTagPredicates(mlir::OpBuilder& b, mlir::Location loc
    mlir::Value isULong = getEqTag(b, loc, tag, xsd::Type::UnsignedLong);
    mlir::Value isFloat = getEqTag(b, loc, tag, xsd::Type::Float);
    mlir::Value isDate = getEqTag(b, loc, tag, xsd::Type::Date);
-   p.isNumericFamily = orAll(b, loc, {p.isBool, p.isLong, p.isDouble, isByte, isShort, isInt, isUByte, isUShort, isUInt, isULong, isFloat, isDate});
-   p.isScratchPayload = orAll(b, loc, {p.isNumericFamily, p.isRDFNode, p.isString});
+   mlir::Value isDateTime = getEqTag(b, loc, tag, xsd::Type::DateTime);
+   p.isNumericFamily = orAll(b, loc, {p.isBool, p.isLong, p.isDouble, isByte, isShort, isInt, isUByte, isUShort, isUInt, isULong, isFloat, isDate, isDateTime});
+   p.isScratchPayload = orAll(b, loc, {p.isNumericFamily, p.isRDFNode, p.isString, p.isIri});
    return p;
 }
 

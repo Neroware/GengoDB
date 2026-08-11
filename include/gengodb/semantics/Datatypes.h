@@ -88,7 +88,8 @@ enum class Type : std::int32_t {
 
     // ---- GengoDB-specific: (1000 - 1099) ----
     RDFNode            = 1000,
-    LangString         = 1001
+    LangString         = 1001,
+    AnyIRI              = 1002
 };
 
 inline constexpr std::int32_t to_int32(Type t) {
