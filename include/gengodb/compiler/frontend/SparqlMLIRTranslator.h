@@ -396,8 +396,12 @@ class Parser {
          std::string iri = is(TK::IRI) ? tok.value : expandPrefix(tok.value, pref);
          size_t line = tok.line;
          advance();
-         if (!is(TK::LeftParen))
-            throw std::runtime_error("Expected '(' after datatype IRI '" + iri + "' (only xsd:TYPE(...) cast-constructor calls are supported here) at line " + std::to_string(line));
+         if (!is(TK::LeftParen)) {
+            auto e = std::make_unique<sparql::LiteralExpr>();
+            e->lexicalForm = iri;
+            e->xsdType = gengodb::semantics::xsd::Type::AnyIRI;
+            return e;
+         }
          advance();
          auto resolved = resolveXsdTypeFromIri(iri);
          if (!resolved)
@@ -969,6 +973,7 @@ class Translator {
          case Type::Decimal:
             return builder.create<mlir::arith::ConstantOp>(loc, builder.getF64Type(), builder.getFloatAttr(builder.getF64Type(), std::stod(lit.lexicalForm)));
          case Type::String:
+         case Type::AnyIRI:
             return builder.create<db::ConstantOp>(loc, db::StringType::get(ctxt), builder.getStringAttr(lit.lexicalForm));
          default:
             throw std::runtime_error("FILTER literal datatype '" + gengodb::semantics::xsd::to_string(lit.xsdType) +
@@ -989,6 +994,11 @@ class Translator {
                mlir::Value packed = packedDateTimeScalar(lit.lexicalForm, loc);
                auto typeIdAttr = builder.getI32IntegerAttr(gengodb::semantics::xsd::to_int32(gengodb::semantics::xsd::Type::DateTime));
                return builder.create<variant::CreateScalarOp>(loc, variantType, packed, typeIdAttr);
+            }
+            if (lit.xsdType == gengodb::semantics::xsd::Type::AnyIRI) {
+               mlir::Value scalar = literalScalar(lit, loc);
+               auto typeIdAttr = builder.getI32IntegerAttr(gengodb::semantics::xsd::to_int32(gengodb::semantics::xsd::Type::AnyIRI));
+               return builder.create<variant::CreateScalarOp>(loc, variantType, scalar, typeIdAttr);
             }
             mlir::Value scalar = literalScalar(lit, loc);
             return builder.create<variant::CreateScalarOp>(loc, variantType, scalar);

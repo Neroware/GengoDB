@@ -355,6 +355,26 @@ int8_t VariantRuntime::compareNodeRefRef(PropertyGraph::NodeEntry* lhs, Property
     }
 }
 
+int8_t VariantRuntime::compareIriNodeRef(VarLen32 iri, PropertyGraph::NodeEntry* ref, int32_t predicate) {
+    if (ref->payload >= 0) return -1;
+    PropertyGraph* pgraph = propertyGraphOf(ref);
+    const int32_t localId = GraphStorage::nodeId(reinterpret_cast<uint8_t*>(ref));
+    if (pgraph->getMetadata().type_id(localId) != static_cast<int32_t>(RDFNodeType::IRI))
+        return -1;
+    const std::string nodeName = pgraph->getMetadata().get_node_name(localId);
+    const std::string bracketed = "<" + std::string(iri.data(), iri.getLen()) + ">";
+    const int cmp = bracketed.compare(nodeName);
+    switch (predicate) {
+        case 0: return cmp == 0;
+        case 1: return cmp != 0;
+        case 2: return cmp < 0;
+        case 3: return cmp <= 0;
+        case 4: return cmp > 0;
+        case 5: return cmp >= 0;
+        default: return -1;
+    }
+}
+
 int8_t VariantRuntime::compareBlobLiteralRefRef(PropertyGraph::NodeEntry* lhs, PropertyGraph::NodeEntry* rhs, int32_t predicate) {
     auto lhsLit = reconstructBlobLiteral(lhs);
     auto rhsLit = reconstructBlobLiteral(rhs);

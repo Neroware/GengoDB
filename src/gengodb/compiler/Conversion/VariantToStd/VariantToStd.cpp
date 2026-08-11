@@ -162,6 +162,17 @@ arith::CmpFPredicate toCmpFPredicate(variant::VariantCmpPredicate p) {
     }
     llvm_unreachable("unhandled VariantCmpPredicate");
 }
+variant::VariantCmpPredicate reversePredicate(variant::VariantCmpPredicate p) {
+    switch (p) {
+        case variant::VariantCmpPredicate::lt: return variant::VariantCmpPredicate::gt;
+        case variant::VariantCmpPredicate::gt: return variant::VariantCmpPredicate::lt;
+        case variant::VariantCmpPredicate::lte: return variant::VariantCmpPredicate::gte;
+        case variant::VariantCmpPredicate::gte: return variant::VariantCmpPredicate::lte;
+        case variant::VariantCmpPredicate::eq: return variant::VariantCmpPredicate::eq;
+        case variant::VariantCmpPredicate::neq: return variant::VariantCmpPredicate::neq;
+    }
+    llvm_unreachable("unhandled VariantCmpPredicate");
+}
 Value applyStringCmp(OpBuilder& b, Location loc, variant::VariantCmpPredicate p, Value lhs, Value rhs) {
     switch (p) {
         case variant::VariantCmpPredicate::eq: return rt::StringRuntime::compareEq(b, loc)({lhs, rhs})[0];
@@ -347,7 +358,15 @@ Value computeLexicalForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value ta
                                     b4.create<scf::YieldOp>(l4, loadTyped(b4, l4, ref, getVarlen32Type(ctxt)));
                                 },
                                 [&](OpBuilder& b4, Location l4) {
-                                    b4.create<scf::YieldOp>(l4, rt::VariantRuntime::toStringBlobLiteral(b4, l4)({ref})[0]);
+                                    auto ifIri = b4.create<scf::IfOp>(
+                                        l4, tp.isIri,
+                                        [&](OpBuilder& b5, Location l5) {
+                                            b5.create<scf::YieldOp>(l5, loadTyped(b5, l5, ref, getVarlen32Type(ctxt)));
+                                        },
+                                        [&](OpBuilder& b5, Location l5) {
+                                            b5.create<scf::YieldOp>(l5, rt::VariantRuntime::toStringBlobLiteral(b5, l5)({ref})[0]);
+                                        });
+                                    b4.create<scf::YieldOp>(l4, ifIri.getResult(0));
                                 });
                             b3.create<scf::YieldOp>(l3, ifString.getResult(0));
                         });
@@ -374,7 +393,15 @@ Value computeFullForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value tag, 
                     b2.create<scf::YieldOp>(l2, rt::VariantRuntime::toStringNodeRef(b2, l2)({ref})[0]);
                 },
                 [&](OpBuilder& b2, Location l2) {
-                    b2.create<scf::YieldOp>(l2, rt::VariantRuntime::toStringFull(b2, l2)({payload, tag, ref})[0]);
+                    auto ifIri = b2.create<scf::IfOp>(
+                        l2, tp.isIri,
+                        [&](OpBuilder& b3, Location l3) {
+                            b3.create<scf::YieldOp>(l3, loadTyped(b3, l3, ref, getVarlen32Type(ctxt)));
+                        },
+                        [&](OpBuilder& b3, Location l3) {
+                            b3.create<scf::YieldOp>(l3, rt::VariantRuntime::toStringFull(b3, l3)({payload, tag, ref})[0]);
+                        });
+                    b2.create<scf::YieldOp>(l2, ifIri.getResult(0));
                 });
             b1.create<scf::YieldOp>(l1, result.getResult(0));
         });
@@ -485,6 +512,7 @@ class CmpOpLowering : public OpConversionPattern<variant::CmpOp> {
         auto rp = computeTagPredicates(rewriter, loc, rhsTag);
         Value sameTag = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lhsTag, rhsTag);
         Value predConst = constI32(rewriter, loc, static_cast<int32_t>(op.getPredicate()));
+        Value predConstRev = constI32(rewriter, loc, static_cast<int32_t>(reversePredicate(op.getPredicate())));
         auto predicate = op.getPredicate();
 
         // Slow runtime-call fallback via rdf4cpp API
@@ -532,6 +560,12 @@ class CmpOpLowering : public OpConversionPattern<variant::CmpOp> {
                     Value raw = rt::VariantRuntime::compareNodeRefRef(b2, l2)({lhsRef, rhsRef, predConst})[0];
                     return packFromTriBool(b2, l2, resultType, raw);
                 }},
+                {lp.isIri, [&](OpBuilder& b2, Location l2) -> Value {
+                    Value lv = loadTyped(b2, l2, lhsRef, getVarlen32Type(getContext()));
+                    Value rv = loadTyped(b2, l2, rhsRef, getVarlen32Type(getContext()));
+                    Value cmp = applyStringCmp(b2, l2, predicate, lv, rv);
+                    return asNullable(b2, l2, resultType, cmp, constBool(b2, l2, false));
+                }},
                 {lp.isUnspecified, [&](OpBuilder& b2, Location l2) -> Value {
                     return nullValue(b2, l2, resultType);
                 }},
@@ -544,7 +578,21 @@ class CmpOpLowering : public OpConversionPattern<variant::CmpOp> {
             [&](OpBuilder& b, Location l) { b.create<scf::YieldOp>(l, dispatchOnTag(b, l, fastCases, sameTagSlow)); },
             [&](OpBuilder& b, Location l) {
                 Value bothNumeric = b.create<arith::AndIOp>(l, lp.isNumericFamily, rp.isNumericFamily);
-                std::vector<TagCase> crossTagCases = {{bothNumeric, numericCrossCmp}};
+                Value iriVsNode = b.create<arith::AndIOp>(l, lp.isIri, rp.isRDFNode);
+                Value nodeVsIri = b.create<arith::AndIOp>(l, lp.isRDFNode, rp.isIri);
+                std::vector<TagCase> crossTagCases = {
+                    {bothNumeric, numericCrossCmp},
+                    {iriVsNode, [&](OpBuilder& b2, Location l2) -> Value {
+                        Value lv = loadTyped(b2, l2, lhsRef, getVarlen32Type(getContext()));
+                        Value raw = rt::VariantRuntime::compareIriNodeRef(b2, l2)({lv, rhsRef, predConst})[0];
+                        return packFromTriBool(b2, l2, resultType, raw);
+                    }},
+                    {nodeVsIri, [&](OpBuilder& b2, Location l2) -> Value {
+                        Value rv = loadTyped(b2, l2, rhsRef, getVarlen32Type(getContext()));
+                        Value raw = rt::VariantRuntime::compareIriNodeRef(b2, l2)({rv, lhsRef, predConstRev})[0];
+                        return packFromTriBool(b2, l2, resultType, raw);
+                    }},
+                };
                 Value result = dispatchOnTag(b, l, crossTagCases, [&](OpBuilder& b2, Location l2) -> Value {
                     Value neitherScratch = b2.create<arith::AndIOp>(l2, notB(b2, l2, lp.isScratchPayload), notB(b2, l2, rp.isScratchPayload));
                     std::vector<TagCase> literalCase = {{neitherScratch, blobLiteralCmp}};
