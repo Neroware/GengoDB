@@ -15,10 +15,10 @@ namespace lingodb::runtime {
 
 class GengoDBGraph {
 public:
-   explicit GengoDBGraph(std::string fileName, 
+   explicit GengoDBGraph(std::string fileName,
       int32_t nodeCapacity = DEFAULT_NODE_CAPACITY,
       int32_t relCapacity = DEFAULT_REL_CAPACITY,
-      int32_t propCapacity = DEFAULT_PROP_CAPACITY) 
+      int32_t propCapacity = DEFAULT_PROP_CAPACITY)
          : storage_(PropertyGraph::create(nodeCapacity, relCapacity, propCapacity)),
          fileName_(std::move(fileName)) { }
 
@@ -26,6 +26,10 @@ public:
 
    PropertyGraph& storage() { return *storage_; }
    const PropertyGraph& storage() const { return *storage_; }
+
+   int32_t nodeCapacity() const { return storage_->nodeCapacity(); }
+   int32_t relCapacity() const { return storage_->relCapacity(); }
+   int32_t propCapacity() const { return storage_->propCapacity(); }
 
    void setDBDir(std::string dir) { dbDir_ = std::move(dir); }
    void ensureLoaded();
@@ -35,7 +39,10 @@ public:
    void serialize(lingodb::utility::Serializer& serializer) const;
    static std::unique_ptr<GengoDBGraph> deserialize(lingodb::utility::Deserializer& deserializer);
 
-   static std::unique_ptr<GengoDBGraph> create(std::string name);
+   static std::unique_ptr<GengoDBGraph> create(std::string name,
+      int32_t nodeCapacity = DEFAULT_NODE_CAPACITY,
+      int32_t relCapacity = DEFAULT_REL_CAPACITY,
+      int32_t propCapacity = DEFAULT_PROP_CAPACITY);
 
 private:
    PropertyGraph* storage_;

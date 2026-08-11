@@ -227,7 +227,8 @@ public:
     virtual void setRdfParseFlags(parser::ParsingFlag rdfParseFlags) {
         this->rdfParseFlags = rdfParseFlags;
     }
-    static std::unique_ptr<RdfGraph> create(const std::string& name, const IRI& iri, const std::string& sourceFileName = "");
+    static std::unique_ptr<RdfGraph> create(const std::string& name, const IRI& iri, const std::string& sourceFileName = "",
+        int32_t nodeCapacity = DEFAULT_NODE_CAPACITY, int32_t relCapacity = DEFAULT_REL_CAPACITY, int32_t propCapacity = DEFAULT_PROP_CAPACITY);
     void loadTriples();
     void addTriple(const Node& s, const Node& p, const Node& o) {
         if (!p.is_iri()) assert(false && "predicate must be an IRI");

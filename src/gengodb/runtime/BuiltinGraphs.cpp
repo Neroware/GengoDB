@@ -47,9 +47,11 @@ void PropertyGraph::registerGraph() {
 }
 
 PropertyGraph::PropertyGraph(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity)
-    : graph_(nodeCapacity, relCapacity), props_(propCapacity), 
-    propMark_(0), propCap_(propCapacity), 
-    nodeCap_(nodeCapacity), relCap_(relCapacity) {}
+    : graph_(nodeCapacity, relCapacity), props_(propCapacity),
+    propMark_(0), propCap_(propCapacity),
+    nodeCap_(nodeCapacity), relCap_(relCapacity) {
+    propData_.setBlobCapacity(std::max<size_t>(1024 * 1024, static_cast<size_t>(propCapacity) * 256));
+}
 
 PropertyGraph::PropRecord& PropertyGraph::prop(prop_id_t id) const {
     assert(id >= 0 && id < propMark_);

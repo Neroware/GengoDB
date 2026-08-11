@@ -57,6 +57,15 @@ std::optional<std::string> settingsDirectiveIri(const std::string& stmt, const s
    if (!std::regex_search(stmt, m, re)) return std::nullopt;
    return m[1].matched ? m[1].str() : m[2].str();
 }
+
+std::optional<int32_t> settingsDirectiveInt(const std::string& stmt, const std::string& localName, const std::optional<std::string>& label) {
+   std::string pattern = "<" + settingsNamespace() + localName + ">\\s*(\\d+)";
+   if (label) pattern += "|\\b" + *label + ":" + localName + "\\s*(\\d+)";
+   std::regex re(pattern, std::regex::icase);
+   std::smatch m;
+   if (!std::regex_search(stmt, m, re)) return std::nullopt;
+   return std::stoi(m[1].matched ? m[1].str() : m[2].str());
+}
 } // namespace
 
 std::string trim(const std::string& s) {
@@ -128,7 +137,8 @@ void handleLoad(EngineState& state, const std::string& sourceIri, const std::str
       return;
    }
 
-   CreateRdfGraphDef def{name, rdf4cpp::IRI{graphIri}, RDFFileFormat::TURTLE, filename};
+   CreateRdfGraphDef def{name, rdf4cpp::IRI{graphIri}, RDFFileFormat::TURTLE, filename,
+      state.graphCapacity, state.graphCapacity, state.graphCapacity};
    auto graphEntry = RDFGraphCatalogEntry::createFromCreateRdfGraphDef(def);
    catalog.insertEntry(graphEntry);
    graphEntry->ensureFullyLoaded();
@@ -144,12 +154,18 @@ std::optional<SettingsDirectives> detectSettingsDirectives(const std::string& st
    SettingsDirectives directives{
       hasSettingsDirective(stmt, "persists", label),
       hasSettingsDirective(stmt, "initialize", label),
-      settingsDirectiveIri(stmt, "defaultGraph", label)};
-   if (!directives.persists && !directives.initialize && !directives.defaultGraph) return std::nullopt;
+      settingsDirectiveIri(stmt, "defaultGraph", label),
+      settingsDirectiveInt(stmt, "capacity", label)};
+   if (!directives.persists && !directives.initialize && !directives.defaultGraph && !directives.capacity) return std::nullopt;
    return directives;
 }
 
 void handleSettings(EngineState& state, const SettingsDirectives& directives) {
+   if (directives.capacity) {
+      if (*directives.capacity <= 0) throw std::runtime_error("capacity must be a positive integer");
+      state.graphCapacity = *directives.capacity;
+      std::cout << "Graph storage capacity set to " << state.graphCapacity << " nodes/relationships/properties." << std::endl;
+   }
    if (directives.initialize) {
       auto indexEntry = GraphNodeIndexCatalogEntry::build(state.loadedGraphs);
       state.session->getCatalog()->insertEntry(indexEntry, /*replace=*/true);

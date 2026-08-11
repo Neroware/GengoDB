@@ -84,13 +84,19 @@ bool GengoDBGraph::hasFreshCache(const std::string& sourcePath) const {
 }
 void GengoDBGraph::serialize(lingodb::utility::Serializer& serializer) const {
    serializer.writeProperty<std::string>(1, fileName_);
+   serializer.writeProperty<int32_t>(2, nodeCapacity());
+   serializer.writeProperty<int32_t>(3, relCapacity());
+   serializer.writeProperty<int32_t>(4, propCapacity());
 }
 std::unique_ptr<GengoDBGraph> GengoDBGraph::deserialize(lingodb::utility::Deserializer& deserializer) {
    auto fileName = deserializer.readProperty<std::string>(1);
-   return create(std::move(fileName));
+   auto nodeCapacity = deserializer.readProperty<int32_t>(2);
+   auto relCapacity = deserializer.readProperty<int32_t>(3);
+   auto propCapacity = deserializer.readProperty<int32_t>(4);
+   return create(std::move(fileName), nodeCapacity, relCapacity, propCapacity);
 }
-std::unique_ptr<GengoDBGraph> GengoDBGraph::create(std::string name) {
-   return std::make_unique<GengoDBGraph>(std::move(name));
+std::unique_ptr<GengoDBGraph> GengoDBGraph::create(std::string name, int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity) {
+   return std::make_unique<GengoDBGraph>(std::move(name), nodeCapacity, relCapacity, propCapacity);
 }
 
 } // namespace lingodb::runtime

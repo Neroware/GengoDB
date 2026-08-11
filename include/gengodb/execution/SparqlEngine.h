@@ -5,8 +5,10 @@
 #include "lingodb/execution/ResultProcessing.h"
 #include "lingodb/runtime/Session.h"
 
+#include "gengodb/runtime/GengoDBGraph.h"
 #include "gengodb/semantics/RdfGraph.h"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -22,6 +24,7 @@ struct EngineState {
    std::string dbDir;
    LoadedGraphs loadedGraphs;
    std::string defaultGraph = "gengodb://sparql/settings/defaultGraph#rdf";
+   int32_t graphCapacity = DEFAULT_NODE_CAPACITY;
 };
 
 class StatementAccumulator {
@@ -46,6 +49,7 @@ struct SettingsDirectives {
    bool persists{false};
    bool initialize{false};
    std::optional<std::string> defaultGraph;
+   std::optional<int32_t> capacity;
 };
 
 std::optional<SettingsDirectives> detectSettingsDirectives(const std::string& stmt);
