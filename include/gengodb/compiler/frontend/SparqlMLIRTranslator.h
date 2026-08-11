@@ -156,7 +156,7 @@ struct Query {
    std::optional<int64_t> limit;
    std::optional<int64_t> offset;
    bool distinct{false};
-   struct OrderKey { std::string var; bool descending{false}; };
+   struct OrderKey { std::unique_ptr<Expr> expr; bool descending{false}; };
    std::vector<OrderKey> orderBy;
 };
 
@@ -672,21 +672,21 @@ class Parser {
          advance();
          do {
             bool desc = false;
+            std::unique_ptr<sparql::Expr> expr;
             if (kw("ASC") || kw("DESC")) {
                desc = kw("DESC");
                advance();
                eat(TK::LeftParen);
-               if (!is(TK::Variable)) throw std::runtime_error("Expected variable inside ASC()/DESC() at line " + std::to_string(tok.line));
-               q.orderBy.push_back({tok.value, desc});
-               advance();
+               expr = parseFilterExpr(q.prefixes);
                eat(TK::RightParen);
-            } else if (is(TK::Variable)) {
-               q.orderBy.push_back({tok.value, false});
-               advance();
             } else {
-               throw std::runtime_error("Expected variable or ASC()/DESC() after ORDER BY at line " + std::to_string(tok.line));
+               expr = parseFilterExpr(q.prefixes);
             }
-         } while (is(TK::Variable) || kw("ASC") || kw("DESC"));
+            sparql::Query::OrderKey key;
+            key.expr = std::move(expr);
+            key.descending = desc;
+            q.orderBy.push_back(std::move(key));
+         } while (!kw("LIMIT") && !kw("OFFSET") && !is(TK::Eof));
       }
       for (int i = 0; i < 2 && (kw("LIMIT") || kw("OFFSET")); i++) {
          if (kw("LIMIT")) {
@@ -944,7 +944,7 @@ class Translator {
    mlir::Value getFilterColumn(const std::string& name, mlir::Value tupleArg) {
       auto it = varDefs.find(name);
       if (it == varDefs.end())
-         throw std::runtime_error("FILTER references unbound variable ?" + name);
+         throw std::runtime_error("expression references unbound variable ?" + name);
       auto ref = colMgr.createRef(it->second.getColumnPtr().get());
       return builder.create<tuples::GetColumnOp>(builder.getUnknownLoc(), ref.getColumn().type, ref, tupleArg);
    }
@@ -1106,6 +1106,46 @@ class Translator {
       return selOp.getResult();
    }
 
+   mlir::Value buildOrderByMap(const std::vector<sparql::Query::OrderKey>& orderBy, mlir::Value inputStream,
+                               llvm::SmallVector<tuples::ColumnRefAttr>& outRefs) {
+      auto loc = builder.getUnknownLoc();
+      auto variantType = variant::VariantType::get(ctxt);
+      llvm::SmallVector<mlir::Attribute> computedCols;
+      llvm::SmallVector<size_t> computedIdx;
+      outRefs.resize(orderBy.size());
+      for (size_t i = 0; i < orderBy.size(); i++) {
+         if (orderBy[i].expr->kind() == sparql::Expr::Kind::Variable) {
+            const auto& name = static_cast<const sparql::VariableExpr&>(*orderBy[i].expr).name;
+            auto it = varDefs.find(name);
+            if (it == varDefs.end())
+               throw std::runtime_error("ORDER BY references unbound variable ?" + name);
+            outRefs[i] = colMgr.createRef(it->second.getColumnPtr().get());
+         } else {
+            computedIdx.push_back(i);
+         }
+      }
+      if (computedIdx.empty()) return inputStream;
+
+      auto* block = new mlir::Block;
+      auto tupleArg = block->addArgument(tuples::TupleType::get(ctxt), loc);
+      {
+         mlir::OpBuilder::InsertionGuard guard(builder);
+         builder.setInsertionPointToStart(block);
+         llvm::SmallVector<mlir::Value> computedValues;
+         for (size_t i : computedIdx) {
+            mlir::Value v = translateArithExpr(*orderBy[i].expr, tupleArg);
+            auto def = colMgr.createDef(colMgr.getUniqueScope("orderby"), "key" + std::to_string(i));
+            def.getColumn().type = variantType;
+            computedCols.push_back(def);
+            computedValues.push_back(v);
+            outRefs[i] = colMgr.createRef(def.getColumnPtr().get());
+         }
+         builder.create<tuples::ReturnOp>(loc, computedValues);
+      }
+      auto mapOp = builder.create<relalg::MapOp>(loc, tuples::TupleStreamType::get(ctxt), inputStream, mlir::ArrayAttr::get(ctxt, computedCols));
+      mapOp.getPredicate().push_back(block);
+      return mapOp.getResult();
+   }
 
    mlir::Value buildPatternGroup(const std::vector<std::unique_ptr<sparql::PatternElement>>& patterns,
                                  mlir::Value externalInput) {
@@ -1195,14 +1235,12 @@ class Translator {
          }
 
          if (!query.orderBy.empty()) {
+            llvm::SmallVector<tuples::ColumnRefAttr> keyRefs;
+            prevStream = buildOrderByMap(query.orderBy, prevStream, keyRefs);
             llvm::SmallVector<mlir::Attribute> sortSpecs;
-            for (const auto& key : query.orderBy) {
-               auto it = varDefs.find(key.var);
-               if (it == varDefs.end())
-                  throw std::runtime_error("ORDER BY references unbound variable ?" + key.var);
-               auto ref = colMgr.createRef(it->second.getColumnPtr().get());
+            for (size_t i = 0; i < query.orderBy.size(); i++) {
                sortSpecs.push_back(relalg::SortSpecificationAttr::get(
-                  ctxt, ref, key.descending ? relalg::SortSpec::desc : relalg::SortSpec::asc));
+                  ctxt, keyRefs[i], query.orderBy[i].descending ? relalg::SortSpec::desc : relalg::SortSpec::asc));
             }
             prevStream = builder.create<relalg::SortOp>(
                loc, tuples::TupleStreamType::get(ctxt), prevStream, mlir::ArrayAttr::get(ctxt, sortSpecs));
