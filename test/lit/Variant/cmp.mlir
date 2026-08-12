@@ -79,6 +79,19 @@ module {
         //CHECK: bool(NULL)
         db.runtime_call "DumpValue" (%crossStrNum) : (!db.nullable<i1>) -> ()
 
+        // Same-tag xsd:Integer comparison (blob-shaped, canonicalized to a
+        // scratch VarLen32)
+        %int5 = db.constant ("5") : !db.string
+        %int9 = db.constant ("9") : !db.string
+        %vInt5 = variant.create_scalar %int5 : !db.string { type = 200 }
+        %vInt9 = variant.create_scalar %int9 : !db.string { type = 200 }
+        %eqInt = variant.cmp eq %vInt5, %vInt5 -> !db.nullable<i1>
+        //CHECK: bool(true)
+        db.runtime_call "DumpValue" (%eqInt) : (!db.nullable<i1>) -> ()
+        %ltInteger = variant.cmp lt %vInt5, %vInt9 -> !db.nullable<i1>
+        //CHECK: bool(true)
+        db.runtime_call "DumpValue" (%ltInteger) : (!db.nullable<i1>) -> ()
+
         return
     }
 }

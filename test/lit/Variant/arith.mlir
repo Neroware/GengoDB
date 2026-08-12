@@ -58,6 +58,48 @@ module {
         //CHECK: bool(true)
         db.runtime_call "DumpValue" (%isUnspecified32) : (i1) -> ()
 
+        // xsd:Integer (arbitrary precision, blob-shaped; see
+        // gengodb::semantics::xsd::Type::Integer = 200)
+        %bigA = db.constant ("830103818230965482862112") : !db.string
+        %bigB = db.constant ("1") : !db.string
+        %vBigA = variant.create_scalar %bigA : !db.string { type = 200 }
+        %vBigB = variant.create_scalar %bigB : !db.string { type = 200 }
+        %bigSum = variant.arith add %vBigA, %vBigB
+        %bigSumStr = variant.to_string %bigSum -> !db.string
+        //CHECK: string("830103818230965482862113")
+        db.runtime_call "DumpValue" (%bigSumStr) : (!db.string) -> ()
+
+        // Cross-tag Integer + Long
+        %iStr = db.constant ("700") : !db.string
+        %vI = variant.create_scalar %iStr : !db.string { type = 200 }
+        %l120 = arith.constant 120 : i64
+        %vL120 = variant.create_scalar %l120 : i64
+        %intLongCrossSum = variant.arith add %vI, %vL120
+        %intLongCrossSumStr = variant.to_string %intLongCrossSum -> !db.string
+        //CHECK: string("820")
+        db.runtime_call "DumpValue" (%intLongCrossSumStr) : (!db.string) -> ()
+
+        // xsd:Integer / xsd:Integer: per XSD/XPath op:numeric-divide, this
+        // yields xsd:Decimal (tag 3), not xsd:Integer
+        %iStr2 = db.constant ("7") : !db.string
+        %vI2 = variant.create_scalar %iStr2 : !db.string { type = 200 }
+        %iStr3 = db.constant ("2") : !db.string
+        %vI3 = variant.create_scalar %iStr3 : !db.string { type = 200 }
+        %divResult = variant.arith div %vI2, %vI3
+        %decimalTag = arith.constant 3 : i32
+        %isDecimalDiv = variant.variant_is_a %divResult { type = %decimalTag }
+        //CHECK: bool(true)
+        db.runtime_call "DumpValue" (%isDecimalDiv) : (i1) -> ()
+
+        // xsd:Decimal + xsd:Integer cross-tag: symmetric to Integer/Long
+        // above, exercising the other arbitrary-precision blob tag.
+        %decStr = db.constant ("2.5") : !db.string
+        %vDec = variant.create_scalar %decStr : !db.string { type = 3 }
+        %decSum = variant.arith add %vDec, %vI2
+        %isDecimalSum = variant.variant_is_a %decSum { type = %decimalTag }
+        //CHECK: bool(true)
+        db.runtime_call "DumpValue" (%isDecimalSum) : (i1) -> ()
+
         return
     }
 }

@@ -26,10 +26,10 @@ struct VariantRuntime {
     static VarLen32 toStringNumeric(int64_t payload, int32_t tag);
     static VarLen32 toStringNodeRef(PropertyGraph::NodeEntry* ref);
     static VarLen32 toStringBlobLiteral(PropertyGraph::NodeEntry* ref);
-    static VarLen32 toStringFull(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref);
+    static VarLen32 toStringFull(int64_t payload, int32_t tag);
 
     // string cast fallback
-    static int32_t castLiteral(int64_t payload, int32_t srcTag, PropertyGraph::NodeEntry* ref, int32_t targetTag, uint8_t* outPtr);
+    static int32_t castLiteral(int64_t payload, int32_t srcTag, int32_t targetTag, uint8_t* outPtr);
 
     // Node-ref comparison: resolves both sides' global UID (possibly from
     // different graphs) and compares those.
@@ -39,7 +39,7 @@ struct VariantRuntime {
     static int8_t compareIriNodeRef(VarLen32 iri, PropertyGraph::NodeEntry* ref, int32_t predicate);
 
     // Rare-tag literal comparison fallback (needs full XSD value semantics).
-    static int8_t compareBlobLiteralRefRef(PropertyGraph::NodeEntry* lhs, PropertyGraph::NodeEntry* rhs, int32_t predicate);
+    static int8_t compareBlobLiteral(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag, int32_t predicate);
 
     // Cross-tag numeric comparison/arithmetic: tag + raw bytes -> rdf4cpp::Literal
     // via compile-time datatype tags, no IRI/graph lookup involved; genuinely
@@ -47,17 +47,22 @@ struct VariantRuntime {
     static int8_t compareNumericCross(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag, int32_t predicate);
     static int32_t arithNumericCross(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag, int32_t predicate, uint8_t* outPtr);
 
+    // Arithmetic where either operand is xsd:Integer or xsd:Decimal (both
+    // arbitrary-precision, blob-shaped) and the other is one of those two or a
+    // fixed-numeric-family member.
+    static int32_t arithBlobNumeric(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag, int32_t predicate, uint8_t* outPtr, VarLen32* outBlob);
+
     // Canonicalizing hash for the fixed/inline numeric family
     static int64_t hashNumeric(int64_t payload, int32_t tag);
 
     // Total order of the variant type
-    static int8_t compareOrder(int64_t lhsPayload, int32_t lhsTag, PropertyGraph::NodeEntry* lhsRef, int64_t rhsPayload, int32_t rhsTag, PropertyGraph::NodeEntry* rhsRef);
+    static int8_t compareOrder(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag);
 
     // xsd:string language tag filter
-    static int8_t langMatches(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref, VarLen32 langRange);
+    static int8_t langMatches(int64_t payload, int32_t tag, VarLen32 langRange);
 
     // SPARQL LANG(): a literal's language tag as xsd:string, or the empty string if it has none
-    static VarLen32 langTag(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref);
+    static VarLen32 langTag(int64_t payload, int32_t tag);
 };
 
 } // namespace lingodb::runtime

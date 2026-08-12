@@ -75,6 +75,27 @@ module {
         %neqStr = arith.cmpi eq, %hStr1, %hStr3 : index
         db.runtime_call "DumpValue" (%neqStr) : (i1) -> ()
 
+        // xsd:Integer (blob-shaped, canonicalized to a scratch VarLen32)
+        %intStr1 = db.constant ("5") : !db.string
+        %intStr2 = db.constant ("5") : !db.string
+        %intStr3 = db.constant ("6") : !db.string
+        %vInt1 = variant.create_scalar %intStr1 : !db.string { type = 200 }
+        %vInt2 = variant.create_scalar %intStr2 : !db.string { type = 200 }
+        %vInt3 = variant.create_scalar %intStr3 : !db.string { type = 200 }
+        %hInt1 = db.hash %vInt1 : !variant.variant
+        %hInt2 = db.hash %vInt2 : !variant.variant
+        %hInt3 = db.hash %vInt3 : !variant.variant
+
+        // xsd:Integer, same value -> equal hash
+        //CHECK: bool(true)
+        %eqInt = arith.cmpi eq, %hInt1, %hInt2 : index
+        db.runtime_call "DumpValue" (%eqInt) : (i1) -> ()
+
+        // xsd:Integer, different value -> hash need not match (sanity check)
+        //CHECK: bool(false)
+        %neqInt = arith.cmpi eq, %hInt1, %hInt3 : index
+        db.runtime_call "DumpValue" (%neqInt) : (i1) -> ()
+
         return
     }
 }

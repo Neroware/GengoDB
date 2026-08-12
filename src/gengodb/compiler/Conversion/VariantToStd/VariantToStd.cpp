@@ -261,8 +261,9 @@ class CreateNodeRefOpLowering : public OpConversionPattern<variant::CreateNodeRe
                         b2.create<scf::YieldOp>(l2, opaqueRef);
                     },
                     [&](OpBuilder& b2, Location l2) {
+                        Value isStringLike = b2.create<arith::OrIOp>(l2, tagPred.isString, b2.create<arith::OrIOp>(l2, tagPred.isInteger, tagPred.isDecimal));
                         auto strIf = b2.create<scf::IfOp>(
-                            l2, tagPred.isString,
+                            l2, isStringLike,
                             [&](OpBuilder& b3, Location l3) {
                                 Value strVal = rt::VariantRuntime::extractBlobLiteral(b3, l3)({opaqueRef})[0];
                                 Value strSlot = allocScratch(b3, l3, getVarlen32Type(ctxt));
@@ -355,8 +356,9 @@ Value computeLexicalForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value ta
                             b3.create<scf::YieldOp>(l3, rt::VariantRuntime::toStringNodeRef(b3, l3)({ref})[0]);
                         },
                         [&](OpBuilder& b3, Location l3) {
+                            Value isStringLike = b3.create<arith::OrIOp>(l3, tp.isString, b3.create<arith::OrIOp>(l3, tp.isInteger, tp.isDecimal));
                             auto ifString = b3.create<scf::IfOp>(
-                                l3, tp.isString,
+                                l3, isStringLike,
                                 [&](OpBuilder& b4, Location l4) {
                                     b4.create<scf::YieldOp>(l4, loadTyped(b4, l4, ref, getVarlen32Type(ctxt)));
                                 },
@@ -402,7 +404,7 @@ Value computeFullForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value tag, 
                             b3.create<scf::YieldOp>(l3, loadTyped(b3, l3, ref, getVarlen32Type(ctxt)));
                         },
                         [&](OpBuilder& b3, Location l3) {
-                            b3.create<scf::YieldOp>(l3, rt::VariantRuntime::toStringFull(b3, l3)({payload, tag, ref})[0]);
+                            b3.create<scf::YieldOp>(l3, rt::VariantRuntime::toStringFull(b3, l3)({payload, tag})[0]);
                         });
                     b2.create<scf::YieldOp>(l2, ifIri.getResult(0));
                 });
@@ -451,7 +453,7 @@ class CastOpLowering : public OpConversionPattern<variant::CastOp> {
             [&](OpBuilder& b, Location l) {
                 Value payload = b.create<util::PtrToIntOp>(l, b.getI64Type(), srcRef);
                 Value outSlot = allocStack(rewriter, op, b.getIntegerType(8), 8);
-                Value resultTag = rt::VariantRuntime::castLiteral(b, l)({payload, srcTag, srcRef, targetTagConst, outSlot})[0];
+                Value resultTag = rt::VariantRuntime::castLiteral(b, l)({payload, srcTag, targetTagConst, outSlot})[0];
                 b.create<scf::YieldOp>(l, packVariant(b, l, resultTag, inlineFromScratch(b, l, outSlot)));
             });
         rewriter.replaceOp(op, result.getResult(0));
@@ -492,7 +494,7 @@ class LangCastOpLowering : public OpConversionPattern<variant::StrCastOp> {
         auto* ctxt = getContext();
         auto [tag, ref] = unpackVariant(rewriter, loc, adaptor.getVar());
         Value payload = rewriter.create<util::PtrToIntOp>(loc, rewriter.getI64Type(), ref);
-        Value lang = rt::VariantRuntime::langTag(rewriter, loc)({payload, tag, ref})[0];
+        Value lang = rt::VariantRuntime::langTag(rewriter, loc)({payload, tag})[0];
         Value scratch = allocScratch(rewriter, loc, getVarlen32Type(ctxt));
         Value typedScratch = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, getVarlen32Type(ctxt)), scratch);
         rewriter.create<util::StoreOp>(loc, lang, typedScratch, Value());
@@ -526,7 +528,9 @@ class CmpOpLowering : public OpConversionPattern<variant::CmpOp> {
             return packFromTriBool(b, l, resultType, raw);
         };
         auto blobLiteralCmp = [&](OpBuilder& b, Location l) -> Value {
-            Value raw = rt::VariantRuntime::compareBlobLiteralRefRef(b, l)({lhsRef, rhsRef, predConst})[0];
+            Value lhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), lhsRef);
+            Value rhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), rhsRef);
+            Value raw = rt::VariantRuntime::compareBlobLiteral(b, l)({lhsPayload, lhsTag, rhsPayload, rhsTag, predConst})[0];
             return packFromTriBool(b, l, resultType, raw);
         };
 
@@ -619,7 +623,7 @@ class OrderOpLowering : public OpConversionPattern<variant::OrderOp> {
         auto [rhsTag, rhsRef] = unpackVariant(rewriter, loc, adaptor.getRhs());
         Value lhsPayload = rewriter.create<util::PtrToIntOp>(loc, rewriter.getI64Type(), lhsRef);
         Value rhsPayload = rewriter.create<util::PtrToIntOp>(loc, rewriter.getI64Type(), rhsRef);
-        Value result = rt::VariantRuntime::compareOrder(rewriter, loc)({lhsPayload, lhsTag, lhsRef, rhsPayload, rhsTag, rhsRef})[0];
+        Value result = rt::VariantRuntime::compareOrder(rewriter, loc)({lhsPayload, lhsTag, rhsPayload, rhsTag})[0];
         rewriter.replaceOp(op, result);
         return success();
     }
@@ -650,7 +654,7 @@ class PredicateOpLowering : public OpConversionPattern<variant::PredicateOp> {
             if (!rangeAttr) return rewriter.notifyMatchFailure(op, "variant.predicate LANGMATCHES's language range must be a string");
             Value payload = rewriter.create<util::PtrToIntOp>(loc, rewriter.getI64Type(), ref);
             Value range = rewriter.create<util::CreateConstVarLen>(loc, getVarlen32Type(getContext()), rangeAttr);
-            Value raw = rt::VariantRuntime::langMatches(rewriter, loc)({payload, tag, ref, range})[0];
+            Value raw = rt::VariantRuntime::langMatches(rewriter, loc)({payload, tag, range})[0];
             rewriter.replaceOp(op, packFromTriBool(rewriter, loc, resultType, raw));
             return success();
         }
@@ -698,6 +702,47 @@ class ArithOpLowering : public OpConversionPattern<variant::ArithOp> {
             return packVariant(b, l, resultTag, inlineFromScratch(b, l, outSlot));
         };
 
+        Value integerTagConst = constI32(rewriter, loc, xsd::to_int32(xsd::Type::Integer));
+        Value decimalTagConst = constI32(rewriter, loc, xsd::to_int32(xsd::Type::Decimal));
+        auto isBlobNumericTag = [&](Value tag) -> Value {
+            Value isInt = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, tag, integerTagConst);
+            Value isDec = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, tag, decimalTagConst);
+            return rewriter.create<arith::OrIOp>(loc, isInt, isDec);
+        };
+        Value eitherBlobNumeric = rewriter.create<arith::OrIOp>(loc, isBlobNumericTag(lhsTag), isBlobNumericTag(rhsTag));
+
+        auto blobNumericArith = [&](OpBuilder& b, Location l) -> Value {
+            Value predConst = constI32(b, l, static_cast<int32_t>(predicate));
+            Value lhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), lhsRef);
+            Value rhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), rhsRef);
+            Value outSlot = allocStack(rewriter, op, b.getIntegerType(8), 8);
+            Value blobSlotTyped = allocStack(rewriter, op, getVarlen32Type(getContext()));
+            Value blobSlot = getPointer(b, l, blobSlotTyped);
+            Value resultTag = rt::VariantRuntime::arithBlobNumeric(b, l)(
+                {lhsPayload, lhsTag, rhsPayload, rhsTag, predConst, outSlot, blobSlot})[0];
+            Value isIntegerResult = b.create<arith::CmpIOp>(l, arith::CmpIPredicate::eq, resultTag, integerTagConst);
+            Value isDecimalResult = b.create<arith::CmpIOp>(l, arith::CmpIPredicate::eq, resultTag, decimalTagConst);
+            Value isBlobResult = b.create<arith::OrIOp>(l, isIntegerResult, isDecimalResult);
+            auto packed = b.create<scf::IfOp>(
+                l, isBlobResult,
+                [&](OpBuilder& b2, Location l2) {
+                    Value lex = loadTyped(b2, l2, blobSlotTyped, getVarlen32Type(getContext()));
+                    Value scratch = allocScratch(b2, l2, getVarlen32Type(getContext()));
+                    Value typedScratch = b2.create<util::GenericMemrefCastOp>(l2, util::RefType::get(getContext(), getVarlen32Type(getContext())), scratch);
+                    b2.create<util::StoreOp>(l2, lex, typedScratch, Value());
+                    b2.create<scf::YieldOp>(l2, packVariant(b2, l2, resultTag, scratch));
+                },
+                [&](OpBuilder& b2, Location l2) {
+                    b2.create<scf::YieldOp>(l2, packVariant(b2, l2, resultTag, inlineFromScratch(b2, l2, outSlot)));
+                });
+            return packed.getResult(0);
+        };
+
+        auto slowFallback = [&](OpBuilder& b, Location l) -> Value {
+            std::vector<TagCase> blobNumericCase = {{eitherBlobNumeric, blobNumericArith}};
+            return dispatchOnTag(b, l, blobNumericCase, slowArith);
+        };
+
         // Same-tag fast paths for fixed sized scalars up to 8 bytes.
         std::vector<TagCase> fastCases;
         for (const FixedNumericTag& n : fixedNumericTags()) {
@@ -715,8 +760,8 @@ class ArithOpLowering : public OpConversionPattern<variant::ArithOp> {
 
         auto result = rewriter.create<scf::IfOp>(
             loc, sameTag,
-            [&](OpBuilder& b, Location l) { b.create<scf::YieldOp>(l, dispatchOnTag(b, l, fastCases, slowArith)); },
-            [&](OpBuilder& b, Location l) { b.create<scf::YieldOp>(l, slowArith(b, l)); });
+            [&](OpBuilder& b, Location l) { b.create<scf::YieldOp>(l, dispatchOnTag(b, l, fastCases, slowFallback)); },
+            [&](OpBuilder& b, Location l) { b.create<scf::YieldOp>(l, slowFallback(b, l)); });
         rewriter.replaceOp(op, result.getResult(0));
         return success();
     }

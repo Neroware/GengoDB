@@ -1093,8 +1093,9 @@ class HashLowering : public ConversionPattern {
                b.create<mlir::scf::YieldOp>(l, combineHashes(b, l, hashInteger(b, l, bits), totalHash));
             },
             [&](OpBuilder& b, Location l) {
+               Value isStringLike = b.create<arith::OrIOp>(l, tp.isString, b.create<arith::OrIOp>(l, tp.isInteger, tp.isDecimal));
                auto ifString = b.create<mlir::scf::IfOp>(
-                  l, tp.isString,
+                  l, isStringLike,
                   [&](OpBuilder& b2, Location l2) {
                      Value str = layout::loadTyped(b2, l2, ref, varLen32Type);
                      b2.create<mlir::scf::YieldOp>(l2, hashImpl(b2, l2, str, totalHash, varLen32Type));
