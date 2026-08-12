@@ -158,6 +158,13 @@ def IdentifiersEqualOp : GraphSubOp_Op<"identifiers_equal", [Pure]> {
     let assemblyFormat = [{ $lhs `:` type($lhs) `,` $rhs `:` type($rhs) attr-dict }];
 }
 
+def IdentifierValidOp : GraphSubOp_Op<"identifier_valid", [Pure]> {
+    let summary = "identifier validity check";
+    let arguments = (ins Identifier:$ident);
+    let results = (outs I1:$result);
+    let assemblyFormat = [{ $ident `:` type($ident) attr-dict }];
+}
+
 //===----------------------------------------------------------------------===//
 // Property ref and output string creation
 //===----------------------------------------------------------------------===//

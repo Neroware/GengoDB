@@ -5263,6 +5263,17 @@ class IdentifiersEqualLowering : public SubOpConversionPattern<gsubop::Identifie
    }
 };
 
+class IdentifierValidLowering : public SubOpConversionPattern<gsubop::IdentifierValidOp> {
+   using SubOpConversionPattern<gsubop::IdentifierValidOp>::SubOpConversionPattern;
+   LogicalResult matchAndRewrite(gsubop::IdentifierValidOp op, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
+      auto loc = op->getLoc();
+      mlir::Value zero = rewriter.create<arith::ConstantOp>(loc, rewriter.getIntegerAttr(rewriter.getI32Type(), 0));
+      mlir::Value valid = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge, adaptor.getIdent(), zero);
+      rewriter.replaceOp(op, valid);
+      return success();
+   }
+};
+
 class CastPropertyRefLowering : public SubOpTupleStreamConsumerConversionPattern<gsubop::CastPropertyRefOp> {
    using SubOpTupleStreamConsumerConversionPattern<gsubop::CastPropertyRefOp>::SubOpTupleStreamConsumerConversionPattern;
    LogicalResult match(gsubop::CastPropertyRefOp castOp) const override {
@@ -5486,6 +5497,7 @@ PatternList getCPUPatternList(TypeConverter& typeConverter, mlir::MLIRContext* c
    patterns.insertPattern<ScanPropertySetLowering>(typeConverter, ctxt);
    patterns.insertPattern<CreateIdentifierLowering>(typeConverter, ctxt);
    // patterns.insertPattern<IdentifiersEqualLowering>(typeConverter, ctxt);
+   patterns.insertPattern<IdentifierValidLowering>(typeConverter, ctxt);
    patterns.insertPattern<GetIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<FilterByIdentifierLowering>(typeConverter, ctxt);
    patterns.insertPattern<CastPropertyRefLowering>(typeConverter, ctxt);

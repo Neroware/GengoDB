@@ -362,6 +362,18 @@ class TripleEmitter {
       }
       return stream;
    }
+   mlir::Value filterValidIdentifier(mlir::Value stream, tuples::ColumnRefAttr identRef) {
+      subop::MapCreationHelper helper(ctxt);
+      auto [validDef, validRef] = createColumn(rewriter.getI1Type(), "idents", "valid");
+      helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
+         mlir::Value identVal = helper.access(identRef, loc);
+         mlir::Value valid = b.create<gsubop::IdentifierValidOp>(loc, b.getI1Type(), identVal);
+         b.create<tuples::ReturnOp>(loc, valid);
+      });
+      auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({validDef}), helper.getColRefs());
+      mapOp.getFn().push_back(helper.getMapBlock());
+      return rewriter.create<subop::FilterOp>(loc, mapOp.getResult(), subop::FilterSemantic::all_true, rewriter.getArrayAttr({validRef}));
+   }
    mlir::Value scanFromConstantAnchor(mlir::Value stream, gpm::IdentifierTermAttr ident, EdgeDirection direction, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef) {
       auto& graphData = graphs[graphSym];
       auto nodesRef = columnManager.createRef(graphData.nodeSetColumn);
@@ -379,6 +391,7 @@ class TripleEmitter {
          auto scan = generateTupleStream(rewriter, loc, identDef, [&](mlir::OpBuilder& bldr) -> mlir::Value {
             return bldr.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, ident.getIdent());
          });
+         scan = filterValidIdentifier(scan, identRef);
          nodeRefType = createNodeRefType(ctxt, group, graph);
          auto [nodeDef, resolvedRef] = createColumn(nodeRefType, "nodes", "ref");
          mlir::Value lookup = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), scan, nodeSetArg, rewriter.getArrayAttr({identRef}), nodeDef);
