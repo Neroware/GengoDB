@@ -175,7 +175,10 @@ variant::VariantCmpPredicate reversePredicate(variant::VariantCmpPredicate p) {
 }
 Value applyStringCmp(OpBuilder& b, Location loc, variant::VariantCmpPredicate p, Value lhs, Value rhs) {
     switch (p) {
-        case variant::VariantCmpPredicate::eq: return rt::StringRuntime::compareEq(b, loc)({lhs, rhs})[0];
+        case variant::VariantCmpPredicate::eq: {
+            Value neq = rt::StringRuntime::compareNEq(b, loc)({lhs, rhs})[0];
+            return b.create<arith::XOrIOp>(loc, neq, constBool(b, loc, true));
+        }
         case variant::VariantCmpPredicate::neq: return rt::StringRuntime::compareNEq(b, loc)({lhs, rhs})[0];
         case variant::VariantCmpPredicate::lt: return rt::StringRuntime::compareLt(b, loc)({lhs, rhs})[0];
         case variant::VariantCmpPredicate::lte: return rt::StringRuntime::compareLte(b, loc)({lhs, rhs})[0];

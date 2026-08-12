@@ -1,5 +1,6 @@
 #ifndef LINGODB_RUNTIME_EXECUTIONCONTEXT_H
 #define LINGODB_RUNTIME_EXECUTIONCONTEXT_H
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -18,6 +19,10 @@ struct State {
 struct Arena {
    static constexpr size_t thresholdDirectAlloc = 16 * 1024; // 16 KiB
    static constexpr size_t chunkSize = 1024 * 1024; // 1 MiB
+   // TODO the Arena requires alignment since we store variant literals.
+   // For now, this is okay, but in the future, we need to optimize cases
+   // where a type (i.e. Varlen32) is only 128 bits wide.
+   static constexpr size_t allocAlignment = alignof(std::max_align_t);
    // chunk allocations + direct allocations
    std::vector<uint8_t*> allocations;
    // remaining from current Chunk
@@ -32,7 +37,8 @@ struct Arena {
          allocations.push_back(ptr);
          return ptr;
       } else {
-         if (remainingBytes < bytes) {
+         size_t alignedBytes = (bytes + allocAlignment - 1) & ~(allocAlignment - 1);
+         if (remainingBytes < alignedBytes) {
             //case 2: not enough space in current chunk, allocate new chunk
             uint8_t* newChunk = (uint8_t*) malloc(chunkSize);
             allocations.push_back(newChunk);
@@ -41,8 +47,8 @@ struct Arena {
          }
          // now we have enough space in the current chunk
          uint8_t* ptr = currentChunkStart;
-         currentChunkStart += bytes;
-         remainingBytes -= bytes;
+         currentChunkStart += alignedBytes;
+         remainingBytes -= alignedBytes;
          return ptr;
       }
    }
