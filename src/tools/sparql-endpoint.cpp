@@ -5,10 +5,16 @@
 //   POST /sparql-update  - LOAD / settings-directive statements (see below)
 //   GET|POST /sparql     - SPARQL SELECT queries
 //
-// The SPARQL JSON writer parses GengoDB output, which is a string column table,
-// back apart to set "type": "uri"/"bnode"/"literal" plus, for literals, the
-// optional "datatype"/"xml:lang" fields per the SPARQL 1.1 Query Results
-// JSON Format spec.
+// The SPARQL JSON/XML writers parse GengoDB output, which is a string column
+// table, back apart to set "type": "uri"/"bnode"/"literal" plus, for literals,
+// the optional "datatype"/"xml:lang" fields per the SPARQL 1.1 Query Results
+// JSON/XML Format specs. The result format is negotiated from the request's
+// Accept header (text/csv, text/tab-separated-values, application/sparql-
+// results+json, application/sparql-results+xml; defaults to JSON).
+//
+// A query that is syntactically valid SPARQL but uses a feature GengoDB does
+// not implement yet (ASK/DESCRIBE queries, REGEX() filters, ...) responds with
+// 200 + an empty result set rather than a 400, per the SPARQL 1.1 Protocol.
 
 #include "features.h"
 
@@ -16,6 +22,7 @@
 #include "lingodb/execution/ResultProcessing.h"
 #include "lingodb/scheduler/Scheduler.h"
 
+#include "gengodb/compiler/frontend/SparqlErrors.h"
 #include "gengodb/execution/SparqlEngine.h"
 
 #include <boost/asio.hpp>
@@ -147,11 +154,13 @@ TableRows extractRows(const std::shared_ptr<arrow::Table>& table) {
 
 enum class ResultFormat { Csv,
                            Tsv,
-                           SparqlJson };
+                           SparqlJson,
+                           SparqlXml };
 
 ResultFormat negotiateFormat(const std::string& accept) {
    if (accept.find("text/csv") != std::string::npos) return ResultFormat::Csv;
    if (accept.find("text/tab-separated-values") != std::string::npos) return ResultFormat::Tsv;
+   if (accept.find("application/sparql-results+xml") != std::string::npos) return ResultFormat::SparqlXml;
    if (accept.find("application/sparql-results+json") != std::string::npos) return ResultFormat::SparqlJson;
    return ResultFormat::SparqlJson; // default (SPARQL's own native result format)
 }
@@ -161,6 +170,7 @@ std::string contentTypeFor(ResultFormat fmt) {
       case ResultFormat::Csv: return "text/csv; charset=utf-8";
       case ResultFormat::Tsv: return "text/tab-separated-values; charset=utf-8";
       case ResultFormat::SparqlJson: return "application/sparql-results+json; charset=utf-8";
+      case ResultFormat::SparqlXml: return "application/sparql-results+xml; charset=utf-8";
    }
    return "application/sparql-results+json; charset=utf-8";
 }
@@ -294,12 +304,62 @@ std::string toSparqlJson(const TableRows& t) {
    return j.dump();
 }
 
+std::string xmlEscape(const std::string& v) {
+   std::string out;
+   out.reserve(v.size());
+   for (char c : v) {
+      switch (c) {
+         case '&': out += "&amp;"; break;
+         case '<': out += "&lt;"; break;
+         case '>': out += "&gt;"; break;
+         case '"': out += "&quot;"; break;
+         default: out += c;
+      }
+   }
+   return out;
+}
+
+// SPARQL 1.1 Query Results XML Format: https://www.w3.org/TR/rdf-sparql-XMLres/
+std::string toSparqlXml(const TableRows& t) {
+   std::ostringstream os;
+   os << "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
+   os << "<sparql xmlns=\"http://www.w3.org/2005/sparql-results#\">\n";
+   os << "  <head>\n";
+   for (auto& v : t.vars) os << "    <variable name=\"" << xmlEscape(v) << "\"/>\n";
+   os << "  </head>\n";
+   os << "  <results>\n";
+   for (auto& row : t.rows) {
+      os << "    <result>\n";
+      for (size_t i = 0; i < t.vars.size() && i < row.size(); i++) {
+         if (!row[i]) continue;
+         auto term = classifyTerm(*row[i]);
+         os << "      <binding name=\"" << xmlEscape(t.vars[i]) << "\">";
+         if (term.type == "uri") {
+            os << "<uri>" << xmlEscape(term.value) << "</uri>";
+         } else if (term.type == "bnode") {
+            os << "<bnode>" << xmlEscape(term.value) << "</bnode>";
+         } else {
+            os << "<literal";
+            if (term.datatype) os << " datatype=\"" << xmlEscape(*term.datatype) << "\"";
+            if (term.lang) os << " xml:lang=\"" << xmlEscape(*term.lang) << "\"";
+            os << ">" << xmlEscape(term.value) << "</literal>";
+         }
+         os << "</binding>\n";
+      }
+      os << "    </result>\n";
+   }
+   os << "  </results>\n";
+   os << "</sparql>\n";
+   return os.str();
+}
+
 std::string serialize(ResultFormat fmt, const std::shared_ptr<arrow::Table>& table) {
    TableRows rows = extractRows(table);
    switch (fmt) {
       case ResultFormat::Csv: return toCsv(rows);
       case ResultFormat::Tsv: return toTsv(rows);
       case ResultFormat::SparqlJson: return toSparqlJson(rows);
+      case ResultFormat::SparqlXml: return toSparqlXml(rows);
    }
    return toSparqlJson(rows);
 }
@@ -394,6 +454,9 @@ http::response<http::string_body> handleQueryRoute(EngineFacade& engine, const h
       });
       ResultFormat fmt = negotiateFormat(std::string(req[http::field::accept]));
       return makeResponse(http::status::ok, contentTypeFor(fmt), serialize(fmt, result));
+   } catch (const sparql::UnsupportedFeatureError&) {
+      ResultFormat fmt = negotiateFormat(std::string(req[http::field::accept]));
+      return makeResponse(http::status::ok, contentTypeFor(fmt), serialize(fmt, nullptr));
    } catch (const std::exception& e) {
       return makeResponse(http::status::bad_request, "text/plain", std::string("Error: ") + e.what() + "\n");
    }

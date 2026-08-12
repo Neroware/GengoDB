@@ -227,6 +227,10 @@ std::shared_ptr<lingodb::execution::Error> handleQuery(
    std::string mlirText;
    try {
       mlirText = translateSparqlToMLIRString(stmt, defaultGraphOverride.value_or(state.defaultGraph));
+   } catch (const sparql::UnsupportedFeatureError& e) {
+      if (throwOnError) throw;
+      std::cerr << "Error translating SPARQL: " << e.what() << std::endl;
+      return nullptr;
    } catch (const std::exception& e) {
       if (throwOnError) throw std::runtime_error(std::string("Error translating SPARQL: ") + e.what());
       std::cerr << "Error translating SPARQL: " << e.what() << std::endl;

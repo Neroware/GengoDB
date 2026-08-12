@@ -19,6 +19,7 @@
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
 #include "gengodb/compiler/Dialect/Variant/VariantDialect.h"
 #include "gengodb/compiler/Dialect/Variant/VariantOps.h"
+#include "gengodb/compiler/frontend/SparqlErrors.h"
 #include "gengodb/semantics/Datatypes.h"
 #include "gengodb/semantics/RdfGraph.h"
 
@@ -387,7 +388,7 @@ class Parser {
             else if (is(TK::PrefixedName)) { dtIri = expandPrefix(tok.value, pref); advance(); }
             else throw std::runtime_error("Expected datatype IRI after '^^' at line " + std::to_string(tok.line));
             auto parsed = resolveXsdTypeFromIri(dtIri);
-            if (!parsed) throw std::runtime_error("Unsupported XSD datatype '" + dtIri + "' at line " + std::to_string(tok.line));
+            if (!parsed) throw sparql::UnsupportedFeatureError("Unsupported XSD datatype '" + dtIri + "' at line " + std::to_string(tok.line));
             e->xsdType = *parsed;
          }
          return e;
@@ -405,10 +406,10 @@ class Parser {
          advance();
          auto resolved = resolveXsdTypeFromIri(iri);
          if (!resolved)
-            throw std::runtime_error("Unsupported cast target datatype '" + iri + "' at line " + std::to_string(line));
+            throw sparql::UnsupportedFeatureError("Unsupported cast target datatype '" + iri + "' at line " + std::to_string(line));
          auto target = foldCastTargetType(*resolved);
          if (!isSupportedCastTarget(target))
-            throw std::runtime_error("Unsupported xsd cast target '" + gengodb::semantics::xsd::to_string(*resolved) +
+            throw sparql::UnsupportedFeatureError("Unsupported xsd cast target '" + gengodb::semantics::xsd::to_string(*resolved) +
                "' at line " + std::to_string(line) + " (only boolean/numeric xsd cast targets are currently supported; use STR() for string conversion)");
          auto e = std::make_unique<sparql::CastExpr>();
          e->targetType = target;
@@ -443,6 +444,24 @@ class Parser {
          while (is(TK::Comma)) { advance(); e->args.push_back(parseFilterExpr(pref)); }
          eat(TK::RightParen);
          return e;
+      }
+      if (is(TK::Keyword)) {
+         std::string name = tok.value;
+         size_t line = tok.line;
+         Token saved = tok;
+         advance();
+         if (is(TK::LeftParen)) {
+            advance();
+            auto e = std::make_unique<sparql::FunctionCallExpr>();
+            e->name = name;
+            if (!is(TK::RightParen)) {
+               e->args.push_back(parseFilterExpr(pref));
+               while (is(TK::Comma)) { advance(); e->args.push_back(parseFilterExpr(pref)); }
+            }
+            eat(TK::RightParen);
+            return e;
+         }
+         throw std::runtime_error("Expected FILTER expression term at line " + std::to_string(line) + ", got '" + saved.value + "'");
       }
       throw std::runtime_error("Expected FILTER expression term at line " + std::to_string(tok.line) + ", got '" + tok.value + "'");
    }
@@ -584,9 +603,7 @@ class Parser {
 
          if (kw("FILTER")) {
             advance();
-            eat(TK::LeftParen);
             auto expr = parseFilterExpr(prefixes);
-            eat(TK::RightParen);
             auto fp = std::make_unique<sparql::FilterPattern>();
             fp->expr = std::move(expr);
             out.push_back(std::move(fp));
@@ -594,7 +611,7 @@ class Parser {
          }
 
          for (const char* op : {"MINUS","SERVICE","BIND","VALUES"}) {
-            if (kw(op)) throw std::runtime_error(std::string("ARQ operator '") + op + "' is not yet supported");
+            if (kw(op)) throw sparql::UnsupportedFeatureError(std::string(op) + " is not yet supported");
          }
 
          if (is(TK::LBrace)) {
@@ -650,6 +667,10 @@ class Parser {
          if (!is(TK::IRI))
             throw std::runtime_error("Expected IRI in PREFIX declaration at line " + std::to_string(tok.line));
          q.prefixes[label] = tok.value; advance();
+      }
+
+      for (const char* form : {"ASK", "DESCRIBE", "CONSTRUCT"}) {
+         if (kw(form)) throw sparql::UnsupportedFeatureError(std::string(form) + " queries are not yet supported (only SELECT is implemented)");
       }
 
       eatKw("SELECT");
@@ -825,7 +846,7 @@ class Translator {
          builder.setInsertionPointToStart(block);
          mlir::Value result = buildPatternGroup(opt.patterns, block->getArgument(0));
          if (!result)
-            throw std::runtime_error("OPTIONAL block contains no supported graph patterns");
+            throw sparql::UnsupportedFeatureError("OPTIONAL block contains no supported graph patterns");
          builder.create<tuples::ReturnOp>(loc, result);
       }
       return optOp.getRes();
@@ -849,7 +870,7 @@ class Translator {
 
       mlir::Value left = buildLeft(inputStream);
       if (!left)
-         throw std::runtime_error("UNION branch contains no supported graph patterns");
+         throw sparql::UnsupportedFeatureError("UNION branch contains no supported graph patterns");
       auto afterLeftVarDefs = varDefs;
       auto afterLeftAllVars = allVars;
       varDefs = snapshotVarDefs;
@@ -857,7 +878,7 @@ class Translator {
 
       mlir::Value right = buildUnionBranch(rightBranch, inputStream);
       if (!right)
-         throw std::runtime_error("UNION branch contains no supported graph patterns");
+         throw sparql::UnsupportedFeatureError("UNION branch contains no supported graph patterns");
       auto afterRightVarDefs = varDefs;
       auto afterRightAllVars = allVars;
 
@@ -976,7 +997,7 @@ class Translator {
          case Type::AnyIRI:
             return builder.create<db::ConstantOp>(loc, db::StringType::get(ctxt), builder.getStringAttr(lit.lexicalForm));
          default:
-            throw std::runtime_error("FILTER literal datatype '" + gengodb::semantics::xsd::to_string(lit.xsdType) +
+            throw sparql::UnsupportedFeatureError("FILTER literal datatype '" + gengodb::semantics::xsd::to_string(lit.xsdType) +
                "' is not supported (only boolean, integer-family, float, double, decimal, and string literals are)");
       }
    }
@@ -1062,7 +1083,7 @@ class Translator {
          auto pred = builder.getArrayAttr({builder.getStringAttr("LANGMATCHES"), builder.getStringAttr(rangeLit.lexicalForm)});
          return builder.create<variant::PredicateOp>(loc, resType, var, pred);
       }
-      throw std::runtime_error("Unsupported FILTER function '" + fc.name + "'");
+      throw sparql::UnsupportedFeatureError("Unsupported FILTER function '" + fc.name + "'");
    }
    mlir::Value translateFilterExpr(const sparql::Expr& expr, mlir::Value tupleArg) {
       auto loc = builder.getUnknownLoc();
@@ -1088,7 +1109,7 @@ class Translator {
          case sparql::Expr::Kind::FunctionCall:
             return translatePredicateCall(static_cast<const sparql::FunctionCallExpr&>(expr), tupleArg);
          default:
-            throw std::runtime_error("Unsupported FILTER expression (only comparisons, &&, ||, !, arithmetic +-*/, and BOUND()/LANGMATCHES() are implemented)");
+            throw sparql::UnsupportedFeatureError("Unsupported FILTER expression (only comparisons, &&, ||, !, arithmetic +-*/, and BOUND()/LANGMATCHES() are implemented)");
       }
    }
    mlir::Value buildFilter(const sparql::FilterPattern& fp, mlir::Value inputStream) {
@@ -1214,7 +1235,7 @@ class Translator {
          mlir::Value prevStream = buildPatternGroup(query.patterns, {});
 
          if (!prevStream)
-            throw std::runtime_error("WHERE clause contains no supported graph patterns");
+            throw sparql::UnsupportedFeatureError("WHERE clause contains no supported graph patterns");
 
          std::vector<std::string> outVars = query.selectStar ? allVars : query.selectVars;
 

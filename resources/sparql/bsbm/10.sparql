@@ -20,5 +20,5 @@ WHERE {
         ?date > "2008-06-01T00:00:00"^^xsd:dateTime
     )
 }
-ORDER BY xsd:double(str(?price))
+ORDER BY xsd:double(STR(?price))
 LIMIT 10
