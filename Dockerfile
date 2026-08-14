@@ -110,10 +110,17 @@ RUN mkdir -p /root/.ssh && \
     ssh-keyscan github.com >> /root/.ssh/known_hosts
 
 # ------------------------------------------------------------
-# Workspace
+# Clone private GengoDB repository
+#
+# The SSH key is mounted temporarily by BuildKit and is never
+# persisted in the resulting image.
 # ------------------------------------------------------------
-
-WORKDIR /workspace
+RUN --mount=type=ssh \
+    git clone git@github.com:Neroware/GengoDB.git /gengodb
+WORKDIR /gengodb
+RUN --mount=type=ssh \
+    git submodule update --init --recursive
+RUN make build
 
 # ------------------------------------------------------------
 # Default shell

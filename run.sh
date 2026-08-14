@@ -13,8 +13,6 @@ if [ -z "$SSH_AUTH_SOCK" ]; then
 fi
 
 docker run -it --rm \
-    -v $(pwd):/workspace \
     -v $SSH_AUTH_SOCK:/ssh-agent \
     -e SSH_AUTH_SOCK=/ssh-agent \
-    -w /workspace \
-    pi:gengodb-dev-0.0.1
+    pi:gengodb-benchmark-0.0.1
