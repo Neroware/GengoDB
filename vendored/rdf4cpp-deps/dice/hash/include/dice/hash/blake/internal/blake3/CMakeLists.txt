@@ -19,46 +19,68 @@ include(GNUInstallDirs)
 
 set(blake3_rev 95e42b84fc4709974c7b23c7ae885989ab36c31e)
 set(blake3_files
-        blake3.c
-        blake3.h
-        blake3-config.cmake.in
-        blake3_avx2.c
-        blake3_avx2_x86-64_unix.S
-        blake3_avx2_x86-64_windows_gnu.S
-        blake3_avx2_x86-64_windows_msvc.asm
-        blake3_avx512.c
-        blake3_avx512_x86-64_unix.S
-        blake3_avx512_x86-64_windows_gnu.S
-        blake3_avx512_x86-64_windows_msvc.asm
-        blake3_dispatch.c
-        blake3_impl.h
-        blake3_neon.c
-        blake3_portable.c
-        blake3_sse2.c
-        blake3_sse2_x86-64_unix.S
-        blake3_sse2_x86-64_windows_gnu.S
-        blake3_sse2_x86-64_windows_msvc.asm
-        blake3_sse41.c
-        blake3_sse41_x86-64_unix.S
-        blake3_sse41_x86-64_windows_gnu.S
-        blake3_sse41_x86-64_windows_msvc.asm
-        libblake3.pc.in
+        blake3.c|82584e94af37ed895b43159b359845879a49b9f792c17828538e51a5b28db5ac
+        blake3.h|7e6022d0fe716bc1695d71c9b0e7fccd35b99f5c7d7f7f5804430cc303ae99bf
+        blake3-config.cmake.in|4ee7decdc9d25f292fac03021bbe6e2611e2186c418f51fc52db6445e28a8cb8
+        blake3_avx2.c|8b3516a8e42d981a9868ef670b1698f6d10207283086bd810b11cdaac1aca8f1
+        blake3_avx2_x86-64_unix.S|a2d95519fd9845cf80252110e21a93124e81c03da836eaac0bca0537be4f8324
+        blake3_avx2_x86-64_windows_gnu.S|c5b5e561f8fbbd252492a52f9a09da8e9e99a6ecccb88e2d1bfa2ebc7961f425
+        blake3_avx2_x86-64_windows_msvc.asm|2aad514ac8fb748accc8c0c0426606c91e6d404cff9c8499b2052e8108cbf67a
+        blake3_avx512.c|46653e718211d883e56d5caa9ded6d9450f2f5b44ebfa81372b3c0be538e9e3c
+        blake3_avx512_x86-64_unix.S|c641987dd82fabed59d527f1a3413c4a2ff3df919af6d13ff2788c95e4035c0d
+        blake3_avx512_x86-64_windows_gnu.S|b5c94f9201ab86dc1d5170b43aea440fe2a7cdbe2bec03fa1efd7c16dde1ddfb
+        blake3_avx512_x86-64_windows_msvc.asm|10a46aee705ad10a41db286c56030e3aa2456d293272029f6e5a71b218d4aac3
+        blake3_dispatch.c|6cab4b80158d02ec5c65351c25850926d13ec60216d6cc597deca6f4b17b6c0f
+        blake3_impl.h|7a801b6a09e9a2fc35f7520ef584d22d70521867ab701f25ccf0409409dfe8f1
+        blake3_neon.c|766c91fac5262292cb723d4512ca1652a43f3f7f80a5fedce71533dd7047ede3
+        blake3_portable.c|2bc25b0dad67b4329d0b49cfa075ab2b0d04e424addbddc4e9c389c52a192524
+        blake3_sse2.c|51194fff1b0e9cb79f4db6fc148a3b34f683ca6ec3a260d66166e0f7d5b7012e
+        blake3_sse2_x86-64_unix.S|94baa998f4114bf57b99e1791a21e9f0bcdc4bd5803864eb30a2477440b7380c
+        blake3_sse2_x86-64_windows_gnu.S|cf719d08059efee4bafecea32ef8fba46ed1f41f60782461f5047046c5e405ec
+        blake3_sse2_x86-64_windows_msvc.asm|27bf95d5611dca1530f85106748208a6d7a68f9a4f7f61670aa680bcc9a5e436
+        blake3_sse41.c|1f38e2ca58aa59af094f492f1326957b423d7a25e32daaae159fcc1966949f58
+        blake3_sse41_x86-64_unix.S|135048e4a81a6f9e86960b115141874a55954dbfd2cd1e8e9818837b46b498ad
+        blake3_sse41_x86-64_windows_gnu.S|f41da21f411bbf3920feb9e5e34e3fcc66274b02edb930882eeae2d0aba74a08
+        blake3_sse41_x86-64_windows_msvc.asm|c3e218899b6b52e22c1d552392bf972e7ac513addc2c247635cf60325dc39724
+        libblake3.pc.in|c7e6551baaa05aa0978dfcdf1291b3b5901d67868736f98ef3dd74cdc1fe78dc
 )
 set(blake3_license_files
-        LICENSE_A2
-        LICENSE_A2LLVM
-        LICENSE_CC0
+        LICENSE_A2|00fcc7a934ddbc9ece2a7cc063ac788e284b703b1d705ccbba72d462aa97921e
+        LICENSE_A2LLVM|a5695f57ea0c221e0e8b7d784ff774c35e88c3d3270353646a925880bb3492cc
+        LICENSE_CC0|a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499
 )
 
-foreach(file ${blake3_files})
-  file(DOWNLOAD "https://raw.githubusercontent.com/BLAKE3-team/BLAKE3/${blake3_rev}/c/${file}"
-          "${CMAKE_CURRENT_BINARY_DIR}/src/blake3/${file}"
-          TLS_VERIFY ON)
+include(FetchContent)
+FetchContent_Declare(
+        blake3_upstream
+        GIT_REPOSITORY https://github.com/BLAKE3-team/BLAKE3.git
+        GIT_TAG ${blake3_rev}
+)
+FetchContent_Populate(blake3_upstream)
+
+function(blake3_stage file expected_hash subdir)
+  set(src "${blake3_upstream_SOURCE_DIR}/${subdir}${file}")
+  if(NOT EXISTS "${src}")
+    message(FATAL_ERROR "BLAKE3 clone is missing expected file: ${src}")
+  endif()
+  file(SHA256 "${src}" actual_hash)
+  if(NOT actual_hash STREQUAL expected_hash)
+    message(FATAL_ERROR "BLAKE3 file ${file} hash mismatch (got ${actual_hash}, expected ${expected_hash}) at rev ${blake3_rev}")
+  endif()
+  configure_file("${src}" "${CMAKE_CURRENT_BINARY_DIR}/src/blake3/${file}" COPYONLY)
+endfunction()
+
+foreach(entry ${blake3_files})
+  string(REPLACE "|" ";" entry "${entry}")
+  list(GET entry 0 file)
+  list(GET entry 1 hash)
+  blake3_stage("${file}" "${hash}" "c/")
 endforeach()
-foreach(file ${blake3_license_files})
-  file(DOWNLOAD "https://raw.githubusercontent.com/BLAKE3-team/BLAKE3/${blake3_rev}/${file}"
-        "${CMAKE_CURRENT_BINARY_DIR}/src/blake3/${file}"
-        TLS_VERIFY ON)
+foreach(entry ${blake3_license_files})
+  string(REPLACE "|" ";" entry "${entry}")
+  list(GET entry 0 file)
+  list(GET entry 1 hash)
+  blake3_stage("${file}" "${hash}" "")
 endforeach()
 
 # architecture lists for which to enable assembly / SIMD sources

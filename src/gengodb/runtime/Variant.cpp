@@ -316,7 +316,7 @@ VarLen32 VariantRuntime::extractBlobLiteral(PropertyGraph::NodeEntry* ref) {
 }
 
 uint8_t* VariantRuntime::allocScratch(int64_t bytes) {
-    return getCurrentExecutionContext()->allocString(static_cast<size_t>(bytes));
+    return getCurrentExecutionContext()->allocLiteral(static_cast<size_t>(bytes));
 }
 
 VarLen32 VariantRuntime::toStringNumeric(int64_t payload, int32_t tag) {

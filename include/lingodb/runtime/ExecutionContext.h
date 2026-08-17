@@ -1,10 +1,10 @@
 #ifndef LINGODB_RUNTIME_EXECUTIONCONTEXT_H
 #define LINGODB_RUNTIME_EXECUTIONCONTEXT_H
-#include <cstddef>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <unordered_set>
+#include <cstddef>
 
 #include "ConcurrentMap.h"
 #include "Session.h"
@@ -19,9 +19,44 @@ struct State {
 struct Arena {
    static constexpr size_t thresholdDirectAlloc = 16 * 1024; // 16 KiB
    static constexpr size_t chunkSize = 1024 * 1024; // 1 MiB
-   // TODO the Arena requires alignment since we store variant literals.
-   // For now, this is okay, but in the future, we need to optimize cases
-   // where a type (i.e. Varlen32) is only 128 bits wide.
+   // chunk allocations + direct allocations
+   std::vector<uint8_t*> allocations;
+   // remaining from current Chunk
+   size_t remainingBytes = 0;
+   // pointer to still free space in current chunk
+   uint8_t* currentChunkStart = nullptr;
+
+   uint8_t* alloc(size_t bytes) {
+      //case 1: bytes are larger than threshold, allocate directly
+      if (bytes >= thresholdDirectAlloc) {
+         uint8_t* ptr = (uint8_t*) malloc(bytes);
+         allocations.push_back(ptr);
+         return ptr;
+      } else {
+         if (remainingBytes < bytes) {
+            //case 2: not enough space in current chunk, allocate new chunk
+            uint8_t* newChunk = (uint8_t*) malloc(chunkSize);
+            allocations.push_back(newChunk);
+            currentChunkStart = newChunk;
+            remainingBytes = chunkSize;
+         }
+         // now we have enough space in the current chunk
+         uint8_t* ptr = currentChunkStart;
+         currentChunkStart += bytes;
+         remainingBytes -= bytes;
+         return ptr;
+      }
+   }
+
+   ~Arena() {
+      for (auto& alloc : allocations) {
+         free(alloc);
+      }
+   }
+};
+struct AlignedArena {
+   static constexpr size_t thresholdDirectAlloc = 16 * 1024; // 16 KiB
+   static constexpr size_t chunkSize = 1024 * 1024; // 1 MiB
    static constexpr size_t allocAlignment = alignof(std::max_align_t);
    // chunk allocations + direct allocations
    std::vector<uint8_t*> allocations;
@@ -53,7 +88,7 @@ struct Arena {
       }
    }
 
-   ~Arena() {
+   ~AlignedArena() {
       for (auto& alloc : allocations) {
          free(alloc);
       }
@@ -66,12 +101,14 @@ class ExecutionContext {
    std::vector<std::unordered_map<size_t, State>> allocators;
    std::vector<std::vector<State>> perWorkerStates;
    std::vector<Arena> stringArenas;
+   std::vector<AlignedArena> literalArenas;
    Session& session;
 
    public:
    ExecutionContext(Session& session) : session(session) {
       allocators.resize(lingodb::scheduler::getNumWorkers());
       stringArenas.resize(lingodb::scheduler::getNumWorkers());
+      literalArenas.resize(lingodb::scheduler::getNumWorkers());
       perWorkerStates.resize(lingodb::scheduler::getNumWorkers());
    }
    Session& getSession() {
@@ -98,6 +135,9 @@ class ExecutionContext {
 
    uint8_t* allocString(size_t bytes) {
       return stringArenas[lingodb::scheduler::currentWorkerId()].alloc(bytes);
+   }
+   uint8_t* allocLiteral(size_t bytes) {
+      return literalArenas[lingodb::scheduler::currentWorkerId()].alloc(bytes);
    }
    static void setResult(uint32_t id, uint8_t* ptr);
    static uint8_t* allocStateRaw(size_t size);
