@@ -1,3 +1,9 @@
+PREFIX dataFromProducer1: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/dataFromProducer1/>
+PREFIX dataFromProducer2: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/dataFromProducer2/>
+PREFIX dataFromProducer3: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/dataFromProducer3/>
+PREFIX dataFromVendor1: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/dataFromVendor1/>
+PREFIX dataFromRatingSite1: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/dataFromRatingSite1/>
+# ===============
 PREFIX bsbm-inst: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 PREFIX rev: <http://purl.org/stuff/rev#>
@@ -9,22 +15,22 @@ PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 SELECT ?productLabel ?offer ?price ?vendor ?vendorTitle ?review ?revTitle
        ?reviewer ?revName ?rating1 ?rating2
 WHERE {
-  bsbm-inst:Product4711 rdfs:label ?productLabel .
+  dataFromProducer1:Product36 rdfs:label ?productLabel .
 
   OPTIONAL {
-    ?offer bsbm:product bsbm-inst:Product4711 .
+    ?offer bsbm:product dataFromProducer1:Product36 .
     ?offer bsbm:price ?price .
     ?offer bsbm:vendor ?vendor .
     ?vendor rdfs:label ?vendorTitle .
     ?vendor bsbm:country
-      <http://downlode.org/rdf/iso-3166/countries#DE> .
+     <http://downlode.org/rdf/iso-3166/countries#GB> .
     ?offer dc:publisher ?vendor .
     ?offer bsbm:validTo ?date .
     FILTER (?date > "2008-06-01T00:00:00"^^xsd:dateTime)
   }
 
   OPTIONAL {
-    ?review bsbm:reviewFor bsbm-inst:Product4711 .
+    ?review bsbm:reviewFor dataFromProducer1:Product36 .
     ?review rev:reviewer ?reviewer .
     ?reviewer foaf:name ?revName .
     ?review dc:title ?revTitle .
