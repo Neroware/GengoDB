@@ -9,10 +9,10 @@ WHERE {
     ?product a bsbm-inst:ProductType3 .
     ?product bsbm:productFeature bsbm-inst:ProductFeature428 .
     ?product bsbm:productPropertyNumeric1 ?p1 .
-    FILTER (?p1 > 47.25) # TODO comparison with xsd:Integer fails at this point!
+    FILTER (?p1 > 47.25)
 
     ?product bsbm:productPropertyNumeric3 ?p3 .
-    FILTER (?p3 < 82.75) # TODO comparison with xsd:Integer fails at this point!
+    FILTER (?p3 < 606.75)
 
     OPTIONAL {
         ?product bsbm:productFeature bsbm-inst:ProductFeature64 .

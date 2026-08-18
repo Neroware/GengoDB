@@ -261,9 +261,8 @@ class CreateNodeRefOpLowering : public OpConversionPattern<variant::CreateNodeRe
                         b2.create<scf::YieldOp>(l2, opaqueRef);
                     },
                     [&](OpBuilder& b2, Location l2) {
-                        Value isStringLike = b2.create<arith::OrIOp>(l2, tagPred.isString, b2.create<arith::OrIOp>(l2, tagPred.isInteger, tagPred.isDecimal));
                         auto strIf = b2.create<scf::IfOp>(
-                            l2, isStringLike,
+                            l2, tagPred.isByteString,
                             [&](OpBuilder& b3, Location l3) {
                                 Value strVal = rt::VariantRuntime::extractBlobLiteral(b3, l3)({opaqueRef})[0];
                                 Value strSlot = allocScratch(b3, l3, getVarlen32Type(ctxt));
@@ -356,9 +355,8 @@ Value computeLexicalForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value ta
                             b3.create<scf::YieldOp>(l3, rt::VariantRuntime::toStringNodeRef(b3, l3)({ref})[0]);
                         },
                         [&](OpBuilder& b3, Location l3) {
-                            Value isStringLike = b3.create<arith::OrIOp>(l3, tp.isString, b3.create<arith::OrIOp>(l3, tp.isInteger, tp.isDecimal));
                             auto ifString = b3.create<scf::IfOp>(
-                                l3, isStringLike,
+                                l3, tp.isByteString,
                                 [&](OpBuilder& b4, Location l4) {
                                     b4.create<scf::YieldOp>(l4, loadTyped(b4, l4, ref, getVarlen32Type(ctxt)));
                                 },
@@ -584,11 +582,13 @@ class CmpOpLowering : public OpConversionPattern<variant::CmpOp> {
             loc, sameTag,
             [&](OpBuilder& b, Location l) { b.create<scf::YieldOp>(l, dispatchOnTag(b, l, fastCases, sameTagSlow)); },
             [&](OpBuilder& b, Location l) {
+                Value anyInteger = b.create<arith::OrIOp>(l, lp.isInteger, rp.isInteger);
                 Value bothNumeric = b.create<arith::AndIOp>(l, lp.isNumericFamily, rp.isNumericFamily);
                 Value iriVsNode = b.create<arith::AndIOp>(l, lp.isIri, rp.isRDFNode);
                 Value nodeVsIri = b.create<arith::AndIOp>(l, lp.isRDFNode, rp.isIri);
                 std::vector<TagCase> crossTagCases = {
                     {bothNumeric, numericCrossCmp},
+                    {anyInteger, blobLiteralCmp},
                     {iriVsNode, [&](OpBuilder& b2, Location l2) -> Value {
                         Value lv = loadTyped(b2, l2, lhsRef, getVarlen32Type(getContext()));
                         Value raw = rt::VariantRuntime::compareIriNodeRef(b2, l2)({lv, rhsRef, predConst})[0];

@@ -18,7 +18,7 @@ WHERE {
         <http://downlode.org/rdf/iso-3166/countries#GB> .
 
     ?offer bsbm:deliveryDays ?deliveryDays .
-    FILTER (?deliveryDays <= 3) # TODO comparison with xsd:Integer fails
+    FILTER (?deliveryDays <= 3)
 
     ?offer bsbm:price ?price .
     ?offer bsbm:validTo ?date .

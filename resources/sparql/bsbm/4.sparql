@@ -26,5 +26,5 @@ WHERE {
   }
 }
 ORDER BY ?label
-OFFSET 5
+OFFSET 1
 LIMIT 10

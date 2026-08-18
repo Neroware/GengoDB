@@ -44,7 +44,7 @@ inline mlir::Value orAll(mlir::OpBuilder& b, mlir::Location loc, llvm::ArrayRef<
 }
 
 struct TagPredicates {
-   mlir::Value isBool, isLong, isDouble, isRDFNode, isString, isIri, isUnspecified, isNumericFamily, isScratchPayload, isInteger, isDecimal;
+   mlir::Value isBool, isLong, isDouble, isRDFNode, isString, isIri, isUnspecified, isNumericFamily, isScratchPayload, isInteger, isDecimal, isByteString;
 };
 
 struct FixedNumericTag {
@@ -100,6 +100,7 @@ inline TagPredicates computeTagPredicates(mlir::OpBuilder& b, mlir::Location loc
    mlir::Value isDateTime = getEqTag(b, loc, tag, xsd::Type::DateTime);
    p.isNumericFamily = orAll(b, loc, {p.isBool, p.isLong, p.isDouble, isByte, isShort, isInt, isUByte, isUShort, isUInt, isULong, isFloat, isDate, isDateTime});
    p.isScratchPayload = orAll(b, loc, {p.isNumericFamily, p.isRDFNode, p.isString, p.isIri});
+   p.isByteString = orAll(b, loc, {p.isString, p.isInteger, p.isDecimal});
    return p;
 }
 
