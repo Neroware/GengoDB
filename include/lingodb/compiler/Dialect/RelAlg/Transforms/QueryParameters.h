@@ -17,6 +17,8 @@ struct QueryParamLiteral {
 constexpr llvm::StringLiteral kQueryParamsAttrName = "params";
 constexpr llvm::StringLiteral kQueryParamIdKey = "id";
 constexpr llvm::StringLiteral kQueryParamValueKey = "value";
+constexpr llvm::StringLiteral kQueryParamCountAttrName = "relalg.query_param_count";
+constexpr llvm::StringLiteral kQueryCacheableAttrName = "relalg.query_cacheable";
 
 struct QueryParameter {
    size_t id;

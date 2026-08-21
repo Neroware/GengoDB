@@ -11,8 +11,9 @@ class ParameterizeQuery : public mlir::PassWrapper<ParameterizeQuery, mlir::Oper
     llvm::StringRef getArgument() const override { return "relalg-parameterize"; }
 
     void runOnOperation() override {
+        auto moduleOp = getOperation();
         size_t nextId = 0;
-        getOperation().walk([&](Parameterizable op) {
+        moduleOp.walk([&](Parameterizable op) {
             auto literals = op.getParamLiterals();
             if (literals.empty()) return;
             llvm::SmallVector<mlir::Attribute> entries;
@@ -25,6 +26,8 @@ class ParameterizeQuery : public mlir::PassWrapper<ParameterizeQuery, mlir::Oper
             }
             op->setAttr(relalg::kQueryParamsAttrName, mlir::ArrayAttr::get(op.getContext(), entries));
         });
+        mlir::Builder builder(moduleOp.getContext());
+        moduleOp->setAttr(relalg::kQueryParamCountAttrName, builder.getI64IntegerAttr(static_cast<int64_t>(nextId)));
     }
 };
 } // namespace

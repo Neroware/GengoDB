@@ -95,6 +95,9 @@ void relalg::registerQueryOptimizationPasses() {
       return relalg::createParameterizeQueryPass();
    });
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
+      return relalg::createQueryCanonicalizePass();
+   });
+   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
       return relalg::createTrackTuplesPass();
    });
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
