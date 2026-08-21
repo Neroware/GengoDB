@@ -21,6 +21,7 @@ add_mlir_dialect_library(MLIRRelAlg
         Transforms/TrackTuples.cpp
         Transforms/EliminateNullableTypes.cpp
         Transforms/QueryParameters.cpp
+        Transforms/ParameterizeQuery.cpp
         Transforms/queryopt/utils.cpp
         Transforms/queryopt/QueryGraphBuilder.cpp
         Transforms/queryopt/DPhyp.cpp

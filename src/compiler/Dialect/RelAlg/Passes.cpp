@@ -46,6 +46,7 @@ void relalg::createQueryOptPipeline(mlir::OpPassManager& pm, lingodb::catalog::C
    pm.addNestedPass<mlir::func::FuncOp>(relalg::createCommonSubtreeEliminationPass());
    pm.addPass(lingodb::compiler::createCanonicalizerPass());
    pm.addNestedPass<mlir::func::FuncOp>(relalg::createIntroduceTmpPass());
+   pm.addPass(relalg::createParameterizeQueryPass());
 }
 void relalg::registerQueryOptimizationPasses() {
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
@@ -89,6 +90,9 @@ void relalg::registerQueryOptimizationPasses() {
    });
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
       return relalg::createColumnFoldingPass();
+   });
+   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
+      return relalg::createParameterizeQueryPass();
    });
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
       return relalg::createTrackTuplesPass();
