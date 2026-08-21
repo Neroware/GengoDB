@@ -307,6 +307,7 @@ class SelectionLowering : public OpConversionPattern<relalg::SelectionOp> {
    using OpConversionPattern<relalg::SelectionOp>::OpConversionPattern;
 
    LogicalResult matchAndRewrite(relalg::SelectionOp selectionOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      if (selectionOp.isParameterized()) selectionOp.pushParametersIntoRegion();
       auto repl = translateSelection(adaptor.getRel(), selectionOp.getPredicate(), rewriter, selectionOp->getLoc());
       if (auto* definingOp = repl.getDefiningOp()) {
          if (selectionOp->hasAttr("selectivity")) {
