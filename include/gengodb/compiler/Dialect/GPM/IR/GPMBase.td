@@ -52,6 +52,15 @@ def GPM_PatternKind : I64EnumAttr<"PatternKind", "graph pattern construct (SPARQ
     let cppNamespace = "::gengodb::compiler::dialect::gpm";
 }
 
+def GPM_TripleSlot_SUBJECT : I64EnumAttrCase<"subject", 0>;
+def GPM_TripleSlot_PREDICATE : I64EnumAttrCase<"predicate", 1>;
+def GPM_TripleSlot_OBJECT : I64EnumAttrCase<"object", 2>;
+
+def GPM_TripleSlot : I64EnumAttr<"TripleSlot", "slot in a triple pattern",
+        [GPM_TripleSlot_SUBJECT,GPM_TripleSlot_PREDICATE,GPM_TripleSlot_OBJECT]> {
+    let cppNamespace = "::gengodb::compiler::dialect::gpm";
+}
+
 //===----------------------------------------------------------------------===//
 // Types
 //===----------------------------------------------------------------------===//

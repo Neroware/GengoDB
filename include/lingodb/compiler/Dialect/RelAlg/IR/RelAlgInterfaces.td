@@ -277,4 +277,22 @@ let methods = [
 InterfaceMethod<"","mlir::LogicalResult", "changeForColumns",(ins "lingodb::compiler::dialect::relalg::ColumnNullableChangeInfo&":$columnInfo)>,
 ];
 }
+
+def Parameterizable : OpInterface<"Parameterizable"> {
+let methods = [
+InterfaceMethod<
+        "enumerate op parameterizable literal occurrences",
+        "std::vector<lingodb::compiler::dialect::relalg::QueryParamLiteral>",
+        "getParamLiterals",(ins )
+>,
+InterfaceMethod<
+        "pushed parameter annotations into operator regions",
+        "void", "pushParametersIntoRegion",(ins ),"",
+        [{
+                // no-op: this op doesn't hand its params down through a moved/inlined region.
+                return;
+        }]>
+];
+}
+
 #endif// Interfaces
