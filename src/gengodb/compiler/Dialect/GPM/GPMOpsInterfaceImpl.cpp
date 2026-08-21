@@ -228,6 +228,12 @@ std::optional<size_t> paramIdForSlot(gpm::TriplePatternOp op, unsigned slotIndex
 std::optional<size_t> gpm::TriplePatternOp::getParamId(TripleSlot slot) {
     return paramIdForSlot(*this, static_cast<unsigned>(slot));
 }
+void gpm::TriplePatternOp::maskParameters() {
+    auto placeholder = gpm::IdentifierTermAttr::get(getContext(), mlir::StringAttr::get(getContext(), ""));
+    if (mlir::isa<gpm::IdentifierTermAttr>(getS())) setSAttr(placeholder);
+    if (mlir::isa<gpm::IdentifierTermAttr>(getP())) setPAttr(placeholder);
+    if (mlir::isa<gpm::IdentifierTermAttr>(getO())) setOAttr(placeholder);
+}
 
 lingodb::compiler::dialect::relalg::ColumnSet gpm::NamedGraphOp::getCreatedColumns() {
     return lingodb::compiler::dialect::relalg::ColumnSet();

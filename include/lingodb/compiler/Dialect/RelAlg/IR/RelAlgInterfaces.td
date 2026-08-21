@@ -292,7 +292,8 @@ InterfaceMethod<
                 // no-op: this op doesn't hand its params down through a moved/inlined region.
                 return;
         }]>,
-InterfaceMethod<"", "bool", "isParameterized",(ins ),"", [{ return this->getOperation()->hasAttr(lingodb::compiler::dialect::relalg::kQueryParamsAttrName); }]>
+InterfaceMethod<"", "bool", "isParameterized",(ins ),"", [{ return this->getOperation()->hasAttr(lingodb::compiler::dialect::relalg::kQueryParamsAttrName); }]>,
+InterfaceMethod<"", "void", "maskParameters",(ins )>
 ];
 }
 

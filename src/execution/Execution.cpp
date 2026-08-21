@@ -6,6 +6,7 @@
 #include "lingodb/compiler/Conversion/ArrowToStd/ArrowToStd.h"
 #include "lingodb/compiler/Conversion/DBToStd/DBToStd.h"
 #include "gengodb/compiler/Conversion/GPMToSubOp/GPMToSubOpPass.h"
+#include "gengodb/compiler/Dialect/GPM/IR/GPMOps.h"
 #include "lingodb/compiler/Conversion/RelAlgToSubOp/RelAlgToSubOpPass.h"
 #include "lingodb/compiler/Conversion/SubOpToControlFlow/SubOpToControlFlowPass.h"
 #include "gengodb/compiler/Conversion/VariantToStd/VariantToStdPass.h"
@@ -49,6 +50,15 @@ utility::Tracer::Event lowerSubOpEvent("Compilation", "Lower SubOp");
 utility::Tracer::Event lowerImperativeEvent("Compilation", "Lower DB");
 utility::Tracer::Event loadIndicesEvent("Compilation", "Lower DB");
 utility::Tracer::Event queryCanonicalizeEvent("Compilation", "Query Canonicalize");
+void ensureNamedGraphLoaded(mlir::MLIRContext* context, lingodb::catalog::Catalog* catalog, llvm::StringRef graphName) {
+   using namespace gengodb::compiler::dialect;
+   if (auto graph = catalog->getTypedEntry<gengodb::catalog::RDFGraphCatalogEntry>(graphName.str())) {
+      auto rdfGraph = graph.value();
+      rdfGraph->ensureFullyLoaded();
+      context->getLoadedDialect<gsubop::GraphSubOpDialect>()->getNamedGraphManager().addNamedGraph(
+         rdfGraph->getName(), rdfGraph->getIri().identifier().data(), rdfGraph);
+   }
+}
 } // end anonymous namespace
 namespace lingodb::execution {
 using namespace lingodb::compiler::dialect;
@@ -92,13 +102,7 @@ class GpmLoweringStep : public LoweringStep {
       // Load the required named graphs for the query
       moduleOp.walk([&](mlir::Operation* op) {
          if (auto getExternalOp = mlir::dyn_cast_or_null<gsubop::GetExternalGraphOp>(*op)) {
-            auto* catalog = getCatalog();
-            if (auto graph = catalog->getTypedEntry<gengodb::catalog::RDFGraphCatalogEntry>(getExternalOp.getName().str())) {
-               auto rdfGraph = graph.value();
-               rdfGraph->ensureFullyLoaded();
-               moduleOp->getContext()->getLoadedDialect<gsubop::GraphSubOpDialect>()->getNamedGraphManager().addNamedGraph(
-                  rdfGraph->getName(), rdfGraph->getIri().identifier().data(), rdfGraph);
-            }
+            ensureNamedGraphLoaded(moduleOp->getContext(), getCatalog(), getExternalOp.getName());
          }
       });
    }
@@ -421,9 +425,29 @@ class DefaultQueryExecuter : public QueryExecuter {
       }
 
       std::vector<uint8_t> queryParamBuffer;
+      std::optional<std::string> cacheKey;
       if (relalg::isQueryCacheEnabled()) {
+         moduleOp.walk([&](gpm::NamedGraphOp namedGraphOp) {
+            auto refType = mlir::cast<gpm::GraphReferenceType>(namedGraphOp.getDef().getColumn().type);
+            ensureNamedGraphLoaded(moduleOp->getContext(), catalog, refType.getName());
+         });
+         cacheKey = execution::computeQueryCacheKey(moduleOp);
          queryParamBuffer = execution::buildQueryParamBuffer(moduleOp, *executionContext);
          runtime::ExecutionContext::setQueryParamBuffer(queryParamBuffer.data());
+
+         if (auto cached = execution::QueryCache::instance().lookup(*cacheKey)) {
+            auto executionStart = std::chrono::high_resolution_clock::now();
+            cached->mainFunc();
+            auto executionEnd = std::chrono::high_resolution_clock::now();
+            handleTiming({{"executionTime", std::chrono::duration_cast<std::chrono::microseconds>(executionEnd - executionStart).count() / 1000.0}});
+            if (queryExecutionConfig->resultProcessor) {
+               queryExecutionConfig->resultProcessor->process(executionContext.get());
+            }
+            if (queryExecutionConfig->timingProcessor) {
+               queryExecutionConfig->timingProcessor->process();
+            }
+            return;
+         }
       }
 
       bool parallelismEnabled = scheduler::getNumWorkers() != 1 && queryExecutionConfig->parallel;
@@ -449,6 +473,11 @@ class DefaultQueryExecuter : public QueryExecuter {
 #endif
          if (handleError<Error::ErrorPhase::backend>(executionBackend.getError())) return;
          handleTiming(executionBackend.getTiming());
+         if (cacheKey) {
+            if (auto compiled = executionBackend.takeCachedQuery()) {
+               execution::QueryCache::instance().store(*cacheKey, std::move(*compiled));
+            }
+         }
          if (queryExecutionConfig->resultProcessor) {
             auto& resultProcessor = *queryExecutionConfig->resultProcessor;
             resultProcessor.process(executionContext.get());

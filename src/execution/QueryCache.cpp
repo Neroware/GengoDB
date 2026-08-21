@@ -4,12 +4,24 @@
 #include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgOps.h"
 #include "lingodb/compiler/Dialect/RelAlg/Transforms/QueryParameters.h"
 #include "lingodb/runtime/ExecutionContext.h"
+#include "lingodb/utility/Setting.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOps.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
 
+#include "mlir/IR/OwningOpRef.h"
+
+#include "llvm/Config/llvm-config.h"
+#include "llvm/Support/SHA256.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/TargetParser/Host.h"
+
 #include <cassert>
 #include <cstring>
+
+namespace {
+lingodb::utility::GlobalSetting<bool> cacheDebugSetting("system.cache.debug", false);
+} // namespace
 
 using namespace lingodb::compiler::dialect;
 using namespace gengodb::compiler::dialect;
@@ -110,4 +122,74 @@ std::vector<uint8_t> lingodb::execution::buildQueryParamBuffer(mlir::ModuleOp ma
       }
    });
    return buffer;
+}
+
+namespace {
+void maskParamsAttrForCacheKey(mlir::Operation* op) {
+   auto paramsAttr = op->getAttrOfType<mlir::ArrayAttr>(relalg::kQueryParamsAttrName);
+   if (!paramsAttr) return;
+   llvm::SmallVector<mlir::Attribute> masked;
+   masked.reserve(paramsAttr.size());
+   for (auto entry : paramsAttr) {
+      auto dict = mlir::cast<mlir::DictionaryAttr>(entry);
+      mlir::NamedAttribute idAttr(mlir::StringAttr::get(op->getContext(), relalg::kQueryParamIdKey), dict.get(relalg::kQueryParamIdKey));
+      masked.push_back(mlir::DictionaryAttr::get(op->getContext(), {idAttr}));
+   }
+   op->setAttr(relalg::kQueryParamsAttrName, mlir::ArrayAttr::get(op->getContext(), masked));
+}
+} // namespace
+
+std::string lingodb::execution::computeQueryCacheKey(mlir::ModuleOp markedModule) {
+   mlir::OwningOpRef<mlir::ModuleOp> clone(mlir::cast<mlir::ModuleOp>(markedModule->clone()));
+   clone->walk([](Parameterizable op) {
+      op.maskParameters();
+      maskParamsAttrForCacheKey(op.getOperation());
+   });
+
+   std::string moduleText;
+   {
+      llvm::raw_string_ostream os(moduleText);
+      mlir::OpPrintingFlags flags;
+      flags.printGenericOpForm(false);
+      clone->print(os, flags);
+   }
+   if (cacheDebugSetting.getValue()) {
+      llvm::errs() << "[query-cache] masked module for key computation:\n"
+                   << moduleText << "\n";
+   }
+
+   moduleText += "\n#codegen-cache-stamp llvm=";
+   moduleText += LLVM_VERSION_STRING;
+   moduleText += " target=";
+   moduleText += llvm::sys::getDefaultTargetTriple();
+
+   auto digest = llvm::SHA256::hash(llvm::ArrayRef<uint8_t>(reinterpret_cast<const uint8_t*>(moduleText.data()), moduleText.size()));
+   static constexpr char hexDigits[] = "0123456789abcdef";
+   std::string hex;
+   hex.reserve(digest.size() * 2);
+   for (uint8_t byte : digest) {
+      hex.push_back(hexDigits[byte >> 4]);
+      hex.push_back(hexDigits[byte & 0xF]);
+   }
+   if (cacheDebugSetting.getValue()) {
+      llvm::errs() << "[query-cache] key=" << hex << "\n";
+   }
+   return hex;
+}
+
+lingodb::execution::QueryCache& lingodb::execution::QueryCache::instance() {
+   static QueryCache cache;
+   return cache;
+}
+
+std::optional<lingodb::execution::CachedCompiledQuery> lingodb::execution::QueryCache::lookup(const std::string& key) {
+   std::lock_guard<std::mutex> lock(mutex);
+   auto it = entries.find(key);
+   if (it == entries.end()) return std::nullopt;
+   return it->second;
+}
+
+void lingodb::execution::QueryCache::store(std::string key, CachedCompiledQuery entry) {
+   std::lock_guard<std::mutex> lock(mutex);
+   entries.emplace(std::move(key), std::move(entry));
 }

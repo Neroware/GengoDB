@@ -63,17 +63,20 @@ class QueryCanonicalize : public mlir::PassWrapper<QueryCanonicalize, mlir::Oper
             orderedLeaves.push_back(leaf);
             fieldTypes.push_back(leaf->getResult(0).getType());
         }
-        auto tupleType = mlir::TupleType::get(ctxt, fieldTypes);
-        auto typedRefType = util::RefType::get(ctxt, tupleType);
+        auto i128Type = mlir::IntegerType::get(ctxt, 128);
+        llvm::SmallVector<mlir::Type> slotTypes(numParams, i128Type);
+        auto slotTupleType = mlir::TupleType::get(ctxt, slotTypes);
+        auto slotRefType = util::RefType::get(ctxt, slotTupleType);
 
         for (size_t id = 0; id < numParams; ++id) {
             mlir::Operation* leaf = orderedLeaves[id];
             auto loc = leaf->getLoc();
             mlir::OpBuilder builder(leaf);
             mlir::Value rawBuf = rt::ExecutionContext::getQueryParamBuffer(builder, loc)({})[0];
-            auto typedBuf = builder.create<util::GenericMemrefCastOp>(loc, typedRefType, rawBuf);
-            auto elementPtr = builder.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, fieldTypes[id]), typedBuf, static_cast<int32_t>(id));
-            auto loaded = builder.create<util::LoadOp>(loc, elementPtr);
+            auto slotBuf = builder.create<util::GenericMemrefCastOp>(loc, slotRefType, rawBuf);
+            auto slotPtr = builder.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, i128Type), slotBuf, static_cast<int32_t>(id));
+            auto realPtr = builder.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, fieldTypes[id]), slotPtr);
+            auto loaded = builder.create<util::LoadOp>(loc, realPtr);
             leaf->getResult(0).replaceAllUsesWith(loaded.getResult());
             leaf->erase();
         }

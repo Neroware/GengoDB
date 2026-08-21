@@ -541,12 +541,21 @@ llvm::SmallVector<mlir::Operation*, 4> collectParameterizableLiteralOps(mlir::Re
    region.walk([&](mlir::Operation* op) {
       if (auto constOp = mlir::dyn_cast<mlir::arith::ConstantOp>(op)) {
          if (isCacheableQueryParamType(constOp.getType())) found.push_back(op);
-      } 
+      }
       else if (auto constOp = mlir::dyn_cast<db::ConstantOp>(op)) {
          if (isCacheableQueryParamType(constOp.getResult().getType())) found.push_back(op);
       }
    });
    return found;
+}
+mlir::TypedAttr canonicalCacheKeyStandIn(mlir::Type type) {
+   if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type)) {
+      return mlir::IntegerAttr::get(intType, 0);
+   }
+   if (mlir::isa<mlir::Float32Type, mlir::Float64Type>(type)) {
+      return mlir::FloatAttr::get(type, 0.0);
+   }
+   return {};
 }
 } // namespace
 std::vector<relalg::QueryParamLiteral> relalg::SelectionOp::getParamLiterals() {
@@ -560,6 +569,20 @@ std::vector<relalg::QueryParamLiteral> relalg::SelectionOp::getParamLiterals() {
       }
    }
    return literals;
+}
+void relalg::SelectionOp::maskParameters() {
+   for (auto* op : collectParameterizableLiteralOps(getPredicateRegion())) {
+      if (auto constOp = mlir::dyn_cast<mlir::arith::ConstantOp>(op)) {
+         constOp.setValueAttr(canonicalCacheKeyStandIn(constOp.getType()));
+      } else if (auto constOp = mlir::dyn_cast<db::ConstantOp>(op)) {
+         auto resultType = constOp.getResult().getType();
+         if (mlir::isa<db::StringType>(resultType)) {
+            constOp.setValueAttr(mlir::StringAttr::get(getContext(), ""));
+         } else {
+            constOp.setValueAttr(canonicalCacheKeyStandIn(resultType));
+         }
+      }
+   }
 }
 void relalg::SelectionOp::pushParametersIntoRegion() {
    auto paramsAttr = (*this)->getAttrOfType<mlir::ArrayAttr>(relalg::kQueryParamsAttrName);
