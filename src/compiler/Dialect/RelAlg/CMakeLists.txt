@@ -40,4 +40,6 @@ add_mlir_dialect_library(MLIRRelAlg
         LINK_LIBS mlir-support utility PUBLIC
         MLIRIR
         MLIRCompilerHelper
+        MLIRUtil
+        runtime_funcs_ptr
 )

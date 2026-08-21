@@ -1,13 +1,13 @@
 #include "lingodb/compiler/Dialect/RelAlg/Passes.h"
 #include "lingodb/compiler/Dialect/RelAlg/Transforms/QueryParameters.h"
+#include "lingodb/compiler/Dialect/util/FunctionHelper.h"
 #include "lingodb/compiler/Dialect/util/UtilDialect.h"
 #include "lingodb/compiler/Dialect/util/UtilOps.h"
-
-#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "lingodb/compiler/runtime/ExecutionContext.h"
 
 namespace {
 using namespace lingodb::compiler::dialect;
-
+namespace rt = lingodb::compiler::runtime;
 class QueryCanonicalize : public mlir::PassWrapper<QueryCanonicalize, mlir::OperationPass<mlir::ModuleOp>> {
     public:
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(QueryCanonicalize)
@@ -19,6 +19,7 @@ class QueryCanonicalize : public mlir::PassWrapper<QueryCanonicalize, mlir::Oper
     void runOnOperation() override {
         mlir::ModuleOp moduleOp = getOperation();
         auto* ctxt = moduleOp.getContext();
+        ctxt->getLoadedDialect<util::UtilDialect>()->getFunctionHelper().setParentModule(moduleOp);
 
         size_t numParams = 0;
         if (auto countAttr = moduleOp->getAttrOfType<mlir::IntegerAttr>(relalg::kQueryParamCountAttrName)) {
@@ -53,12 +54,6 @@ class QueryCanonicalize : public mlir::PassWrapper<QueryCanonicalize, mlir::Oper
         moduleOp->setAttr(relalg::kQueryCacheableAttrName, attrBuilder.getBoolAttr(cacheable));
         if (!cacheable) return;
 
-        auto mainFunc = mlir::dyn_cast_or_null<mlir::func::FuncOp>(moduleOp.lookupSymbol("main"));
-        if (!mainFunc) {
-            moduleOp->setAttr(relalg::kQueryCacheableAttrName, attrBuilder.getBoolAttr(false));
-            return;
-        }
-
         llvm::SmallVector<mlir::Operation*> orderedLeaves;
         llvm::SmallVector<mlir::Type> fieldTypes;
         orderedLeaves.reserve(numParams);
@@ -69,18 +64,16 @@ class QueryCanonicalize : public mlir::PassWrapper<QueryCanonicalize, mlir::Oper
             fieldTypes.push_back(leaf->getResult(0).getType());
         }
         auto tupleType = mlir::TupleType::get(ctxt, fieldTypes);
-        auto paramRefType = util::RefType::get(ctxt, tupleType);
-
-        auto newFnType = mlir::FunctionType::get(ctxt, {paramRefType}, mainFunc.getFunctionType().getResults());
-        mainFunc.setFunctionType(newFnType);
-        mlir::Block& entryBlock = mainFunc.getBody().front();
-        mlir::BlockArgument paramArg = entryBlock.insertArgument((unsigned) 0, paramRefType, mainFunc.getLoc());
+        auto typedRefType = util::RefType::get(ctxt, tupleType);
 
         for (size_t id = 0; id < numParams; ++id) {
             mlir::Operation* leaf = orderedLeaves[id];
+            auto loc = leaf->getLoc();
             mlir::OpBuilder builder(leaf);
-            auto elementPtr = builder.create<util::TupleElementPtrOp>(leaf->getLoc(), util::RefType::get(ctxt, fieldTypes[id]), paramArg, static_cast<int32_t>(id));
-            auto loaded = builder.create<util::LoadOp>(leaf->getLoc(), elementPtr);
+            mlir::Value rawBuf = rt::ExecutionContext::getQueryParamBuffer(builder, loc)({})[0];
+            auto typedBuf = builder.create<util::GenericMemrefCastOp>(loc, typedRefType, rawBuf);
+            auto elementPtr = builder.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, fieldTypes[id]), typedBuf, static_cast<int32_t>(id));
+            auto loaded = builder.create<util::LoadOp>(loc, elementPtr);
             leaf->getResult(0).replaceAllUsesWith(loaded.getResult());
             leaf->erase();
         }

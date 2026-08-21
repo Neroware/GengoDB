@@ -39,6 +39,18 @@ uint8_t* lingodb::runtime::ExecutionContext::allocStateRaw(size_t size) {
    return ptr;
 }
 
+void lingodb::runtime::ExecutionContext::setQueryParamBuffer(uint8_t* buffer) {
+   auto* context = getCurrentExecutionContext();
+   assert(context);
+   context->queryParamBuffer = buffer;
+}
+
+uint8_t* lingodb::runtime::ExecutionContext::getQueryParamBuffer() {
+   auto* context = getCurrentExecutionContext();
+   assert(context);
+   return context->queryParamBuffer;
+}
+
 namespace {
 thread_local lingodb::runtime::ExecutionContext* currentExecutionContext = nullptr;
 } // end namespace

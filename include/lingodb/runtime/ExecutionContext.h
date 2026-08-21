@@ -103,6 +103,7 @@ class ExecutionContext {
    std::vector<Arena> stringArenas;
    std::vector<AlignedArena> literalArenas;
    Session& session;
+   uint8_t* queryParamBuffer = nullptr;
 
    public:
    ExecutionContext(Session& session) : session(session) {
@@ -142,6 +143,8 @@ class ExecutionContext {
    static void setResult(uint32_t id, uint8_t* ptr);
    static uint8_t* allocStateRaw(size_t size);
    static void clearResult(uint32_t id);
+   static void setQueryParamBuffer(uint8_t* buffer);
+   static uint8_t* getQueryParamBuffer();
    static void setTupleCount(uint32_t id, int64_t tupleCount);
    void registerState(const State& s) {
       perWorkerStates[lingodb::scheduler::currentWorkerId()].push_back(s);
