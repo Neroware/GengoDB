@@ -1,3 +1,9 @@
+PREFIX dataFromProducer1: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/dataFromProducer1/>
+PREFIX dataFromProducer2: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/dataFromProducer2/>
+PREFIX dataFromProducer3: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/dataFromProducer3/>
+PREFIX dataFromVendor1: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/dataFromVendor1/>
+PREFIX dataFromRatingSite1: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/dataFromRatingSite1/>
+#======
 PREFIX bsbm-inst: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/>
 PREFIX bsbm: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/vocabulary/>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
@@ -6,26 +12,26 @@ PREFIX dc: <http://purl.org/dc/elements/1.1/>
 SELECT ?label ?comment ?producer ?productFeature ?propertyTextual1 ?propertyTextual2 ?propertyTextual3
        ?propertyNumeric1 ?propertyNumeric2 ?propertyTextual4 ?propertyTextual5 ?propertyNumeric4
 WHERE {
-    bsbm-inst:Product4711 rdfs:label ?label .
-    bsbm-inst:Product4711 rdfs:comment ?comment .
-    bsbm-inst:Product4711 bsbm:producer ?p .
+    dataFromProducer1:Product42 rdfs:label ?label .
+    dataFromProducer1:Product42 rdfs:comment ?comment .
+    dataFromProducer1:Product42 bsbm:producer ?p .
     ?p rdfs:label ?producer .
-    bsbm-inst:Product4711 dc:publisher ?p .
-    bsbm-inst:Product4711 bsbm:productFeature ?f .
+    dataFromProducer1:Product42 dc:publisher ?p .
+    dataFromProducer1:Product42 bsbm:productFeature ?f .
     ?f rdfs:label ?productFeature .
-    bsbm-inst:Product4711 bsbm:productPropertyTextual1 ?propertyTextual1 .
-    bsbm-inst:Product4711 bsbm:productPropertyTextual2 ?propertyTextual2 .
-    bsbm-inst:Product4711 bsbm:productPropertyTextual3 ?propertyTextual3 .
-    bsbm-inst:Product4711 bsbm:productPropertyNumeric1 ?propertyNumeric1 .
-    bsbm-inst:Product4711 bsbm:productPropertyNumeric2 ?propertyNumeric2 .
+    dataFromProducer1:Product42 bsbm:productPropertyTextual1 ?propertyTextual1 .
+    dataFromProducer1:Product42 bsbm:productPropertyTextual2 ?propertyTextual2 .
+    dataFromProducer1:Product42 bsbm:productPropertyTextual3 ?propertyTextual3 .
+    dataFromProducer1:Product42 bsbm:productPropertyNumeric1 ?propertyNumeric1 .
+    dataFromProducer1:Product42 bsbm:productPropertyNumeric2 ?propertyNumeric2 .
 
     OPTIONAL {
-        bsbm-inst:Product4711 bsbm:productPropertyTextual4 ?propertyTextual4
+       dataFromProducer1:Product42 bsbm:productPropertyTextual4 ?propertyTextual4
     }
     OPTIONAL {
-        bsbm-inst:Product4711 bsbm:productPropertyTextual5 ?propertyTextual5
+       dataFromProducer1:Product42 bsbm:productPropertyTextual5 ?propertyTextual5
     }
     OPTIONAL {
-        bsbm-inst:Product4711 bsbm:productPropertyNumeric4 ?propertyNumeric4
+       dataFromProducer1:Product42 bsbm:productPropertyNumeric4 ?propertyNumeric4
     }
 }

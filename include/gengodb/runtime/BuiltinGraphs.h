@@ -5,6 +5,7 @@
 
 #include "gengodb/semantics/Datatypes.h"
 
+#include <algorithm>
 #include <cstdio>
 
 namespace gengodb::semantics {
@@ -77,13 +78,15 @@ static_assert(offsetof(SimpleGraph::RelEntry, payload)  == 32);
 using prop_id_t = int32_t;
 
 struct BlobTable {
-    BlobTable(size_t cap) : blobData_(cap) {}
+    BlobTable(size_t cap) : blobData_(cap), cap_(cap) {}
     ~BlobTable() = default;
     std::pair<std::byte*, int32_t> alloc(size_t len) {
         std::byte* ptr = blobData_.ptr;
         if (!blobs_.empty()) {
             ptr = blobs_.back().first + blobs_.back().second;
         }
+        assert(static_cast<size_t>(ptr - blobData_.ptr) + len <= cap_ &&
+            "blob table capacity exceeded; increase the `capacity` SPARQL settings directive");
         blobs_.push_back(std::make_pair(ptr, len));
         const size_t index = blobs_.size() - 1;
         if (index > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
@@ -133,6 +136,7 @@ struct BlobTable {
 private:
     std::vector<std::pair<std::byte*, size_t>> blobs_;
     LegacyFixedSizedBuffer<std::byte> blobData_;
+    size_t cap_;
 }; // BlobTable
 
 class PropertyGraph {
@@ -166,18 +170,21 @@ public:
 
         template<xsd::Type t>
         inline std::pair<std::byte*, size_t> get_blob(int32_t idx) const { return blobs_.at(t)->get(idx); }
-        template<xsd::Type t, size_t blob_size = 1024>
+        template<xsd::Type t>
         inline std::pair<std::byte*, int32_t> add_blob(size_t len) {
             if (!blobs_.contains(t)) {
-                blobs_.insert(std::make_pair(t, std::make_unique<BlobTable>(blob_size)));
+                blobs_.insert(std::make_pair(t, std::make_unique<BlobTable>(std::max(blobCapacity_, len))));
             }
             return blobs_.at(t)->alloc(len);
         }
+        void setBlobCapacity(size_t bytes) { blobCapacity_ = bytes; }
+        size_t getBlobCapacity() const { return blobCapacity_; }
 
         void flush(std::FILE* f) const;
         void load(std::FILE* f);
 
         private:
+        size_t blobCapacity_ = 1024 * 1024; // 1 MiB default per string-typed blob table
         std::vector<int64_t> lst_i64_;
         std::vector<uint64_t> lst_ui64_;
         std::vector<double> lst_double_;
@@ -233,6 +240,9 @@ public:
     size_t freeNodes() const { return graph_.freeNodes(); }
     size_t freeRels() const { return graph_.freeRels(); }
     size_t freeProps() const { return freeProps_.size(); }
+    int32_t nodeCapacity() const { return nodeCap_; }
+    int32_t relCapacity() const { return relCap_; }
+    int32_t propCapacity() const { return propCap_; }
 
     void registerGraph();
     void setPersists(bool persists) { persists_ = persists; }

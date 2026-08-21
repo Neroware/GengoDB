@@ -248,15 +248,19 @@ inline std::optional<rdf4cpp::Literal> reconstructBlobLiteral(PropertyGraph::Nod
     return rdf4cpp::Literal::make_typed(lex, toDatatypeIri(*t));
 }
 
-inline std::optional<rdf4cpp::Literal> reconstructLiteral(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref) {
+inline std::optional<rdf4cpp::Literal> reconstructVarLenLiteral(int64_t payload, xsd::Type t) {
+    VarLen32 sv;
+    std::memcpy(&sv, reinterpret_cast<void*>(payload), sizeof(sv));
+    return rdf4cpp::Literal::make_typed(std::string_view(sv.data(), sv.getLen()), toDatatypeIri(t));
+}
+
+inline std::optional<rdf4cpp::Literal> reconstructLiteral(int64_t payload, int32_t tag) {
     auto t = xsd::from_int32(tag);
     if (!t.has_value() || *t == xsd::Type::Unspecified) return std::nullopt;
-    if (*t == xsd::Type::String) {
-        VarLen32 sv;
-        std::memcpy(&sv, ref, sizeof(sv));
-        return rdf4cpp::Literal::make_typed(std::string_view(sv.data(), sv.getLen()), toDatatypeIri(xsd::Type::String));
+    if (*t == xsd::Type::String || *t == xsd::Type::Integer || *t == xsd::Type::Decimal) {
+        return reconstructVarLenLiteral(payload, *t);
     }
-    if (classifyStorage(*t).shape == StorageShape::Blob) return reconstructBlobLiteral(ref);
+    if (classifyStorage(*t).shape == StorageShape::Blob) return reconstructBlobLiteral(reinterpret_cast<PropertyGraph::NodeEntry*>(payload));
     auto lit = getLiteralFromNumeric(reinterpret_cast<uint8_t*>(&payload), tag);
     if (lit.null()) return std::nullopt;
     return lit;
@@ -312,7 +316,7 @@ VarLen32 VariantRuntime::extractBlobLiteral(PropertyGraph::NodeEntry* ref) {
 }
 
 uint8_t* VariantRuntime::allocScratch(int64_t bytes) {
-    return getCurrentExecutionContext()->allocString(static_cast<size_t>(bytes));
+    return getCurrentExecutionContext()->allocLiteral(static_cast<size_t>(bytes));
 }
 
 VarLen32 VariantRuntime::toStringNumeric(int64_t payload, int32_t tag) {
@@ -333,8 +337,8 @@ VarLen32 VariantRuntime::toStringBlobLiteral(PropertyGraph::NodeEntry* ref) {
     return VarLen32::fromString(lit->lexical_form().into_owned());
 }
 
-VarLen32 VariantRuntime::toStringFull(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref) {
-    auto lit = reconstructLiteral(payload, tag, ref);
+VarLen32 VariantRuntime::toStringFull(int64_t payload, int32_t tag) {
+    auto lit = reconstructLiteral(payload, tag);
     if (!lit.has_value()) return emptyVarLen32();
     std::ostringstream os;
     os << *lit;
@@ -375,9 +379,9 @@ int8_t VariantRuntime::compareIriNodeRef(VarLen32 iri, PropertyGraph::NodeEntry*
     }
 }
 
-int8_t VariantRuntime::compareBlobLiteralRefRef(PropertyGraph::NodeEntry* lhs, PropertyGraph::NodeEntry* rhs, int32_t predicate) {
-    auto lhsLit = reconstructBlobLiteral(lhs);
-    auto rhsLit = reconstructBlobLiteral(rhs);
+int8_t VariantRuntime::compareBlobLiteral(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag, int32_t predicate) {
+    auto lhsLit = reconstructLiteral(lhsPayload, lhsTag);
+    auto rhsLit = reconstructLiteral(rhsPayload, rhsTag);
     if (!lhsLit.has_value() || !rhsLit.has_value()) return -1;
     return triBoolToInt8(applyPredicate(*lhsLit, *rhsLit, predicate));
 }
@@ -414,21 +418,24 @@ int32_t VariantRuntime::arithNumericCross(int64_t lhsPayload, int32_t lhsTag, in
     return resultTag;
 }
 
-int8_t VariantRuntime::compareOrder(int64_t lhsPayload, int32_t lhsTag, PropertyGraph::NodeEntry* lhsRef, int64_t rhsPayload, int32_t rhsTag, PropertyGraph::NodeEntry* rhsRef) {
+int8_t VariantRuntime::compareOrder(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag) {
     const bool lhsIsNode = lhsTag == xsd::to_int32(xsd::Type::RDFNode);
     const bool rhsIsNode = rhsTag == xsd::to_int32(xsd::Type::RDFNode);
     // Rank: blank node (0) < IRI (1) < literal (2).
-    auto rankOf = [](bool isNode, PropertyGraph::NodeEntry* ref) -> std::pair<int, bool> {
+    auto rankOf = [](bool isNode, int64_t payload) -> std::pair<int, bool> {
         if (!isNode) return {2, false};
+        auto* ref = reinterpret_cast<PropertyGraph::NodeEntry*>(payload);
         PropertyGraph* pgraph = propertyGraphOf(ref);
         const int32_t localId = GraphStorage::nodeId(reinterpret_cast<uint8_t*>(ref));
         const bool isBlank = pgraph->getMetadata().type_id(localId) == static_cast<int32_t>(RDFNodeType::BNode);
         return {isBlank ? 0 : 1, isBlank};
     };
-    const auto [lhsRank, lhsBlank] = rankOf(lhsIsNode, lhsRef);
-    const auto [rhsRank, rhsBlank] = rankOf(rhsIsNode, rhsRef);
+    const auto [lhsRank, lhsBlank] = rankOf(lhsIsNode, lhsPayload);
+    const auto [rhsRank, rhsBlank] = rankOf(rhsIsNode, rhsPayload);
     if (lhsRank != rhsRank) return lhsRank < rhsRank ? -1 : 1;
     if (lhsRank != 2) {
+        auto* lhsRef = reinterpret_cast<PropertyGraph::NodeEntry*>(lhsPayload);
+        auto* rhsRef = reinterpret_cast<PropertyGraph::NodeEntry*>(rhsPayload);
         const std::string lhsName = propertyGraphOf(lhsRef)->getMetadata()
             .get_node_name(GraphStorage::nodeId(reinterpret_cast<uint8_t*>(lhsRef)));
         const std::string rhsName = propertyGraphOf(rhsRef)->getMetadata()
@@ -436,8 +443,8 @@ int8_t VariantRuntime::compareOrder(int64_t lhsPayload, int32_t lhsTag, Property
         if (lhsName != rhsName) return lhsName < rhsName ? -1 : 1;
         return 0;
     }
-    auto lhsLit = reconstructLiteral(lhsPayload, lhsTag, lhsRef);
-    auto rhsLit = reconstructLiteral(rhsPayload, rhsTag, rhsRef);
+    auto lhsLit = reconstructLiteral(lhsPayload, lhsTag);
+    auto rhsLit = reconstructLiteral(rhsPayload, rhsTag);
     if (!lhsLit.has_value() || !rhsLit.has_value()) return 0;
     const auto ord = lhsLit->order(*rhsLit);
     if (ord == std::strong_ordering::less) return -1;
@@ -445,8 +452,8 @@ int8_t VariantRuntime::compareOrder(int64_t lhsPayload, int32_t lhsTag, Property
     return 0;
 }
 
-int32_t VariantRuntime::castLiteral(int64_t payload, int32_t srcTag, PropertyGraph::NodeEntry* ref, int32_t targetTag, uint8_t* outPtr) {
-    auto srcLit = reconstructLiteral(payload, srcTag, ref);
+int32_t VariantRuntime::castLiteral(int64_t payload, int32_t srcTag, int32_t targetTag, uint8_t* outPtr) {
+    auto srcLit = reconstructLiteral(payload, srcTag);
     if (!srcLit.has_value()) return xsd::to_int32(xsd::Type::Unspecified);
     auto targetT = xsd::from_int32(targetTag);
     if (!targetT.has_value()) return xsd::to_int32(xsd::Type::Unspecified);
@@ -457,16 +464,33 @@ int32_t VariantRuntime::castLiteral(int64_t payload, int32_t srcTag, PropertyGra
     return resultTag;
 }
 
-int8_t VariantRuntime::langMatches(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref, VarLen32 langRange) {
-    auto lit = reconstructLiteral(payload, tag, ref);
+int8_t VariantRuntime::langMatches(int64_t payload, int32_t tag, VarLen32 langRange) {
+    auto lit = reconstructLiteral(payload, tag);
     if (!lit.has_value()) return -1;
     const std::string_view langTagStr = lit->lexical_form().view();
     const std::string_view range(langRange.data(), langRange.getLen());
     return rdf4cpp::lang_matches(langTagStr, range) ? 1 : 0;
 }
 
-VarLen32 VariantRuntime::langTag(int64_t payload, int32_t tag, PropertyGraph::NodeEntry* ref) {
-    auto lit = reconstructLiteral(payload, tag, ref);
+VarLen32 VariantRuntime::langTag(int64_t payload, int32_t tag) {
+    auto lit = reconstructLiteral(payload, tag);
     if (!lit.has_value()) return emptyVarLen32();
     return VarLen32::fromString(std::string(lit->language_tag()));
+}
+
+int32_t VariantRuntime::arithBlobNumeric(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag, int32_t predicate, uint8_t* outPtr, VarLen32* outBlob) {
+    auto lhsLit = reconstructLiteral(lhsPayload, lhsTag);
+    auto rhsLit = reconstructLiteral(rhsPayload, rhsTag);
+    if (!lhsLit.has_value() || !rhsLit.has_value()) return xsd::to_int32(xsd::Type::Unspecified);
+    auto result = applyArith(*lhsLit, *rhsLit, predicate);
+    if (result.null()) return xsd::to_int32(xsd::Type::Unspecified);
+    auto resultTag = static_cast<int32_t>(xsd::from_iri(result.datatype()));
+    auto resultT = xsd::from_int32(resultTag);
+    if (!resultT.has_value()) return xsd::to_int32(xsd::Type::Unspecified);
+    if (*resultT == xsd::Type::Integer || *resultT == xsd::Type::Decimal) {
+        *outBlob = VarLen32::fromString(result.lexical_form().into_owned());
+        return resultTag;
+    }
+    if (!extractNumericByTag(result, resultTag, outPtr)) return xsd::to_int32(xsd::Type::Unspecified);
+    return resultTag;
 }

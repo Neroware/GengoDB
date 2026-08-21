@@ -9,8 +9,6 @@
 
 #include <cstdio>
 
-#define GENGODB_DEFAULT_CAPACITY 1024
-
 namespace gengodb::semantics {
 using namespace rdf4cpp::parser;
 
@@ -207,8 +205,9 @@ void RdfGraph::loadTriples() {
         this->addTriple(quad.subject(), quad.predicate(), quad.object());
     }
 }
-std::unique_ptr<RdfGraph> RdfGraph::create(const std::string& name, const IRI& iri, const std::string& sourceFileName) {
-    auto storage = runtime::GengoDBGraph::create(name);
+std::unique_ptr<RdfGraph> RdfGraph::create(const std::string& name, const IRI& iri, const std::string& sourceFileName,
+    int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity) {
+    auto storage = runtime::GengoDBGraph::create(name, nodeCapacity, relCapacity, propCapacity);
     auto rdfGraph = std::make_unique<RdfGraph>(iri.null() ? extra_namespaces().GENGODB + name : iri, std::move(storage), name, sourceFileName);
     return rdfGraph;
 }
@@ -226,7 +225,7 @@ void RdfGraph::ensureLoaded() {
             } 
             else {
                 storage = std::make_unique<runtime::GengoDBGraph>(fileName,
-                    GENGODB_DEFAULT_CAPACITY, GENGODB_DEFAULT_CAPACITY, GENGODB_DEFAULT_CAPACITY);
+                    storage->nodeCapacity(), storage->relCapacity(), storage->propCapacity());
                 storage->setDBDir(dbDir);
                 nodes = std::make_unique<NodeIdDict>();
                 literalNodes.clear();

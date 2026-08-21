@@ -1,0 +1,9 @@
+PREFIX db: <gengodb://sparql/settings/>
+DESCRIBE ?entity WHERE { ?entity db:capacity 50000 . };
+LOAD <file://resources/ttl/bsbm/product.ttl> INTO GRAPH <gengodb://sparql/settings/defaultGraph#rdf>;
+
+PREFIX db: <gengodb://sparql/settings/>
+DESCRIBE ?entity WHERE {
+    ?entity db:persists true .
+    ?entity db:initialize true . 
+};

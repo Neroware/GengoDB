@@ -1,3 +1,9 @@
+PREFIX dataFromProducer1: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/dataFromProducer1/>
+PREFIX dataFromProducer2: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/dataFromProducer2/>
+PREFIX dataFromProducer3: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/dataFromProducer3/>
+PREFIX dataFromVendor1: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/dataFromVendor1/>
+PREFIX dataFromRatingSite1: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/dataFromRatingSite1/>
+# ===============
 PREFIX bsbm-inst: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/instances/>
 PREFIX bsbm: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/vocabulary/>
 PREFIX dc: <http://purl.org/dc/elements/1.1/>
@@ -7,7 +13,7 @@ PREFIX foaf: <http://xmlns.com/foaf/0.1/>
 SELECT ?title ?text ?reviewDate ?reviewer ?reviewerName
        ?rating1 ?rating2 ?rating3 ?rating4
 WHERE {
-  ?review bsbm:reviewFor bsbm-inst:Product4711 .
+  ?review bsbm:reviewFor dataFromProducer1:Product36 .
   ?review dc:title ?title .
   ?review rev:text ?text .
   FILTER (LANGMATCHES(LANG(?text), "EN"))

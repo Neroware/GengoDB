@@ -61,7 +61,7 @@ void RDFGraphCatalogEntry::setDBDir(std::string dbDir) {
     impl->setDBDir(dbDir);
 }
 std::shared_ptr<RDFGraphCatalogEntry> RDFGraphCatalogEntry::createFromCreateRdfGraphDef(const CreateRdfGraphDef& def) {
-    std::unique_ptr<RdfGraph> impl = RdfGraph::create(def.name, def.iri, def.sourceFileName);
+    std::unique_ptr<RdfGraph> impl = RdfGraph::create(def.name, def.iri, def.sourceFileName, def.nodeCapacity, def.relCapacity, def.propCapacity);
     auto res = std::make_shared<RDFGraphCatalogEntry>(def.name, std::move(impl), def.format);
     return res;
 }

@@ -8,7 +8,7 @@
 #include <sstream>
 #include <string>
 
-constexpr const char* DEFAULT_GRAPH = "gengodb://settings/defaultGraph#rdf";
+constexpr const char* DEFAULT_GRAPH = "gengodb://sparql/settings/defaultGraph#rdf";
 
 int main(int argc, char** argv) {
    if (argc == 2 && std::string(argv[1]) == "--features") {

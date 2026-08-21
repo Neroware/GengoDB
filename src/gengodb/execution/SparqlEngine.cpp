@@ -57,6 +57,15 @@ std::optional<std::string> settingsDirectiveIri(const std::string& stmt, const s
    if (!std::regex_search(stmt, m, re)) return std::nullopt;
    return m[1].matched ? m[1].str() : m[2].str();
 }
+
+std::optional<int32_t> settingsDirectiveInt(const std::string& stmt, const std::string& localName, const std::optional<std::string>& label) {
+   std::string pattern = "<" + settingsNamespace() + localName + ">\\s*(\\d+)";
+   if (label) pattern += "|\\b" + *label + ":" + localName + "\\s*(\\d+)";
+   std::regex re(pattern, std::regex::icase);
+   std::smatch m;
+   if (!std::regex_search(stmt, m, re)) return std::nullopt;
+   return std::stoi(m[1].matched ? m[1].str() : m[2].str());
+}
 } // namespace
 
 std::string trim(const std::string& s) {
@@ -128,7 +137,8 @@ void handleLoad(EngineState& state, const std::string& sourceIri, const std::str
       return;
    }
 
-   CreateRdfGraphDef def{name, rdf4cpp::IRI{graphIri}, RDFFileFormat::TURTLE, filename};
+   CreateRdfGraphDef def{name, rdf4cpp::IRI{graphIri}, RDFFileFormat::TURTLE, filename,
+      state.nodeCapacity, state.relCapacity, state.propCapacity};
    auto graphEntry = RDFGraphCatalogEntry::createFromCreateRdfGraphDef(def);
    catalog.insertEntry(graphEntry);
    graphEntry->ensureFullyLoaded();
@@ -144,12 +154,37 @@ std::optional<SettingsDirectives> detectSettingsDirectives(const std::string& st
    SettingsDirectives directives{
       hasSettingsDirective(stmt, "persists", label),
       hasSettingsDirective(stmt, "initialize", label),
-      settingsDirectiveIri(stmt, "defaultGraph", label)};
-   if (!directives.persists && !directives.initialize && !directives.defaultGraph) return std::nullopt;
+      settingsDirectiveIri(stmt, "defaultGraph", label),
+      settingsDirectiveInt(stmt, "capacity", label),
+      settingsDirectiveInt(stmt, "nodeCapacity", label),
+      settingsDirectiveInt(stmt, "edgeCapacity", label),
+      settingsDirectiveInt(stmt, "propCapacity", label)};
+   if (!directives.persists && !directives.initialize && !directives.defaultGraph && !directives.capacity &&
+      !directives.nodeCapacity && !directives.relCapacity && !directives.propCapacity) return std::nullopt;
    return directives;
 }
 
 void handleSettings(EngineState& state, const SettingsDirectives& directives) {
+   if (directives.capacity) {
+      if (*directives.capacity <= 0) throw std::runtime_error("capacity must be a positive integer");
+      state.nodeCapacity = state.relCapacity = state.propCapacity = *directives.capacity;
+      std::cout << "Graph storage capacity set to " << *directives.capacity << " nodes/relationships/properties." << std::endl;
+   }
+   if (directives.nodeCapacity) {
+      if (*directives.nodeCapacity <= 0) throw std::runtime_error("nodeCapacity must be a positive integer");
+      state.nodeCapacity = *directives.nodeCapacity;
+      std::cout << "Graph node storage capacity set to " << state.nodeCapacity << "." << std::endl;
+   }
+   if (directives.relCapacity) {
+      if (*directives.relCapacity <= 0) throw std::runtime_error("edgeCapacity must be a positive integer");
+      state.relCapacity = *directives.relCapacity;
+      std::cout << "Graph edge storage capacity set to " << state.relCapacity << "." << std::endl;
+   }
+   if (directives.propCapacity) {
+      if (*directives.propCapacity <= 0) throw std::runtime_error("propCapacity must be a positive integer");
+      state.propCapacity = *directives.propCapacity;
+      std::cout << "Graph property storage capacity set to " << state.propCapacity << "." << std::endl;
+   }
    if (directives.initialize) {
       auto indexEntry = GraphNodeIndexCatalogEntry::build(state.loadedGraphs);
       state.session->getCatalog()->insertEntry(indexEntry, /*replace=*/true);
@@ -192,6 +227,10 @@ std::shared_ptr<lingodb::execution::Error> handleQuery(
    std::string mlirText;
    try {
       mlirText = translateSparqlToMLIRString(stmt, defaultGraphOverride.value_or(state.defaultGraph));
+   } catch (const sparql::UnsupportedFeatureError& e) {
+      if (throwOnError) throw;
+      std::cerr << "Error translating SPARQL: " << e.what() << std::endl;
+      return nullptr;
    } catch (const std::exception& e) {
       if (throwOnError) throw std::runtime_error(std::string("Error translating SPARQL: ") + e.what());
       std::cerr << "Error translating SPARQL: " << e.what() << std::endl;
