@@ -135,7 +135,7 @@ def BaseTableOp : RelAlg_Op<"basetable",[Pure,Operator]> {
 
 def SelectionOp : RelAlg_Op<"selection",
         [Pure,Operator,PredicateOperator,TupleLambdaOperator,
-         UnaryOperator,DeclareOpInterfaceMethods<ColumnFoldable>, DeclareOpInterfaceMethods<NullColumnTypeChangeable>]> {
+         UnaryOperator,DeclareOpInterfaceMethods<ColumnFoldable>, DeclareOpInterfaceMethods<NullColumnTypeChangeable>, DeclareOpInterfaceMethods<Parameterizable>]> {
     let summary = "selection operation";
     let description = [{
         Filter tuple stream, the region returns `1` iff the value should be
@@ -149,6 +149,7 @@ def SelectionOp : RelAlg_Op<"selection",
     let extraClassDeclaration = [{
         mlir::LogicalResult foldColumns(dialect::relalg::ColumnFoldInfo& columnInfo);
         lingodb::compiler::dialect::relalg::FunctionalDependencies getFDs();
+        void pushParametersIntoRegion();
     }];
 }
 

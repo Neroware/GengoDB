@@ -1,5 +1,6 @@
 #include "lingodb/compiler/Dialect/DB/IR/DBOps.h"
 #include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgOps.h"
+#include "lingodb/compiler/Dialect/RelAlg/Transforms/QueryParameters.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
 
 #include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
@@ -9,6 +10,8 @@
 
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/OpImplementation.h"
+
+#include <optional>
 
 using operator_list = llvm::SmallVector<GPMOperator, 4>;
 namespace {
@@ -197,6 +200,33 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getAvailable
 }
 bool gpm::TriplePatternOp::canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column) {
     return lingodb::compiler::dialect::relalg::detail::canColumnReach(getOperation(), source, target, column);
+}
+std::vector<relalg::QueryParamLiteral> gpm::TriplePatternOp::getParamLiterals() {
+    std::vector<relalg::QueryParamLiteral> literals;
+    for (mlir::Attribute term : {getS(), getP(), getO()}) {
+        if (auto ident = mlir::dyn_cast<gpm::IdentifierTermAttr>(term)) {
+            literals.push_back({ident.getIdent(), ident.getIdent().getType()});
+        }
+    }
+    return literals;
+}
+namespace {
+std::optional<size_t> paramIdForSlot(gpm::TriplePatternOp op, unsigned slotIndex) {
+    auto paramsAttr = op->getAttrOfType<mlir::ArrayAttr>(relalg::kQueryParamsAttrName);
+    if (!paramsAttr) return std::nullopt;
+    mlir::Attribute terms[3] = {op.getS(), op.getP(), op.getO()};
+    if (!mlir::isa<gpm::IdentifierTermAttr>(terms[slotIndex])) return std::nullopt;
+    size_t entryIdx = 0;
+    for (unsigned i = 0; i < slotIndex; ++i) {
+        if (mlir::isa<gpm::IdentifierTermAttr>(terms[i])) ++entryIdx;
+    }
+    if (entryIdx >= paramsAttr.size()) return std::nullopt;
+    auto dict = mlir::cast<mlir::DictionaryAttr>(paramsAttr[entryIdx]);
+    return static_cast<size_t>(mlir::cast<mlir::IntegerAttr>(dict.get(relalg::kQueryParamIdKey)).getInt());
+}
+} // namespace
+std::optional<size_t> gpm::TriplePatternOp::getParamId(TripleSlot slot) {
+    return paramIdForSlot(*this, static_cast<unsigned>(slot));
 }
 
 lingodb::compiler::dialect::relalg::ColumnSet gpm::NamedGraphOp::getCreatedColumns() {
