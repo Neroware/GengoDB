@@ -29,6 +29,8 @@ mlir::ArrayAttr makeQueryParamsAttr(mlir::MLIRContext* ctxt, size_t id, mlir::At
 void forwardParameter(mlir::Operation* from, size_t id, mlir::Operation* to, mlir::Attribute newValue = {});
 std::vector<QueryParameter> collectQueryParameters(mlir::ModuleOp moduleOp);
 
+bool isQueryCacheEnabled();
+
 } // namespace lingodb::compiler::dialect::relalg
 
 #endif //LINGODB_COMPILER_DIALECT_RELALG_TRANSFORMS_QUERYPARAMETERS_H

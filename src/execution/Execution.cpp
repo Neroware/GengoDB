@@ -10,6 +10,8 @@
 #include "lingodb/compiler/Conversion/SubOpToControlFlow/SubOpToControlFlowPass.h"
 #include "gengodb/compiler/Conversion/VariantToStd/VariantToStdPass.h"
 #include "lingodb/compiler/Dialect/RelAlg/Passes.h"
+#include "lingodb/compiler/Dialect/RelAlg/Transforms/QueryParameters.h"
+#include "lingodb/execution/QueryCache.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
@@ -46,6 +48,7 @@ utility::Tracer::Event lowerRelalgEvent("Compilation", "Lower RelAlg");
 utility::Tracer::Event lowerSubOpEvent("Compilation", "Lower SubOp");
 utility::Tracer::Event lowerImperativeEvent("Compilation", "Lower DB");
 utility::Tracer::Event loadIndicesEvent("Compilation", "Lower DB");
+utility::Tracer::Event queryCanonicalizeEvent("Compilation", "Query Canonicalize");
 } // end anonymous namespace
 namespace lingodb::execution {
 using namespace lingodb::compiler::dialect;
@@ -240,6 +243,22 @@ class DefaultImperativeLowering : public LoweringStep {
       timing["lowerArrow"] = std::chrono::duration_cast<std::chrono::microseconds>(endLowerArrow - startLowerArrow).count() / 1000.0;
    }
 };
+class QueryCanonicalizeLoweringStep : public LoweringStep {
+   std::string getShortName() const override {
+      return "std-query-canonicalize";
+   }
+   void implement(mlir::ModuleOp& moduleOp) override {
+      if (!relalg::isQueryCacheEnabled()) return;
+      utility::Tracer::Trace trace(queryCanonicalizeEvent);
+      mlir::PassManager pm(moduleOp->getContext());
+      pm.enableVerifier(verify);
+      addLingoDBInstrumentation(pm, getSerializationState());
+      pm.addPass(relalg::createQueryCanonicalizePass());
+      if (mlir::failed(pm.run(moduleOp))) {
+         error.emit() << "std-query-canonicalize failed";
+      }
+   }
+};
 ExecutionMode getExecutionMode() {
    ExecutionMode runMode;
    if constexpr (RUN_QUERIES_WITH_PERF) {
@@ -401,6 +420,12 @@ class DefaultQueryExecuter : public QueryExecuter {
          snapshotImportantStep("qopt", moduleOp, serializationState);
       }
 
+      std::vector<uint8_t> queryParamBuffer;
+      if (relalg::isQueryCacheEnabled()) {
+         queryParamBuffer = execution::buildQueryParamBuffer(moduleOp, *executionContext);
+         runtime::ExecutionContext::setQueryParamBuffer(queryParamBuffer.data());
+      }
+
       bool parallelismEnabled = scheduler::getNumWorkers() != 1 && queryExecutionConfig->parallel;
       if (!frontend.isParallelismAllowed() || !parallelismEnabled) {
          moduleOp->setAttr("subop.sequential", mlir::UnitAttr::get(moduleOp->getContext()));
@@ -453,6 +478,7 @@ std::unique_ptr<QueryExecutionConfig> createQueryExecutionConfig(execution::Exec
    config->loweringSteps.emplace_back(std::make_unique<RelAlgLoweringStep>());
    config->loweringSteps.emplace_back(std::make_unique<SubOpLoweringStep>());
    config->loweringSteps.emplace_back(std::make_unique<DefaultImperativeLowering>());
+   config->loweringSteps.emplace_back(std::make_unique<QueryCanonicalizeLoweringStep>());
 #if defined(ASAN_ACTIVE)
    if (runMode == ExecutionMode::DEBUGGING) {
       std::cerr << "ASAN is not supported in DEBUGGING mode. Switching to C mode" << std::endl;

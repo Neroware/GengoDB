@@ -1,5 +1,7 @@
 #include "lingodb/compiler/Dialect/RelAlg/Transforms/QueryParameters.h"
 
+#include "lingodb/utility/Setting.h"
+
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 
@@ -7,6 +9,14 @@
 #include <cassert>
 
 using namespace lingodb::compiler::dialect::relalg;
+
+namespace {
+lingodb::utility::GlobalSetting<bool> queryCacheEnableSetting("system.cache.enable", false);
+} // namespace
+
+bool lingodb::compiler::dialect::relalg::isQueryCacheEnabled() {
+    return queryCacheEnableSetting.getValue();
+}
 
 mlir::ArrayAttr lingodb::compiler::dialect::relalg::makeQueryParamsAttr(mlir::MLIRContext* ctxt, size_t id, mlir::Attribute value) {
     mlir::Builder builder(ctxt);
