@@ -11,10 +11,6 @@
 // JSON/XML Format specs. The result format is negotiated from the request's
 // Accept header (text/csv, text/tab-separated-values, application/sparql-
 // results+json, application/sparql-results+xml; defaults to JSON).
-//
-// A query that is syntactically valid SPARQL but uses a feature GengoDB does
-// not implement yet (ASK/DESCRIBE queries, REGEX() filters, ...) responds with
-// 200 + an empty result set rather than a 400, per the SPARQL 1.1 Protocol.
 
 #include "features.h"
 
@@ -455,9 +451,8 @@ http::response<http::string_body> handleQueryRoute(EngineFacade& engine, const h
       });
       ResultFormat fmt = negotiateFormat(std::string(req[http::field::accept]));
       return makeResponse(http::status::ok, contentTypeFor(fmt), serialize(fmt, result));
-   } catch (const sparql::UnsupportedFeatureError&) {
-      ResultFormat fmt = negotiateFormat(std::string(req[http::field::accept]));
-      return makeResponse(http::status::ok, contentTypeFor(fmt), serialize(fmt, nullptr));
+   } catch (const sparql::UnsupportedFeatureError& e) {
+      return makeResponse(http::status::not_implemented, "text/plain", std::string("Not implemented: ") + e.what() + "\n");
    } catch (const std::exception& e) {
       return makeResponse(http::status::bad_request, "text/plain", std::string("Error: ") + e.what() + "\n");
    }
