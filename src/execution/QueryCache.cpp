@@ -3,6 +3,7 @@
 #include "lingodb/compiler/Dialect/DB/IR/DBOps.h"
 #include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgOps.h"
 #include "lingodb/compiler/Dialect/RelAlg/Transforms/QueryParameters.h"
+#include "lingodb/execution/LLVMBackends.h"
 #include "lingodb/runtime/ExecutionContext.h"
 #include "lingodb/utility/Setting.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
@@ -12,15 +13,25 @@
 #include "mlir/IR/OwningOpRef.h"
 
 #include "llvm/Config/llvm-config.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SHA256.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Host.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <unistd.h>
 
 namespace {
 lingodb::utility::GlobalSetting<bool> cacheDebugSetting("system.cache.debug", false);
+// Empty by default: on-disk persistence (surviving a process restart) is opt-in on top
+// of system.cache.enable, not implied by it -- a bare `system.cache.enable=true` still
+// gets the in-process-only cache exactly as before.
+lingodb::utility::GlobalSetting<std::string> cacheDirSetting("system.cache.dir", "");
+lingodb::utility::GlobalSetting<int64_t> cacheMaxSizeBytesSetting("system.cache.max_size_bytes", int64_t{1} << 30);
 } // namespace
 
 using namespace lingodb::compiler::dialect;
@@ -177,19 +188,127 @@ std::string lingodb::execution::computeQueryCacheKey(mlir::ModuleOp markedModule
    return hex;
 }
 
+namespace {
+namespace fs = std::filesystem;
+
+std::string objectFilePath(const std::string& dir, const std::string& key) {
+   return dir + "/" + key + ".o";
+}
+
+// Removes oldest-mtime `*.o` files in `dir` until its total size is back at or under
+// `maxBytes`. mtime reflects when an entry was written (store() writes a fresh file, it
+// never rewrites an existing one on a lookup hit), so this is an approximation of LRU --
+// "least recently produced" rather than "least recently used" -- deliberately: touching
+// every file's mtime on every disk-cache hit would put a filesystem write on the hot
+// path of what's supposed to be the fast path. Best-effort: a filesystem error on any
+// one file (concurrent eviction by a peer process, permissions, ...) just skips that
+// file rather than aborting the sweep.
+void evictLRU(const std::string& dir, int64_t maxBytes) {
+   std::error_code ec;
+   if (!fs::is_directory(dir, ec)) return;
+
+   struct Entry {
+      fs::path path;
+      int64_t size;
+      fs::file_time_type mtime;
+   };
+   std::vector<Entry> entries;
+   int64_t total = 0;
+   // A plain range-for over directory_iterator(dir, ec) would still call the
+   // throwing operator++ internally (the error_code constructor only makes
+   // construction/dereference non-throwing) -- a real risk here since this directory is
+   // written concurrently by peer processes/threads doing their own store()/evictLRU().
+   // Iterate and increment manually instead, and give up on the whole sweep (best-effort,
+   // see comment above) rather than let a mid-sweep race surface as an exception.
+   try {
+      for (auto it = fs::directory_iterator(dir, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+         const auto& de = *it;
+         if (de.path().extension() != ".o") continue;
+         std::error_code entryEc;
+         auto size = static_cast<int64_t>(de.file_size(entryEc));
+         if (entryEc) continue;
+         auto mtime = de.last_write_time(entryEc);
+         if (entryEc) continue;
+         entries.push_back({de.path(), size, mtime});
+         total += size;
+      }
+   } catch (const fs::filesystem_error&) {
+      return;
+   }
+   if (total <= maxBytes) return;
+
+   std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) { return a.mtime < b.mtime; });
+   for (auto& entry : entries) {
+      if (total <= maxBytes) break;
+      std::error_code removeEc;
+      if (fs::remove(entry.path, removeEc)) total -= entry.size;
+   }
+}
+
+// Writes via a same-directory temp file + atomic rename so a concurrent lookup() in
+// another process (or thread) never observes a partially-written object file.
+void writeObjectFileAtomically(const std::string& path, const std::vector<uint8_t>& bytes) {
+   std::string tmpPath = path + ".tmp" + std::to_string(::getpid());
+   {
+      std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+      if (!out) return;
+      out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+   }
+   std::error_code renameEc;
+   fs::rename(tmpPath, path, renameEc);
+   if (renameEc) {
+      std::error_code removeEc;
+      fs::remove(tmpPath, removeEc);
+   }
+}
+} // namespace
+
 lingodb::execution::QueryCache& lingodb::execution::QueryCache::instance() {
    static QueryCache cache;
    return cache;
 }
 
 std::optional<lingodb::execution::CachedCompiledQuery> lingodb::execution::QueryCache::lookup(const std::string& key) {
+   {
+      std::lock_guard<std::mutex> lock(mutex);
+      auto it = entries.find(key);
+      if (it != entries.end()) return it->second;
+   }
+   auto dir = cacheDirSetting.getValue();
+   if (dir.empty()) return std::nullopt;
+   auto path = objectFilePath(dir, key);
+   std::error_code existsEc;
+   if (!fs::is_regular_file(path, existsEc)) return std::nullopt;
+
+   auto fileOrErr = llvm::MemoryBuffer::getFile(path);
+   if (!fileOrErr) return std::nullopt;
+   std::vector<uint8_t> bytes((*fileOrErr)->getBufferStart(), (*fileOrErr)->getBufferEnd());
+
+   auto loaded = loadCachedObjectFromBytes(bytes);
+   if (!loaded) return std::nullopt;
+   if (cacheDebugSetting.getValue()) {
+      llvm::errs() << "[query-cache] loaded key=" << key << " from disk (" << bytes.size() << " bytes)\n";
+   }
+
    std::lock_guard<std::mutex> lock(mutex);
-   auto it = entries.find(key);
-   if (it == entries.end()) return std::nullopt;
-   return it->second;
+   return entries.emplace(key, std::move(*loaded)).first->second;
 }
 
 void lingodb::execution::QueryCache::store(std::string key, CachedCompiledQuery entry) {
+   auto dir = cacheDirSetting.getValue();
+   if (!dir.empty() && !entry.objectBytes.empty()) {
+      std::error_code mkdirEc;
+      fs::create_directories(dir, mkdirEc);
+      if (!mkdirEc) {
+         writeObjectFileAtomically(objectFilePath(dir, key), entry.objectBytes);
+         evictLRU(dir, cacheMaxSizeBytesSetting.getValue());
+      }
+      // Already durable on disk (or we gave up trying); no need to also keep a second
+      // copy of the raw bytes pinned in the in-memory entry below.
+      entry.objectBytes.clear();
+      entry.objectBytes.shrink_to_fit();
+   }
+
    std::lock_guard<std::mutex> lock(mutex);
    entries.emplace(std::move(key), std::move(entry));
 }

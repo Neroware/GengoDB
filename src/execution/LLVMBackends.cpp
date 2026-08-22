@@ -36,6 +36,7 @@
 #include "llvm/ExecutionEngine/SectionMemoryManager.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/ToolOutputFile.h"
@@ -114,6 +115,17 @@ class SimpleObjectCache : public llvm::ObjectCache {
 
    /// Returns `true` if cache hasn't been populated yet.
    bool isEmpty() { return cachedObjects.empty(); }
+
+   /// Copies out the bytes of the single cached object, for callers (the codegen cache)
+   /// that want to persist them independently of this cache's own lifetime. Unlike
+   /// dumpToObjectFile, this is a production (not just debugging) code path, so it
+   /// degrades to an empty result instead of asserting when the expected single-entry
+   /// invariant doesn't hold.
+   std::vector<uint8_t> getSingleObjectBytes() {
+      if (cachedObjects.size() != 1) return {};
+      llvm::StringRef buf = cachedObjects.begin()->second->getBuffer();
+      return std::vector<uint8_t>(buf.bytes_begin(), buf.bytes_end());
+   }
 
    private:
    llvm::StringMap<std::unique_ptr<llvm::MemoryBuffer>> cachedObjects;
@@ -457,6 +469,13 @@ class LLVMBackend {
          return;
       }
       cache->dumpToObjectFile(filename);
+   }
+
+   /// Bytes of the object compiled for this engine's module, or empty if the object
+   /// cache was disabled (`enableObjectDump = false`) or nothing was compiled yet.
+   std::vector<uint8_t> getObjectBytes() {
+      if (cache == nullptr) return {};
+      return cache->getSingleObjectBytes();
    }
 
    private:
@@ -834,7 +853,18 @@ class DefaultCPULLVMBackend : public execution::ExecutionBackend {
       auto startJIT = std::chrono::high_resolution_clock::now();
       utility::Tracer::Trace traceCodeGen(llvmCodeGen);
 
-      auto maybeEngine = LLVMBackend::create(moduleOp, {.llvmModuleBuilder = convertFn, .transformer = optimizeFn, .jitCodeGenOptLevel = optimize ? llvm::CodeGenOptLevel::Default : llvm::CodeGenOptLevel::None, .enableObjectDump = false});
+      // Whether this compile is a candidate for the codegen cache is already known here
+      // (relalg.query_cacheable is set by std-query-canonicalize, which runs as a
+      // lowering step before the backend), so the object cache -- and the extra copy of
+      // the compiled object bytes it entails -- is only turned on when it'll actually be
+      // used, keeping the disabled/non-cacheable path exactly as before.
+      bool cacheable = false;
+      if (relalg::isQueryCacheEnabled()) {
+         auto cacheableAttr = moduleOp->getAttrOfType<mlir::BoolAttr>(relalg::kQueryCacheableAttrName);
+         cacheable = cacheableAttr && cacheableAttr.getValue();
+      }
+
+      auto maybeEngine = LLVMBackend::create(moduleOp, {.llvmModuleBuilder = convertFn, .transformer = optimizeFn, .jitCodeGenOptLevel = optimize ? llvm::CodeGenOptLevel::Default : llvm::CodeGenOptLevel::None, .enableObjectDump = cacheable});
       if (!maybeEngine) {
          error.emit() << "Could not create execution engine";
          return;
@@ -853,12 +883,9 @@ class DefaultCPULLVMBackend : public execution::ExecutionBackend {
       auto totalJITTime = std::chrono::duration_cast<std::chrono::microseconds>(endJIT - startJIT).count() / 1000.0;
       totalJITTime -= translateToLLVMIRTime;
       totalJITTime -= llvmPassesTime;
-      
-      if (relalg::isQueryCacheEnabled()) {
-         auto cacheableAttr = moduleOp->getAttrOfType<mlir::BoolAttr>(relalg::kQueryCacheableAttrName);
-         if (cacheableAttr && cacheableAttr.getValue()) {
-            cachedQuery = execution::CachedCompiledQuery{mainFunc, engine};
-         }
+
+      if (cacheable) {
+         cachedQuery = execution::CachedCompiledQuery{mainFunc, engine, engine->getObjectBytes()};
       }
 
       auto executionStart = std::chrono::high_resolution_clock::now();
@@ -1112,4 +1139,72 @@ std::unique_ptr<execution::ExecutionBackend> execution::createGPULLVMBackend() {
 #else
    return {};
 #endif
+}
+
+namespace {
+// Keeps the LLJIT that a disk-loaded cache entry's "main" symbol points into alive for
+// as long as the entry itself (CachedCompiledQuery::keepAlive) is referenced -- same
+// role LLVMBackend plays for a freshly-JIT-compiled entry.
+struct LoadedObjectJit {
+   std::unique_ptr<llvm::orc::LLJIT> jit;
+};
+} // namespace
+
+std::optional<execution::CachedCompiledQuery> execution::loadCachedObjectFromBytes(const std::vector<uint8_t>& objectBytes) {
+   if (objectBytes.empty()) return std::nullopt;
+   llvm::InitializeNativeTarget();
+   llvm::InitializeNativeTargetAsmPrinter();
+
+   auto buffer = llvm::MemoryBuffer::getMemBufferCopy(
+      llvm::StringRef(reinterpret_cast<const char*>(objectBytes.data()), objectBytes.size()), "cached-query-object");
+
+   auto jitOrErr = llvm::orc::LLJITBuilder().create();
+   if (!jitOrErr) {
+      llvm::consumeError(jitOrErr.takeError());
+      return std::nullopt;
+   }
+   auto jit = std::move(jitOrErr.get());
+
+   // Resolve symbols the same way a freshly-compiled engine does (LLVMBackend::create
+   // above): symbols exported by the current process (runtime library, mimalloc, ...)
+   // plus the two runtime-function tables that aren't visible via plain symbol
+   // visibility.
+   auto& mainJD = jit->getMainJITDylib();
+   auto generatorOrErr = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(jit->getDataLayout().getGlobalPrefix());
+   if (!generatorOrErr) {
+      llvm::consumeError(generatorOrErr.takeError());
+      return std::nullopt;
+   }
+   mainJD.addGenerator(std::move(*generatorOrErr));
+
+   llvm::orc::MangleAndInterner interner(jit->getExecutionSession(), jit->getDataLayout());
+   auto symbolMap = llvm::orc::SymbolMap();
+   util::FunctionHelper::visitAllFunctions([&](std::string s, void* ptr) {
+      symbolMap[interner(s)] = llvm::orc::ExecutorSymbolDef(llvm::orc::ExecutorAddr::fromPtr(ptr), llvm::JITSymbolFlags::Exported);
+   });
+   visitBareFunctions([&](std::string s, void* ptr) {
+      symbolMap[interner(s)] = llvm::orc::ExecutorSymbolDef(llvm::orc::ExecutorAddr::fromPtr(ptr), llvm::JITSymbolFlags::Exported);
+   });
+   if (auto defErr = mainJD.define(absoluteSymbols(std::move(symbolMap)))) {
+      llvm::consumeError(std::move(defErr));
+      return std::nullopt;
+   }
+
+   if (auto addErr = jit->addObjectFile(std::move(buffer))) {
+      llvm::consumeError(std::move(addErr));
+      return std::nullopt;
+   }
+
+   auto mainSym = jit->lookup("main");
+   if (!mainSym) {
+      llvm::consumeError(mainSym.takeError());
+      return std::nullopt;
+   }
+
+   auto loaded = std::make_shared<LoadedObjectJit>();
+   loaded->jit = std::move(jit);
+   CachedCompiledQuery result;
+   result.mainFunc = mainSym->toPtr<execution::mainFnType>();
+   result.keepAlive = std::move(loaded);
+   return result;
 }

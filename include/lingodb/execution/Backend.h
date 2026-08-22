@@ -4,9 +4,11 @@
 #include "Instrumentation.h"
 #include "lingodb/runtime/ExecutionContext.h"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <utility>
+#include <vector>
 namespace mlir {
 class ModuleOp;
 } // namespace mlir
@@ -16,6 +18,11 @@ using mainFnType = std::add_pointer<void()>::type;
 struct CachedCompiledQuery {
    mainFnType mainFunc = nullptr;
    std::shared_ptr<void> keepAlive;
+   // Raw object-code bytes for this compiled query, non-empty only when produced by a
+   // backend that supports on-disk persistence (currently DefaultCPULLVMBackend only).
+   // QueryCache::store() persists these to <cache.dir>/<key>.o when disk caching is
+   // configured; left empty for entries loaded back from disk (nothing to re-persist).
+   std::vector<uint8_t> objectBytes;
 };
 
 class ExecutionBackend {

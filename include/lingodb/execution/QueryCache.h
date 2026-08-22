@@ -24,6 +24,14 @@ constexpr size_t kQueryParamSlotBytes = 16;
 std::vector<uint8_t> buildQueryParamBuffer(mlir::ModuleOp markedModule, runtime::ExecutionContext& executionContext);
 std::string computeQueryCacheKey(mlir::ModuleOp markedModule);
 
+// Process-lifetime cache of compiled queries, keyed by computeQueryCacheKey(). Backed by
+// an in-memory map plus, when `system.cache.dir` is set, an on-disk `<key>.o` per entry
+// so a cache built up by one process's compiles can be reused after a restart -- store()
+// persists the entry's object bytes (see CachedCompiledQuery::objectBytes) to disk and
+// evicts old entries once `system.cache.max_size_bytes` is exceeded; lookup() falls back
+// to disk and links a found `.o` back into a callable function (loadCachedObjectFromBytes,
+// LLVMBackends.h) when the in-memory map doesn't have the key -- e.g. right after a
+// process restart, or on the first request a peer process's compile satisfies.
 class QueryCache {
    public:
    static QueryCache& instance();

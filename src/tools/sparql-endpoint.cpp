@@ -21,6 +21,7 @@
 #include "lingodb/compiler/mlir-support/eval.h"
 #include "lingodb/execution/ResultProcessing.h"
 #include "lingodb/scheduler/Scheduler.h"
+#include "lingodb/utility/Setting.h"
 
 #include "gengodb/compiler/frontend/SparqlErrors.h"
 #include "gengodb/execution/SparqlEngine.h"
@@ -525,17 +526,35 @@ int main(int argc, char** argv) {
       return 0;
    }
    if (argc <= 1) {
-      std::cerr << "USAGE: sparql-endpoint <dbDir> [--host <addr>] [--port <n>]" << std::endl;
+      std::cerr << "USAGE: sparql-endpoint <dbDir> [--host <addr>] [--port <n>] [--enable-cache] [--cache-dir <dir>]" << std::endl;
       return 1;
    }
 
    std::string dbDir = argv[1];
    std::string host = "0.0.0.0";
    unsigned short port = 8080;
+   bool enableCache = false;
+   std::optional<std::string> cacheDirArg;
    for (int i = 2; i < argc; i++) {
       std::string arg = argv[i];
       if (arg == "--host" && i + 1 < argc) host = argv[++i];
       else if (arg == "--port" && i + 1 < argc) port = static_cast<unsigned short>(std::stoi(argv[++i]));
+      else if (arg == "--enable-cache") enableCache = true;
+      else if (arg == "--cache-dir" && i + 1 < argc) cacheDirArg = argv[++i];
+   }
+   // The codegen cache (see .claude/plans/codegen-cache-plan.md) is what makes this
+   // server -- which otherwise recompiles an identical query shape on every request --
+   // actually fast for repeated queries. --enable-cache turns on both the in-process
+   // cache and its on-disk persistence (defaulting the disk directory to a subdirectory
+   // of dbDir, so entries survive a server restart); the underlying settings remain
+   // available individually via LINGODB_CACHE_ENABLE/LINGODB_CACHE_DIR/
+   // LINGODB_CACHE_MAX_SIZE_BYTES for sql/run-sql/run-sparql, which have no dedicated
+   // flag for this.
+   if (enableCache) {
+      utility::setSetting("system.cache.enable", "true");
+      utility::setSetting("system.cache.dir", cacheDirArg.value_or(dbDir + "/query-cache"));
+   } else if (cacheDirArg) {
+      std::cerr << "sparql-endpoint: --cache-dir has no effect without --enable-cache" << std::endl;
    }
 
    EngineState state;
