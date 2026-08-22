@@ -6,6 +6,7 @@
 #include "lingodb/compiler/Dialect/DB/IR/DBOps.h"
 #include "lingodb/compiler/Dialect/DB/IR/RuntimeFunctions.h"
 #include "lingodb/compiler/Dialect/DB/Passes.h"
+#include "lingodb/compiler/Dialect/RelAlg/Transforms/QueryParameters.h"
 #include "lingodb/compiler/Dialect/util/FunctionHelper.h"
 #include "lingodb/compiler/Dialect/util/UtilDialect.h"
 #include "lingodb/compiler/Dialect/util/UtilOps.h"
@@ -807,6 +808,14 @@ class ConstantLowering : public OpConversionPattern<db::ConstantOp> {
       return {typeConstant, param1, param2};
    }
 
+   static void forwardIfParameterized(db::ConstantOp constantOp, mlir::Operation* replacement, mlir::Attribute newValue) {
+      if (auto paramsAttr = constantOp->getAttrOfType<mlir::ArrayAttr>(relalg::kQueryParamsAttrName)) {
+         auto entryDict = mlir::cast<mlir::DictionaryAttr>(paramsAttr[0]);
+         auto paramId = static_cast<size_t>(mlir::cast<mlir::IntegerAttr>(entryDict.get(relalg::kQueryParamIdKey)).getInt());
+         relalg::forwardParameter(constantOp, paramId, replacement, newValue);
+      }
+   }
+
    public:
    using OpConversionPattern<db::ConstantOp>::OpConversionPattern;
    LogicalResult matchAndRewrite(db::ConstantOp constantOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
@@ -828,22 +837,30 @@ class ConstantLowering : public OpConversionPattern<db::ConstantOp> {
          if (auto decimalType = mlir::dyn_cast_or_null<db::DecimalType>(type)) {
             auto [low, high] = lingodb::compiler::support::parseDecimal(std::get<std::string>(parseResult), decimalType.getS());
             std::vector<uint64_t> parts = {low, high};
-            rewriter.replaceOpWithNewOp<arith::ConstantOp>(constantOp, stdType, rewriter.getIntegerAttr(stdType, APInt(mlir::cast<mlir::IntegerType>(stdType).getWidth(), parts)));
+            auto valueAttr = rewriter.getIntegerAttr(stdType, APInt(mlir::cast<mlir::IntegerType>(stdType).getWidth(), parts));
+            auto newOp = rewriter.replaceOpWithNewOp<arith::ConstantOp>(constantOp, stdType, valueAttr);
+            forwardIfParameterized(constantOp, newOp, valueAttr);
             return success();
          } else {
             if (mlir::isa<db::CharType>(type)) {
                parseResult = lingodb::compiler::support::toI64(parseResult);
             }
-            rewriter.replaceOpWithNewOp<arith::ConstantOp>(constantOp, stdType, rewriter.getIntegerAttr(stdType, std::get<int64_t>(parseResult)));
+            auto valueAttr = rewriter.getIntegerAttr(stdType, std::get<int64_t>(parseResult));
+            auto newOp = rewriter.replaceOpWithNewOp<arith::ConstantOp>(constantOp, stdType, valueAttr);
+            forwardIfParameterized(constantOp, newOp, valueAttr);
             return success();
          }
       } else if (auto floatType = mlir::dyn_cast_or_null<FloatType>(stdType)) {
-         rewriter.replaceOpWithNewOp<arith::ConstantOp>(constantOp, stdType, rewriter.getFloatAttr(stdType, std::get<double>(parseResult)));
+         auto valueAttr = rewriter.getFloatAttr(stdType, std::get<double>(parseResult));
+         auto newOp = rewriter.replaceOpWithNewOp<arith::ConstantOp>(constantOp, stdType, valueAttr);
+         forwardIfParameterized(constantOp, newOp, valueAttr);
          return success();
       } else if (mlir::isa<util::VarLen32Type>(stdType)) {
          std::string str = std::get<std::string>(parseResult);
 
-         rewriter.replaceOpWithNewOp<util::CreateConstVarLen>(constantOp, util::VarLen32Type::get(rewriter.getContext()), rewriter.getStringAttr(str));
+         auto valueAttr = rewriter.getStringAttr(str);
+         auto newOp = rewriter.replaceOpWithNewOp<util::CreateConstVarLen>(constantOp, util::VarLen32Type::get(rewriter.getContext()), valueAttr);
+         forwardIfParameterized(constantOp, newOp, valueAttr);
          return success();
       } else {
          return failure();

@@ -31,7 +31,7 @@ struct NodeId {
                 // Literal nodes have no identifier within an RDF graph
                 return 0;
             case RDFNodeType::IRI: {
-                return std::hash<std::string>{}(iri.identifier().data());
+                return std::hash<std::string_view>{}(iri.identifier());
             }
             case RDFNodeType::BNode:
             case RDFNodeType::Variable:

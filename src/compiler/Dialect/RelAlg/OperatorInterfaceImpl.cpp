@@ -1,10 +1,12 @@
 #include "lingodb/compiler/Dialect/DB/IR/DBOps.h"
 #include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgDialect.h"
 #include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgOps.h"
+#include "lingodb/compiler/Dialect/RelAlg/Transforms/QueryParameters.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
 
 #include "llvm/ADT/TypeSwitch.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/OpImplementation.h"
 
@@ -529,6 +531,71 @@ relalg::FunctionalDependencies BaseTableOp::getFDs() {
       dependencies.insert(pk, right);
    }
    return dependencies;
+}
+namespace {
+bool isCacheableQueryParamType(mlir::Type t) {
+   return mlir::isa<mlir::IntegerType, mlir::Float32Type, mlir::Float64Type, db::StringType>(t);
+}
+llvm::SmallVector<mlir::Operation*, 4> collectParameterizableLiteralOps(mlir::Region& region) {
+   llvm::SmallVector<mlir::Operation*, 4> found;
+   region.walk([&](mlir::Operation* op) {
+      if (auto constOp = mlir::dyn_cast<mlir::arith::ConstantOp>(op)) {
+         if (isCacheableQueryParamType(constOp.getType())) found.push_back(op);
+      }
+      else if (auto constOp = mlir::dyn_cast<db::ConstantOp>(op)) {
+         if (isCacheableQueryParamType(constOp.getResult().getType())) found.push_back(op);
+      }
+   });
+   return found;
+}
+mlir::TypedAttr canonicalCacheKeyStandIn(mlir::Type type) {
+   if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type)) {
+      return mlir::IntegerAttr::get(intType, 0);
+   }
+   if (mlir::isa<mlir::Float32Type, mlir::Float64Type>(type)) {
+      return mlir::FloatAttr::get(type, 0.0);
+   }
+   return {};
+}
+} // namespace
+std::vector<relalg::QueryParamLiteral> relalg::SelectionOp::getParamLiterals() {
+   std::vector<relalg::QueryParamLiteral> literals;
+   for (auto* op : collectParameterizableLiteralOps(getPredicateRegion())) {
+      if (auto constOp = mlir::dyn_cast<mlir::arith::ConstantOp>(op)) {
+         literals.push_back({constOp.getValue(), constOp.getType()});
+      } 
+      else if (auto constOp = mlir::dyn_cast<db::ConstantOp>(op)) {
+         literals.push_back({constOp.getValueAttr(), constOp.getResult().getType()});
+      }
+   }
+   return literals;
+}
+void relalg::SelectionOp::maskParameters() {
+   for (auto* op : collectParameterizableLiteralOps(getPredicateRegion())) {
+      if (auto constOp = mlir::dyn_cast<mlir::arith::ConstantOp>(op)) {
+         constOp.setValueAttr(canonicalCacheKeyStandIn(constOp.getType()));
+      } else if (auto constOp = mlir::dyn_cast<db::ConstantOp>(op)) {
+         auto resultType = constOp.getResult().getType();
+         if (mlir::isa<db::StringType>(resultType)) {
+            constOp.setValueAttr(mlir::StringAttr::get(getContext(), ""));
+         } else {
+            constOp.setValueAttr(canonicalCacheKeyStandIn(resultType));
+         }
+      }
+   }
+}
+void relalg::SelectionOp::pushParametersIntoRegion() {
+   auto paramsAttr = (*this)->getAttrOfType<mlir::ArrayAttr>(relalg::kQueryParamsAttrName);
+   if (!paramsAttr) return;
+   auto ops = collectParameterizableLiteralOps(getPredicateRegion());
+   assert(ops.size() == paramsAttr.size() && "distributeParametersInto: predicate region shape changed unexpectedly since marking");
+   size_t i = 0;
+   for (auto entry : paramsAttr) {
+      auto dict = mlir::cast<mlir::DictionaryAttr>(entry);
+      auto id = mlir::cast<mlir::IntegerAttr>(dict.get(relalg::kQueryParamIdKey)).getInt();
+      ops[i]->setAttr(relalg::kQueryParamsAttrName, relalg::makeQueryParamsAttr(getContext(), static_cast<size_t>(id), dict.get(relalg::kQueryParamValueKey)));
+      ++i;
+   }
 }
 relalg::FunctionalDependencies relalg::SelectionOp::getFDs() {
    FunctionalDependencies dependencies = getChildren()[0].getFDs();

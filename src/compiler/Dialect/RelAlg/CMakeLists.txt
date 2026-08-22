@@ -20,6 +20,9 @@ add_mlir_dialect_library(MLIRRelAlg
         Transforms/OptimizeJoinOrder.cpp
         Transforms/TrackTuples.cpp
         Transforms/EliminateNullableTypes.cpp
+        Transforms/QueryParameters.cpp
+        Transforms/ParameterizeQuery.cpp
+        Transforms/QueryCanonicalize.cpp
         Transforms/queryopt/utils.cpp
         Transforms/queryopt/QueryGraphBuilder.cpp
         Transforms/queryopt/DPhyp.cpp
@@ -37,4 +40,6 @@ add_mlir_dialect_library(MLIRRelAlg
         LINK_LIBS mlir-support utility PUBLIC
         MLIRIR
         MLIRCompilerHelper
+        MLIRUtil
+        runtime_funcs_ptr
 )

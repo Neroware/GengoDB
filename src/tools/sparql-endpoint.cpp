@@ -21,6 +21,7 @@
 #include "lingodb/compiler/mlir-support/eval.h"
 #include "lingodb/execution/ResultProcessing.h"
 #include "lingodb/scheduler/Scheduler.h"
+#include "lingodb/utility/Setting.h"
 
 #include "gengodb/compiler/frontend/SparqlErrors.h"
 #include "gengodb/execution/SparqlEngine.h"
@@ -525,17 +526,22 @@ int main(int argc, char** argv) {
       return 0;
    }
    if (argc <= 1) {
-      std::cerr << "USAGE: sparql-endpoint <dbDir> [--host <addr>] [--port <n>]" << std::endl;
+      std::cerr << "USAGE: sparql-endpoint <dbDir> [--host <addr>] [--port <n>] [--enable-cache]" << std::endl;
       return 1;
    }
 
    std::string dbDir = argv[1];
    std::string host = "0.0.0.0";
    unsigned short port = 8080;
+   bool enableCache = false;
    for (int i = 2; i < argc; i++) {
       std::string arg = argv[i];
       if (arg == "--host" && i + 1 < argc) host = argv[++i];
       else if (arg == "--port" && i + 1 < argc) port = static_cast<unsigned short>(std::stoi(argv[++i]));
+      else if (arg == "--enable-cache") enableCache = true;
+   }
+   if (enableCache) {
+      utility::setSetting("system.cache.enable", "true");
    }
 
    EngineState state;

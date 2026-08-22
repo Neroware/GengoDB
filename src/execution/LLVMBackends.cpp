@@ -1,6 +1,7 @@
 #include "lingodb/execution/LLVMBackends.h"
 
 #include "lingodb/compiler/Conversion/UtilToLLVM/Passes.h"
+#include "lingodb/compiler/Dialect/RelAlg/Transforms/QueryParameters.h"
 #include "lingodb/compiler/Dialect/util/FunctionHelper.h"
 #include "lingodb/compiler/helper.h"
 #include "lingodb/execution/BackendPasses.h"
@@ -838,7 +839,7 @@ class DefaultCPULLVMBackend : public execution::ExecutionBackend {
          error.emit() << "Could not create execution engine";
          return;
       }
-      auto engine = std::move(maybeEngine.get());
+      std::shared_ptr<LLVMBackend> engine = std::move(maybeEngine.get());
 
       auto mainFnLookupResult = engine->lookup("main");
       if (!mainFnLookupResult) {
@@ -852,6 +853,13 @@ class DefaultCPULLVMBackend : public execution::ExecutionBackend {
       auto totalJITTime = std::chrono::duration_cast<std::chrono::microseconds>(endJIT - startJIT).count() / 1000.0;
       totalJITTime -= translateToLLVMIRTime;
       totalJITTime -= llvmPassesTime;
+      
+      if (relalg::isQueryCacheEnabled()) {
+         auto cacheableAttr = moduleOp->getAttrOfType<mlir::BoolAttr>(relalg::kQueryCacheableAttrName);
+         if (cacheableAttr && cacheableAttr.getValue()) {
+            cachedQuery = execution::CachedCompiledQuery{mainFunc, engine};
+         }
+      }
 
       auto executionStart = std::chrono::high_resolution_clock::now();
       utility::Tracer::Trace trace(execution);

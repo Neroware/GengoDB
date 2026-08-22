@@ -206,6 +206,7 @@ struct ClassifiedTerm {
 class TripleEmitter {
    ConversionPatternRewriter& rewriter;
    MLIRContext* ctxt;
+   gpm::TriplePatternOp op;
    tuples::ColumnManager& columnManager;
    subop::MemberManager& memberManager;
    NamedGraphMapper& graphs;
@@ -216,9 +217,10 @@ class TripleEmitter {
    mlir::Attribute sTerm, pTerm, oTerm;
    mlir::DictionaryAttr bindingsAttr, bnodeScopeAttr;
    llvm::DenseMap<const tuples::Column*, tuples::ColumnRefAttr> localTerms;
+
    public:
    TripleEmitter(ConversionPatternRewriter& rewriter, NamedGraphMapper& graphs, gpm::TriplePatternOp tripleOp)
-      : rewriter(rewriter), ctxt(rewriter.getContext()),
+      : rewriter(rewriter), ctxt(rewriter.getContext()), op(tripleOp),
       columnManager(ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager()),
       memberManager(ctxt->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager()),
       graphs(graphs), loc(tripleOp->getLoc()), graphRefAttr(tripleOp.getGraphRef()),
@@ -234,23 +236,23 @@ class TripleEmitter {
       bool anchorSubject = mlir::isa<gpm::IdentifierTermAttr>(sTerm);
       bool anchorObject = !anchorSubject && mlir::isa<gpm::IdentifierTermAttr>(oTerm);
       if (anchorSubject) {
-         stream = scanFromConstantAnchor(stream, mlir::cast<gpm::IdentifierTermAttr>(sTerm), EdgeDirection::Outgoing, edgeRefType, edgeRef);
-         stream = emitPredicate(stream, edgeRef);
-         stream = emitTerm(stream, oTerm, "o", edgeRefType.getToMembers().getMembers()[0], edgeRef);
+         stream = scanFromConstantAnchor(stream, mlir::cast<gpm::IdentifierTermAttr>(sTerm), EdgeDirection::Outgoing, edgeRefType, edgeRef, op.getParamId(gpm::TripleSlot::subject));
+         stream = emitPredicate(stream, edgeRef, op.getParamId(gpm::TripleSlot::predicate));
+         stream = emitTerm(stream, oTerm, "o", edgeRefType.getToMembers().getMembers()[0], edgeRef, op.getParamId(gpm::TripleSlot::object));
       }
       else if (anchorObject) {
-         stream = scanFromConstantAnchor(stream, mlir::cast<gpm::IdentifierTermAttr>(oTerm), EdgeDirection::Incoming, edgeRefType, edgeRef);
-         stream = emitTerm(stream, sTerm, "s", edgeRefType.getFromMembers().getMembers()[0], edgeRef);
-         stream = emitPredicate(stream, edgeRef);
+         stream = scanFromConstantAnchor(stream, mlir::cast<gpm::IdentifierTermAttr>(oTerm), EdgeDirection::Incoming, edgeRefType, edgeRef, op.getParamId(gpm::TripleSlot::object));
+         stream = emitTerm(stream, sTerm, "s", edgeRefType.getFromMembers().getMembers()[0], edgeRef, op.getParamId(gpm::TripleSlot::subject));
+         stream = emitPredicate(stream, edgeRef, op.getParamId(gpm::TripleSlot::predicate));
       }
       else {
          auto& graphData = graphs[graphSym];
          auto edgesRef = columnManager.createRef(graphData.edgeSetColumn);
          auto edgeSetType = graphData.edgeSetColumn->type;
          stream = scanEdges(stream, edgesRef, edgeSetType, edgeRefType, edgeRef);
-         stream = emitTerm(stream, sTerm, "s", edgeRefType.getFromMembers().getMembers()[0], edgeRef);
-         stream = emitPredicate(stream, edgeRef);
-         stream = emitTerm(stream, oTerm, "o", edgeRefType.getToMembers().getMembers()[0], edgeRef);
+         stream = emitTerm(stream, sTerm, "s", edgeRefType.getFromMembers().getMembers()[0], edgeRef, op.getParamId(gpm::TripleSlot::subject));
+         stream = emitPredicate(stream, edgeRef, op.getParamId(gpm::TripleSlot::predicate));
+         stream = emitTerm(stream, oTerm, "o", edgeRefType.getToMembers().getMembers()[0], edgeRef, op.getParamId(gpm::TripleSlot::object));
       }
       return stream;
    }
@@ -374,7 +376,7 @@ class TripleEmitter {
       mapOp.getFn().push_back(helper.getMapBlock());
       return rewriter.create<subop::FilterOp>(loc, mapOp.getResult(), subop::FilterSemantic::all_true, rewriter.getArrayAttr({validRef}));
    }
-   mlir::Value scanFromConstantAnchor(mlir::Value stream, gpm::IdentifierTermAttr ident, EdgeDirection direction, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef) {
+   mlir::Value scanFromConstantAnchor(mlir::Value stream, gpm::IdentifierTermAttr ident, EdgeDirection direction, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef, std::optional<size_t> paramId = std::nullopt) {
       auto& graphData = graphs[graphSym];
       auto nodesRef = columnManager.createRef(graphData.nodeSetColumn);
       auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({nodesRef}));
@@ -389,7 +391,9 @@ class TripleEmitter {
          rewriter.setInsertionPointToStart(b);
          auto [identDef, identRef] = createColumn(gsubop::IdentifierType::get(ctxt), "idents", "lookup");
          auto scan = generateTupleStream(rewriter, loc, identDef, [&](mlir::OpBuilder& bldr) -> mlir::Value {
-            return bldr.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, ident.getIdent());
+            auto identOp = bldr.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, ident.getIdent());
+            if (paramId) relalg::forwardParameter(op, *paramId, identOp.getOperation());
+            return identOp;
          });
          scan = filterValidIdentifier(scan, identRef);
          nodeRefType = createNodeRefType(ctxt, group, graph);
@@ -422,9 +426,10 @@ class TripleEmitter {
       edgeRefColumnRef = resolvedRef;
       return nestedMapOp.getRes();
    }
-   mlir::Value emitPredicate(mlir::Value stream, tuples::ColumnRefAttr edgeRef) {
+   mlir::Value emitPredicate(mlir::Value stream, tuples::ColumnRefAttr edgeRef, std::optional<size_t> paramId = std::nullopt) {
       if (auto constPred = mlir::dyn_cast<gpm::IdentifierTermAttr>(pTerm)) {
          auto ident = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, constPred.getIdent());
+         if (paramId) relalg::forwardParameter(op, *paramId, ident.getOperation());
          return rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, edgeRef, ident);
       }
       auto ct = classify("p", pTerm);
@@ -452,10 +457,11 @@ class TripleEmitter {
       }
       return nestedMapOp.getRes();
    }
-   mlir::Value emitTerm(mlir::Value stream, mlir::Attribute term, mlir::StringRef pos, Member nodeMember, tuples::ColumnRefAttr edgeRef) {
+   mlir::Value emitTerm(mlir::Value stream, mlir::Attribute term, mlir::StringRef pos, Member nodeMember, tuples::ColumnRefAttr edgeRef, std::optional<size_t> paramId = std::nullopt) {
       if (auto constTerm = mlir::dyn_cast<gpm::IdentifierTermAttr>(term)) {
          auto [def, ref] = createColumn(memberManager.getType(nodeMember), "nodes", "id");
          auto ident = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, constTerm.getIdent());
+         if (paramId) relalg::forwardParameter(op, *paramId, ident.getOperation());
          stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(ctxt, {{nodeMember, def}}));
          return rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, ref, ident);
       }

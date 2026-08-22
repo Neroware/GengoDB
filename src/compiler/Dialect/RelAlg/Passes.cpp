@@ -1,4 +1,5 @@
 #include "lingodb/compiler/Dialect/RelAlg/Passes.h"
+#include "lingodb/compiler/Dialect/RelAlg/Transforms/QueryParameters.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
@@ -46,6 +47,9 @@ void relalg::createQueryOptPipeline(mlir::OpPassManager& pm, lingodb::catalog::C
    pm.addNestedPass<mlir::func::FuncOp>(relalg::createCommonSubtreeEliminationPass());
    pm.addPass(lingodb::compiler::createCanonicalizerPass());
    pm.addNestedPass<mlir::func::FuncOp>(relalg::createIntroduceTmpPass());
+   if (relalg::isQueryCacheEnabled()) {
+      pm.addPass(relalg::createParameterizeQueryPass());
+   }
 }
 void relalg::registerQueryOptimizationPasses() {
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
@@ -89,6 +93,12 @@ void relalg::registerQueryOptimizationPasses() {
    });
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
       return relalg::createColumnFoldingPass();
+   });
+   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
+      return relalg::createParameterizeQueryPass();
+   });
+   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
+      return relalg::createQueryCanonicalizePass();
    });
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
       return relalg::createTrackTuplesPass();

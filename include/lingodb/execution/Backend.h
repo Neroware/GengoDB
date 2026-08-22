@@ -3,17 +3,28 @@
 #include "Error.h"
 #include "Instrumentation.h"
 #include "lingodb/runtime/ExecutionContext.h"
+
+#include <memory>
+#include <optional>
+#include <utility>
 namespace mlir {
 class ModuleOp;
 } // namespace mlir
 namespace lingodb::execution {
 using mainFnType = std::add_pointer<void()>::type;
+
+struct CachedCompiledQuery {
+   mainFnType mainFunc = nullptr;
+   std::shared_ptr<void> keepAlive;
+};
+
 class ExecutionBackend {
    protected:
    std::unordered_map<std::string, double> timing;
    Error error;
    bool verify = true;
    std::shared_ptr<SnapshotState> serializationState;
+   std::optional<CachedCompiledQuery> cachedQuery;
 
    public:
    const std::unordered_map<std::string, double>& getTiming() const {
@@ -30,6 +41,9 @@ class ExecutionBackend {
    }
    auto getSerializationState() {
       return serializationState;
+   }
+   std::optional<CachedCompiledQuery> takeCachedQuery() {
+      return std::exchange(cachedQuery, std::nullopt);
    }
 
    virtual ~ExecutionBackend() {}

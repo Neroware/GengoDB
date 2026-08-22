@@ -22,7 +22,7 @@ class GPM_Op<string mnemonic, list<Trait> traits = []> : Op<GPM_Dialect, mnemoni
   let hasCustomAssemblyFormat = 1;
 }
 
-def TriplePatternOp : GPM_Op<"triple_pattern", [Pure,GPMOperator,Operator,UnaryOperator]> {
+def TriplePatternOp : GPM_Op<"triple_pattern", [Pure,GPMOperator,Operator,UnaryOperator,DeclareOpInterfaceMethods<Parameterizable>]> {
   let summary = "triple pattern";
   let arguments = (ins TupleStream:$rel, ColumnRefAttr:$graphRef, AnyAttr:$s, AnyAttr:$p, AnyAttr:$o);
   let results = (outs TupleStream:$res);
@@ -34,6 +34,7 @@ def TriplePatternOp : GPM_Op<"triple_pattern", [Pure,GPMOperator,Operator,UnaryO
     lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
     lingodb::compiler::dialect::relalg::ColumnSet getBindingColumns();
     bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
+    std::optional<size_t> getParamId(TripleSlot slot);
   }];
 }
 

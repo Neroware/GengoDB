@@ -5,6 +5,7 @@
 #include "lingodb/compiler/Dialect/Arrow/IR/ArrowOps.h"
 #include "lingodb/compiler/Dialect/DB/IR/DBDialect.h"
 #include "lingodb/compiler/Dialect/DB/IR/DBOps.h"
+#include "lingodb/compiler/Dialect/RelAlg/Transforms/QueryParameters.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorDialect.h"
 #include "lingodb/compiler/Dialect/SubOperator/SubOperatorOps.h"
 #include "lingodb/compiler/Dialect/SubOperator/Transforms/Passes.h"
@@ -5203,10 +5204,15 @@ class CreateIdentifierLowering : public SubOpConversionPattern<gsubop::CreateIde
    LogicalResult matchAndRewrite(gsubop::CreateIdentifierOp createOp, OpAdaptor adaptor, SubOpRewriter& rewriter) const override {
       auto loc = createOp->getLoc();
       auto& namedGraphManager = rewriter.getContext()->getLoadedDialect<gsubop::GraphSubOpDialect>()->getNamedGraphManager();
-      // TODO Do lookup at compile time here!
       int32_t id = namedGraphManager.resolve(createOp.getGraph().str(), createOp.getIdent().str());
-      mlir::Value typeI32 = rewriter.create<arith::ConstantOp>(loc, rewriter.getIntegerAttr(rewriter.getI32Type(), id));
-      rewriter.replaceOp(createOp, typeI32);
+      auto resolvedAttr = rewriter.getIntegerAttr(rewriter.getI32Type(), id);
+      auto constOp = rewriter.create<arith::ConstantOp>(loc, resolvedAttr);
+      if (auto paramsAttr = createOp->getAttrOfType<mlir::ArrayAttr>(relalg::kQueryParamsAttrName)) {
+         auto entryDict = mlir::cast<mlir::DictionaryAttr>(paramsAttr[0]);
+         auto paramId = static_cast<size_t>(mlir::cast<mlir::IntegerAttr>(entryDict.get(relalg::kQueryParamIdKey)).getInt());
+         relalg::forwardParameter(createOp, paramId, constOp.getOperation(), resolvedAttr);
+      }
+      rewriter.replaceOp(createOp, constOp.getResult());
       return success();
    }
 };

@@ -8,6 +8,7 @@
 #include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgTypes.h"
 #include "lingodb/compiler/Dialect/RelAlg/Transforms/ColumnFolding.h"
 #include "lingodb/compiler/Dialect/RelAlg/Transforms/NullColumnTypeChanging.h"
+#include "lingodb/compiler/Dialect/RelAlg/Transforms/QueryParameters.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOpsTypes.h"
 
 #include "mlir/IR/Builders.h"
