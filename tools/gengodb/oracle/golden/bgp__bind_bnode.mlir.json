@@ -1,0 +1,22 @@
+[
+ [
+  [
+   "uri",
+   "http://example.org/steve"
+  ],
+  [
+   "num",
+   "100"
+  ]
+ ],
+ [
+  [
+   "uri",
+   "http://example.org/steve"
+  ],
+  [
+   "num",
+   "101"
+  ]
+ ]
+]
