@@ -10,7 +10,7 @@
 # failure too, not just a silent pass.
 #
 # Usage:
-#   test/gengodb/gpm/run-snippets.sh [snippets-dir] [ttl-dir]
+#   test/gengodb/gpm/mlir-oracle.sh [snippets-dir] [ttl-dir]
 #
 # Defaults:
 #   snippets-dir = test/gengodb/gpm/snippets/bgp

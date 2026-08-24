@@ -2,7 +2,7 @@
 precomputed "golden" answer set.
 
 Only the standard library is used here so `check_result.py` (run as part of
-`run-snippets.sh`) has no extra dependencies. `generate_golden.py` is the
+`mlir-oracle.sh`) has no extra dependencies. `generate_golden.py` is the
 separate, offline tool that actually computes golden answers (via rdflib) and
 is not needed at test time.
 
