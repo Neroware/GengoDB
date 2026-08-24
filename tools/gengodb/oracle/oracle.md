@@ -20,7 +20,14 @@ python3 tools/gengodb/oracle/generate_golden.py
 
 ## Known mismatches (as of the rz/main verification pass, 2026-08-24)
 
-Two snippets currently report `MISMATCH`; both are confirmed real bugs, not oracle-translation issues (see session notes / PR description for the full root-cause writeup):
+One snippet currently reports `MISMATCH`, confirmed (reproduced many times) as a
+real bug, not an oracle-translation issue:
 
 - `filter/filter_iri_neq.mlir` — comparing an IRI constant with `!=` against an RDF term of a different kind (blank node, or a string-typed literal) silently excludes the row instead of evaluating to true.
-- `optional/optional_unbound_key_join.mlir` — reusing a variable bound by one `OPTIONAL` block inside a second, independent `OPTIONAL` block leaks a stale value from an unrelated row when the variable should be NULL.
+
+`optional/optional_unbound_key_join.mlir` was initially flagged as a second
+mismatch (a stale value supposedly leaking across two independent `OPTIONAL`
+blocks reusing a variable), but that did not reproduce on repeat runs — the
+snippet consistently matches the golden fixture. Treat that as a retracted
+false positive from the verification session, not a real bug, unless it
+recurs.
