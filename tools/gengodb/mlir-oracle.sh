@@ -10,11 +10,11 @@
 # failure too, not just a silent pass.
 #
 # Usage:
-#   test/gengodb/gpm/mlir-oracle.sh [snippets-dir] [ttl-dir]
+#   tools/gengodb/mlir-oracle.sh [snippets-dir] [ttl-dir]
 #
 # Defaults:
 #   snippets-dir = test/gengodb/gpm/snippets/bgp
-#   ttl-dir      = resources/ttl
+#   ttl-dir      = resources/ttl/coffee
 #
 # Env overrides:
 #   RUN_MLIR   path to the run-mlir binary (default: build/run-mlir)
@@ -29,7 +29,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." >/dev/null 2>&1 && pwd)"
 
 SNIPPETS_DIR="${1:-$REPO_ROOT/test/gengodb/gpm/snippets/bgp}"
-TTL_DIR="${2:-$REPO_ROOT/resources/ttl}"
+TTL_DIR="${2:-$REPO_ROOT/resources/ttl/coffee}"
 RUN_MLIR="${RUN_MLIR:-$REPO_ROOT/build/run-mlir}"
 TIMEOUT="${TIMEOUT:-30}"
 PYTHON3="${PYTHON3:-python3}"
