@@ -91,7 +91,7 @@ class GpmLoweringStep : public LoweringStep {
       mlir::PassManager lowerGpmPm(moduleOp->getContext());
       lowerGpmPm.enableVerifier(verify);
       addLingoDBInstrumentation(lowerGpmPm, getSerializationState());
-      lowerGpmPm.addPass(gpm::createLowerToSubOpPass());
+      gpm::createLowerGPMToSubOpPipeline(lowerGpmPm);
       if (mlir::failed(lowerGpmPm.run(moduleOp))) {
          error.emit() << "Lowering of GPM to Sub-Operators failed";
          return;

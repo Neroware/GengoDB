@@ -75,6 +75,17 @@ struct GPMToSubOpLoweringPass
    }
    void runOnOperation() final;
 };
+struct GPMScalarToSubOpLoweringPass
+   : public PassWrapper<GPMScalarToSubOpLoweringPass, OperationPass<ModuleOp>> {
+   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(GPMScalarToSubOpLoweringPass)
+   virtual llvm::StringRef getArgument() const override { return "to-graph-subop-scalars"; }
+
+   GPMScalarToSubOpLoweringPass() {}
+   void getDependentDialects(DialectRegistry& registry) const override {
+      registry.insert<LLVM::LLVMDialect, db::DBDialect, scf::SCFDialect, mlir::cf::ControlFlowDialect, util::UtilDialect, memref::MemRefDialect, arith::ArithDialect, gpm::GPMDialect, subop::SubOperatorDialect, gsubop::GraphSubOpDialect, variant::VariantDialect>();
+   }
+   void runOnOperation() final;
+};
 static Member createMember(MLIRContext* context, std::string name, mlir::Type type) {
    auto& memberManager = context->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
    return memberManager.createMember(name, type);
@@ -653,37 +664,44 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    NamedGraphMapper graphs;
    ExternalGraphMapper externalGraphs;
 
-   {
-      ConversionTarget target(getContext());
-      addCommonLegalDialects(target);
-      target.addLegalDialect<gpm::GPMDialect>();
-      target.addIllegalOp<gpm::NamedGraphOp, gpm::TriplePatternOp>();
+   ConversionTarget target(getContext());
+   addCommonLegalDialects(target);
+   target.addLegalDialect<gpm::GPMDialect>();
+   target.addIllegalOp<gpm::NamedGraphOp, gpm::TriplePatternOp>();
 
-      RewritePatternSet patterns(ctxt);
-      patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs, externalGraphs);
-      patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs);
+   RewritePatternSet patterns(ctxt);
+   patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs, externalGraphs);
+   patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs);
 
-      if (failed(applyFullConversion(module, target, std::move(patterns)))) {
-         signalPassFailure();
-         return;
-      }
+   if (failed(applyFullConversion(module, target, std::move(patterns)))) {
+      signalPassFailure();
+      return;
    }
 
    refreshNullableTypes(module);
+}
+void GPMScalarToSubOpLoweringPass::runOnOperation() {
+   auto module = getOperation();
+   getContext().getLoadedDialect<util::UtilDialect>()->getFunctionHelper().setParentModule(module);
 
-   {
-      ConversionTarget target(getContext());
-      addCommonLegalDialects(target);
-      target.addIllegalDialect<gpm::GPMDialect>();
+   TypeConverter typeConverter;
+   typeConverter.addConversion([](tuples::TupleStreamType t) { return t; });
+   typeConverter.addConversion([](mlir::Type t) { return t; });
+   auto* ctxt = &getContext();
+   ctxt->loadDialect<gsubop::GraphSubOpDialect>();
+   ctxt->loadDialect<variant::VariantDialect>();
 
-      RewritePatternSet patterns(ctxt);
-      patterns.insert<GpmIdentifiersEqualLowering>(typeConverter, ctxt);
-      patterns.insert<GetBindingOpLowering>(typeConverter, ctxt);
+   ConversionTarget target(getContext());
+   addCommonLegalDialects(target);
+   target.addIllegalDialect<gpm::GPMDialect>();
 
-      if (failed(applyFullConversion(module, target, std::move(patterns)))) {
-         signalPassFailure();
-         return;
-      }
+   RewritePatternSet patterns(ctxt);
+   patterns.insert<GpmIdentifiersEqualLowering>(typeConverter, ctxt);
+   patterns.insert<GetBindingOpLowering>(typeConverter, ctxt);
+
+   if (failed(applyFullConversion(module, target, std::move(patterns)))) {
+      signalPassFailure();
+      return;
    }
 }
 } // namespace
@@ -691,13 +709,20 @@ std::unique_ptr<mlir::Pass>
 gpm::createLowerToSubOpPass() {
    return std::make_unique<GPMToSubOpLoweringPass>();
 }
+std::unique_ptr<mlir::Pass>
+gpm::createLowerGPMScalarsToSubOpPass() {
+   return std::make_unique<GPMScalarToSubOpLoweringPass>();
+}
 void gpm::createLowerGPMToSubOpPipeline(mlir::OpPassManager& pm) {
-   pm.addPass(gpm::createUnnestGraphPatternsPass());
    pm.addPass(gpm::createLowerToSubOpPass());
+   pm.addPass(gpm::createLowerGPMScalarsToSubOpPass());
 }
 void gpm::registerGPMToSubOpConversionPasses() {
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
       return gpm::createLowerToSubOpPass();
+   });
+   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
+      return gpm::createLowerGPMScalarsToSubOpPass();
    });
    mlir::PassPipelineRegistration<EmptyPipelineOptions>(
       "lower-gpm-to-subop",
