@@ -184,6 +184,9 @@ static mlir::Value scanNamedGraph(ConversionPatternRewriter& rewriter, mlir::Loc
    graphs.insert({graphRef, NamedGraphData{data.graphType, &nodeSetDef.getColumn(), &edgeSetDef.getColumn(), data.externalGraph}});
    return rewriter.create<gsubop::ScanGraphOp>(loc, data.externalGraph, nodeSetDef, edgeSetDef);
 }
+static bool isRelAlgOperator(mlir::Operation* op) {
+   return op && !mlir::isa<GPMOperator>(op) && mlir::isa<Operator>(op);
+}
 
 // The algorithm we use to lower triples differentiates terms into four distinct categories,
 // which change the behavior of the TriplePatternOp lowering pattern.
@@ -489,8 +492,23 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
    TriplePatternLowering(TypeConverter& typeConverter, MLIRContext* context, NamedGraphMapper& graphs)
       : OpConversionPattern<gpm::TriplePatternOp>(typeConverter, context), graphs(graphs) {}
    LogicalResult matchAndRewrite(gpm::TriplePatternOp tripleOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      bool needsInFlight = llvm::any_of(tripleOp.getRes().getUses(), [](mlir::OpOperand& use) {
+         return isRelAlgOperator(use.getOwner());
+      });
+      mlir::ArrayAttr availableColumns;
+      if (needsInFlight) {
+         relalg::AvailabilityCache availabilityCache;
+         availableColumns = mlir::cast<Operator>(tripleOp.getOperation()).getAvailableColumns(availabilityCache).asRefArrayAttr(rewriter.getContext());
+      }
       TripleEmitter emitter(rewriter, graphs, tripleOp);
-      rewriter.replaceOp(tripleOp, emitter.lower(adaptor.getRel()));
+      mlir::Value lowered = emitter.lower(adaptor.getRel());
+      if (needsInFlight) {
+         auto inFlight = rewriter.create<relalg::InFlightOp>(tripleOp.getLoc(), lowered, availableColumns);
+         rewriter.replaceUsesWithIf(tripleOp.getRes(), inFlight.getRes(), [](mlir::OpOperand& use) {
+            return isRelAlgOperator(use.getOwner());
+         });
+      }
+      rewriter.replaceOp(tripleOp, lowered);
       return success();
    }
 };
@@ -675,7 +693,6 @@ gpm::createLowerToSubOpPass() {
 }
 void gpm::createLowerGPMToSubOpPipeline(mlir::OpPassManager& pm) {
    pm.addPass(gpm::createUnnestGraphPatternsPass());
-   pm.addPass(gpm::createCreateRelAlgInFlightsPass());
    pm.addPass(gpm::createLowerToSubOpPass());
 }
 void gpm::registerGPMToSubOpConversionPasses() {
