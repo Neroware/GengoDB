@@ -72,7 +72,6 @@ class DefaultQueryOptimizer : public QueryOptimizer {
       pm.enableVerifier(verify);
       addLingoDBInstrumentation(pm, getSerializationState());
       pm.addPass(gpm::createUnnestGraphPatternsPass());
-      pm.addPass(gpm::createCreateRelAlgInFlightsPass());
       relalg::createQueryOptPipeline(pm, catalog);
       if (mlir::failed(pm.run(moduleOp))) {
          error.emit() << " Query Optimization failed";
@@ -92,6 +91,7 @@ class GpmLoweringStep : public LoweringStep {
       mlir::PassManager lowerGpmPm(moduleOp->getContext());
       lowerGpmPm.enableVerifier(verify);
       addLingoDBInstrumentation(lowerGpmPm, getSerializationState());
+      lowerGpmPm.addPass(gpm::createCreateRelAlgInFlightsPass());
       lowerGpmPm.addPass(gpm::createLowerToSubOpPass());
       if (mlir::failed(lowerGpmPm.run(moduleOp))) {
          error.emit() << "Lowering of GPM to Sub-Operators failed";
