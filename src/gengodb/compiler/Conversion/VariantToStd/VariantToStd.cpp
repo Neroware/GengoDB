@@ -367,7 +367,16 @@ Value computeLexicalForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value ta
                                             b5.create<scf::YieldOp>(l5, loadTyped(b5, l5, ref, getVarlen32Type(ctxt)));
                                         },
                                         [&](OpBuilder& b5, Location l5) {
-                                            b5.create<scf::YieldOp>(l5, rt::VariantRuntime::toStringBlobLiteral(b5, l5)({ref})[0]);
+                                            auto ifAnyLiteralScalar = b5.create<scf::IfOp>(
+                                                l5, tp.isAnyLiteralScalar,
+                                                [&](OpBuilder& b6, Location l6) {
+                                                    Value payload = b6.create<util::PtrToIntOp>(l6, b6.getI64Type(), ref);
+                                                    b6.create<scf::YieldOp>(l6, rt::VariantRuntime::extractScalarLexical(b6, l6)({payload})[0]);
+                                                },
+                                                [&](OpBuilder& b6, Location l6) {
+                                                    b6.create<scf::YieldOp>(l6, rt::VariantRuntime::toStringBlobLiteral(b6, l6)({ref})[0]);
+                                                });
+                                            b5.create<scf::YieldOp>(l5, ifAnyLiteralScalar.getResult(0));
                                         });
                                     b4.create<scf::YieldOp>(l4, ifIri.getResult(0));
                                 });

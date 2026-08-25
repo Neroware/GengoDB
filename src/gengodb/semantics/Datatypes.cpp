@@ -19,17 +19,17 @@ Type from_iri(const rdf4cpp::IRI& iri) {
     }
     if (!id.starts_with(kXsdNamespace)) {
         // e.g. a domain-specific literal datatype like bsbm:USD.
-        return Type::AnyType;
+        return Type::AnyLiteralNode;
     }
     const std::string_view local_name = id.substr(kXsdNamespace.size());
     if (local_name.empty()) {
-        return Type::AnyType;
+        return Type::AnyLiteralNode;
     }
     if (const auto type = from_string(std::string{local_name}); type.has_value()) {
         return *type;
     }
     // Namespaced under xsd: but not one we have a specific case for.
-    return Type::AnyType;
+    return Type::AnyLiteralNode;
 }
 
 } // namespace gengodb::semantics::xsd

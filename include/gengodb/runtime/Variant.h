@@ -28,6 +28,9 @@ struct VariantRuntime {
     static VarLen32 toStringBlobLiteral(PropertyGraph::NodeEntry* ref);
     static VarLen32 toStringFull(int64_t payload, int32_t tag);
 
+    // AnyLiteralScalar payload ([u32 dtIriLen][dtIriBytes][lexicalBytes])
+    static VarLen32 extractScalarLexical(int64_t payload);
+
     // string cast fallback
     static int32_t castLiteral(int64_t payload, int32_t srcTag, int32_t targetTag, uint8_t* outPtr);
 
