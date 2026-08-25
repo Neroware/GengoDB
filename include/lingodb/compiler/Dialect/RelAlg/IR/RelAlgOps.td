@@ -567,6 +567,7 @@ def InFlightOp : RelAlg_Op<"in_flight", [Pure,Operator,UnaryOperator]> {
     let assemblyFormat = [{  $stream attr-dict }];
     let extraClassDeclaration = [{
         ColumnSet getCreatedColumns();
+        ColumnSet getFreeColumns();
     }];
 }
 

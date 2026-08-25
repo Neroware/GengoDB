@@ -6,6 +6,7 @@
 #include "lingodb/compiler/Conversion/ArrowToStd/ArrowToStd.h"
 #include "lingodb/compiler/Conversion/DBToStd/DBToStd.h"
 #include "gengodb/compiler/Conversion/GPMToSubOp/GPMToSubOpPass.h"
+#include "gengodb/compiler/Dialect/GPM/Transforms/Passes.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOps.h"
 #include "lingodb/compiler/Conversion/RelAlgToSubOp/RelAlgToSubOpPass.h"
 #include "lingodb/compiler/Conversion/SubOpToControlFlow/SubOpToControlFlowPass.h"
@@ -70,8 +71,8 @@ class DefaultQueryOptimizer : public QueryOptimizer {
       mlir::PassManager pm(moduleOp.getContext());
       pm.enableVerifier(verify);
       addLingoDBInstrumentation(pm, getSerializationState());
-      //pm.addPass(mlir::createInlinerPass());
-      //pm.addPass(mlir::createSymbolDCEPass());
+      pm.addPass(gpm::createUnnestGraphPatternsPass());
+      pm.addPass(gpm::createCreateRelAlgInFlightsPass());
       relalg::createQueryOptPipeline(pm, catalog);
       if (mlir::failed(pm.run(moduleOp))) {
          error.emit() << " Query Optimization failed";
@@ -91,7 +92,7 @@ class GpmLoweringStep : public LoweringStep {
       mlir::PassManager lowerGpmPm(moduleOp->getContext());
       lowerGpmPm.enableVerifier(verify);
       addLingoDBInstrumentation(lowerGpmPm, getSerializationState());
-      gpm::createLowerGPMToSubOpPipeline(lowerGpmPm);
+      lowerGpmPm.addPass(gpm::createLowerToSubOpPass());
       if (mlir::failed(lowerGpmPm.run(moduleOp))) {
          error.emit() << "Lowering of GPM to Sub-Operators failed";
          return;

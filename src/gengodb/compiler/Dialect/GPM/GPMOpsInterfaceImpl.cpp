@@ -235,6 +235,25 @@ void gpm::TriplePatternOp::maskParameters() {
     if (mlir::isa<gpm::IdentifierTermAttr>(getO())) setOAttr(placeholder);
 }
 
+bool gpm::IdentifiersEqualOp::isEqualityPred(bool nullsAreEqual) {
+    return true;
+}
+bool gpm::IdentifiersEqualOp::isUnequalityPred() {
+    return false;
+}
+bool gpm::IdentifiersEqualOp::isLessPred(bool eq) {
+    return false;
+}
+bool gpm::IdentifiersEqualOp::isGreaterPred(bool eq) {
+    return false;
+}
+mlir::Value gpm::IdentifiersEqualOp::getLeft() {
+    return getLhs();
+}
+mlir::Value gpm::IdentifiersEqualOp::getRight() {
+    return getRhs();
+}
+
 lingodb::compiler::dialect::relalg::ColumnSet gpm::NamedGraphOp::getCreatedColumns() {
     return lingodb::compiler::dialect::relalg::ColumnSet();
 }

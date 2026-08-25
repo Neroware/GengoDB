@@ -106,7 +106,7 @@ def BagOp : GPM_Op<"bag", [Pure,GPMOperator,Operator,BinaryOperator]> {
   let hasVerifier = 1;
 }
 
-def IdentifiersEqualOp : GPM_Op<"identifiers_equal", [Pure]> {
+def IdentifiersEqualOp : GPM_Op<"identifiers_equal", [Pure,DeclareOpInterfaceMethods<Relalg_CmpOpInterface>]> {
   let summary = "global identifier equality check";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);
   let results = (outs I1:$result);

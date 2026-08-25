@@ -220,6 +220,9 @@ ColumnSet MapOp::getCreatedColumns() {
 ColumnSet InFlightOp::getCreatedColumns() {
    return ColumnSet::fromArrayAttr(getColumns());
 }
+ColumnSet InFlightOp::getFreeColumns() {
+   return ColumnSet();
+}
 ColumnSet AggregationOp::getCreatedColumns() {
    return ColumnSet::fromArrayAttr(getComputedCols());
 }
