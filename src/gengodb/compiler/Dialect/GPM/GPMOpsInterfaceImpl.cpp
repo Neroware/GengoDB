@@ -174,8 +174,6 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getBindingCo
         for (auto entry : bnodeScope) {
             if (auto def = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(entry.getValue())) {
                 columns.insert(def.getColumnPtr().get());
-            } else if (auto ref = mlir::dyn_cast_or_null<tuples::ColumnRefAttr>(entry.getValue())) {
-                columns.insert(ref.getColumnPtr().get());
             }
         }
     }
@@ -188,7 +186,15 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getCreatedCo
     return created;
 }
 lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getUsedColumns() {
-    return getBoundVariables();
+    auto used = getBoundVariables();
+    if (auto bnodeScope = (*this)->getAttrOfType<mlir::DictionaryAttr>("bnodeScope")) {
+        for (auto entry : bnodeScope) {
+            if (auto ref = mlir::dyn_cast_or_null<tuples::ColumnRefAttr>(entry.getValue())) {
+                used.insert(ref.getColumnPtr().get());
+            }
+        }
+    }
+    return used;
 }
 lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache) {
     lingodb::compiler::dialect::relalg::ColumnSet available;

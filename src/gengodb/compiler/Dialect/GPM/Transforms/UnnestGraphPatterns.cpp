@@ -495,10 +495,10 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       };
 
       llvm::SmallVector<mlir::Attribute> leftHash, rightHash;
-      bool anyThroughUnion = false;
+      llvm::SmallPtrSet<const tuples::Column*, 8> seenOuterCols;
       for (auto& pair : pairs) {
          auto bindingsRef = resolveThroughUnion(pair.bindingsRef);
-         if (&bindingsRef.getColumn() != &pair.bindingsRef.getColumn()) anyThroughUnion = true;
+         if (!seenOuterCols.insert(&pair.outerRef.getColumn()).second) continue;
          join.addPredicate([&](mlir::Value tuple, mlir::OpBuilder& builder) -> mlir::Value {
             mlir::Value lhsVal = builder.create<tuples::GetColumnOp>(loc, pair.outerRef.getColumn().type, pair.outerRef, tuple);
             mlir::Value rhsVal = builder.create<tuples::GetColumnOp>(loc, bindingsRef.getColumn().type, bindingsRef, tuple);
@@ -507,7 +507,6 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          leftHash.push_back(pair.outerRef);
          rightHash.push_back(bindingsRef);
       }
-      if (anyThroughUnion) return;
       join->setAttr("leftHash", mlir::ArrayAttr::get(ctxt, leftHash));
       join->setAttr("rightHash", mlir::ArrayAttr::get(ctxt, rightHash));
       join->setAttr("impl", mlir::StringAttr::get(ctxt, "hash"));

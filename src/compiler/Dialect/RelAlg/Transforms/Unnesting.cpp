@@ -296,6 +296,8 @@ class Unnesting : public mlir::PassWrapper<Unnesting, mlir::OperationPass<mlir::
       relalg::AvailabilityCache cache;
       getOperation()->walk([&](BinaryOperator binaryOperator) {
          if (!relalg::detail::isJoin(binaryOperator.getOperation())) return;
+         // Already has a pre-decided implementation
+         if (binaryOperator->hasAttr("impl")) return;
          if (!relalg::detail::isDependentJoin(binaryOperator.getOperation(), cache)) return;
          auto left = mlir::dyn_cast_or_null<Operator>(binaryOperator.leftChild());
          auto right = mlir::dyn_cast_or_null<Operator>(binaryOperator.rightChild());

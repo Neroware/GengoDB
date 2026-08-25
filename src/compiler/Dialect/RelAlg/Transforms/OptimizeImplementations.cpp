@@ -502,6 +502,8 @@ class OptimizeImplementations : public mlir::PassWrapper<OptimizeImplementations
                }
             })
             .Case<relalg::InnerJoinOp, relalg::CollectionJoinOp, relalg::FullOuterJoinOp>([&](PredicateOperator predicateOperator) {
+               // Already has a pre-decided implementation
+               if (predicateOperator->hasAttr("impl")) return;
                auto binOp = mlir::cast<BinaryOperator>(predicateOperator.getOperation());
                auto left = mlir::cast<Operator>(binOp.leftChild());
                auto right = mlir::cast<Operator>(binOp.rightChild());
@@ -608,6 +610,8 @@ class OptimizeImplementations : public mlir::PassWrapper<OptimizeImplementations
                }
             })
             .Case<relalg::SemiJoinOp, relalg::AntiSemiJoinOp, relalg::OuterJoinOp, relalg::MarkJoinOp>([&](PredicateOperator predicateOperator) {
+               // Already has a pre-decided implementation
+               if (predicateOperator->hasAttr("impl")) return;
                auto binOp = mlir::cast<BinaryOperator>(predicateOperator.getOperation());
                auto left = mlir::cast<Operator>(binOp.leftChild());
                auto right = mlir::cast<Operator>(binOp.rightChild());
