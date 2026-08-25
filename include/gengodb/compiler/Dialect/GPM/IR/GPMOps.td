@@ -106,6 +106,14 @@ def BagOp : GPM_Op<"bag", [Pure,GPMOperator,Operator,BinaryOperator]> {
   let hasVerifier = 1;
 }
 
+def FilterOp : GPM_Op<"filter", [Pure,GPMOperator,Operator,UnaryOperator]> {
+  let summary = "graph pattern filter";
+  let arguments = (ins TupleStream:$rel);
+  let results = (outs TupleStream:$res);
+  let regions = (region SizedRegion<1>:$predicate);
+  let assemblyFormat = [{  $rel custom<CustRegion>($predicate) attr-dict-with-keyword }];
+}
+
 def IdentifiersEqualOp : GPM_Op<"identifiers_equal", [Pure,DeclareOpInterfaceMethods<Relalg_CmpOpInterface>]> {
   let summary = "global identifier equality check";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);

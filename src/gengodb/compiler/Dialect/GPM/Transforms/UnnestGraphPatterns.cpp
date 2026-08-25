@@ -34,7 +34,7 @@ const tuples::Column* resolveThroughRemaps(const ColumnMapper& remaps, const tup
    return column;
 }
 bool isGpmStreamOp(mlir::Operation* op) {
-   return op && (mlir::isa<GraphPatternOp>(op) || mlir::isa<gpm::BagOp, gpm::TriplePatternOp, gpm::NamedGraphOp>(op));
+   return op && (mlir::isa<GraphPatternOp>(op) || mlir::isa<gpm::BagOp, gpm::TriplePatternOp, gpm::NamedGraphOp, gpm::FilterOp>(op));
 }
 bool isNestedInGraphPattern(mlir::Operation* op) {
    for (auto* parent = op->getParentOp(); parent; parent = parent->getParentOp()) {
@@ -98,7 +98,10 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       } 
       else if (auto unionOp = mlir::dyn_cast<gpm::BagOp>(op)) {
          result = rewriteUnion(unionOp);
-      } 
+      }
+      else if (auto filterOp = mlir::dyn_cast<gpm::FilterOp>(op)) {
+         result = rewriteFilter(filterOp);
+      }
       else {
          auto* savedInsertPoint = insertPoint;
          if (isNestedInGraphPattern(op)) op->moveBefore(insertPoint);
@@ -135,6 +138,15 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       annotateBNodeScope(triple, bnodeScope ? *bnodeScope : ownScope);
       isolateTriple(triple, insertPoint);
       return fold(accumulator, triple.getRes(), gpm::PatternKind::basic, relalg::ColumnSet(), triple.getLoc());
+   }
+   mlir::Value rewriteFilter(gpm::FilterOp filterOp) {
+      mlir::Value newRel = rewrite(filterOp.getRel());
+      mlir::Value rel = newRel ? newRel : filterOp.getRel();
+      mlir::OpBuilder builder(filterOp.getContext());
+      builder.setInsertionPoint(insertPoint);
+      auto selOp = builder.create<relalg::SelectionOp>(filterOp.getLoc(), filterOp.getRes().getType(), rel);
+      selOp.getPredicate().takeBody(filterOp.getPredicate());
+      return selOp.getResult();
    }
    mlir::Value rewritePattern(GraphPatternOp patternOp) {
       auto createdVars = mlir::cast<GPMOperator>(patternOp.getOperation()).getCreatedVariables();

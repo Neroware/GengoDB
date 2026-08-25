@@ -1132,7 +1132,7 @@ class Translator {
    }
    mlir::Value buildFilter(const sparql::FilterPattern& fp, mlir::Value inputStream) {
       auto loc = builder.getUnknownLoc();
-      auto selOp = builder.create<relalg::SelectionOp>(loc, tuples::TupleStreamType::get(ctxt), inputStream);
+      auto selOp = builder.create<gpm::FilterOp>(loc, tuples::TupleStreamType::get(ctxt), inputStream);
       auto* block = new mlir::Block;
       auto tupleArg = block->addArgument(tuples::TupleType::get(ctxt), loc);
       selOp.getPredicate().push_back(block);
@@ -1142,7 +1142,7 @@ class Translator {
          mlir::Value pred = translateFilterExpr(*fp.expr, tupleArg);
          builder.create<tuples::ReturnOp>(loc, pred);
       }
-      return selOp.getResult();
+      return selOp.getRes();
    }
 
    mlir::Value buildOrderByMap(const std::vector<sparql::Query::OrderKey>& orderBy, mlir::Value inputStream,

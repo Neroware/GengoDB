@@ -100,7 +100,7 @@ inline bool isAllowedGraphPatternBodyOp(const mlir::Operation& nested) {
         gengodb::compiler::dialect::gpm::BasicGraphPatternOp,
         gengodb::compiler::dialect::gpm::OptionalGraphPatternOp,
         gengodb::compiler::dialect::gpm::BagOp,
-        relalg::SelectionOp,
+        gengodb::compiler::dialect::gpm::FilterOp,
         tuples::ReturnOp>(nested);
 }
 
