@@ -48,6 +48,17 @@ inline rdf4cpp::Literal applyArith(const rdf4cpp::Literal& lhs, const rdf4cpp::L
 }
 inline VarLen32 emptyVarLen32() { return VarLen32{}; }
 
+inline bool isCustomDatatypeTag(int32_t tag) {
+    auto t = xsd::from_int32(tag);
+    return t.has_value() && (*t == xsd::Type::AnyLiteralNode || *t == xsd::Type::AnyLiteralScalar);
+}
+
+inline rdf4cpp::TriBool termEq(const rdf4cpp::Literal& lhs, const rdf4cpp::Literal& rhs) {
+    if (lhs.null() || rhs.null()) return rdf4cpp::TriBool::Err;
+    return (lhs.datatype().identifier() == rhs.datatype().identifier() && lhs.lexical_form().view() == rhs.lexical_form().view())
+        ? rdf4cpp::TriBool::True : rdf4cpp::TriBool::False;
+}
+
 constexpr std::string_view kXsdNamespace = "http://www.w3.org/2001/XMLSchema#";
 inline rdf4cpp::IRI toDatatypeIri(xsd::Type t) {
     return rdf4cpp::IRI(std::string(kXsdNamespace) + xsd::to_string(t));
@@ -245,6 +256,12 @@ inline std::optional<rdf4cpp::Literal> reconstructBlobLiteral(PropertyGraph::Nod
     const std::string_view lang(raw + 1, langLen);
     const std::string_view lex(raw + 1 + langLen, len - 1 - langLen);
     if (!lang.empty()) return rdf4cpp::Literal::make_lang_tagged(lex, lang);
+    if (*t == xsd::Type::AnyLiteralNode) {
+        std::string nodeName = pgraph->getMetadata().get_node_name(static_cast<int32_t>(prop.key));
+        if (nodeName.size() >= 2 && nodeName.front() == '<' && nodeName.back() == '>')
+            nodeName = nodeName.substr(1, nodeName.size() - 2);
+        return rdf4cpp::Literal::make_typed(lex, rdf4cpp::IRI(nodeName));
+    }
     return rdf4cpp::Literal::make_typed(lex, toDatatypeIri(*t));
 }
 
@@ -254,11 +271,25 @@ inline std::optional<rdf4cpp::Literal> reconstructVarLenLiteral(int64_t payload,
     return rdf4cpp::Literal::make_typed(std::string_view(sv.data(), sv.getLen()), toDatatypeIri(t));
 }
 
+inline std::optional<rdf4cpp::Literal> reconstructScalarLiteral(int64_t payload) {
+    VarLen32 sv;
+    std::memcpy(&sv, reinterpret_cast<void*>(payload), sizeof(sv));
+    const char* raw = sv.data();
+    uint32_t dtLen;
+    std::memcpy(&dtLen, raw, sizeof(dtLen));
+    const std::string_view dtIri(raw + sizeof(dtLen), dtLen);
+    const std::string_view lex(raw + sizeof(dtLen) + dtLen, sv.getLen() - sizeof(dtLen) - dtLen);
+    return rdf4cpp::Literal::make_typed(lex, rdf4cpp::IRI(std::string(dtIri)));
+}
+
 inline std::optional<rdf4cpp::Literal> reconstructLiteral(int64_t payload, int32_t tag) {
     auto t = xsd::from_int32(tag);
     if (!t.has_value() || *t == xsd::Type::Unspecified) return std::nullopt;
     if (*t == xsd::Type::String || *t == xsd::Type::Integer || *t == xsd::Type::Decimal) {
         return reconstructVarLenLiteral(payload, *t);
+    }
+    if (*t == xsd::Type::AnyLiteralScalar) {
+        return reconstructScalarLiteral(payload);
     }
     if (classifyStorage(*t).shape == StorageShape::Blob) return reconstructBlobLiteral(reinterpret_cast<PropertyGraph::NodeEntry*>(payload));
     auto lit = getLiteralFromNumeric(reinterpret_cast<uint8_t*>(&payload), tag);
@@ -313,6 +344,15 @@ VarLen32 VariantRuntime::extractBlobLiteral(PropertyGraph::NodeEntry* ref) {
     const char* raw = reinterpret_cast<const char*>(ptr);
     const auto langLen = static_cast<uint8_t>(raw[0]);
     return VarLen32::fromString(std::string(raw + 1 + langLen, len - 1 - langLen));
+}
+
+VarLen32 VariantRuntime::extractScalarLexical(int64_t payload) {
+    VarLen32 sv;
+    std::memcpy(&sv, reinterpret_cast<void*>(payload), sizeof(sv));
+    const char* raw = sv.data();
+    uint32_t dtLen;
+    std::memcpy(&dtLen, raw, sizeof(dtLen));
+    return VarLen32::fromString(std::string(raw + sizeof(dtLen) + dtLen, sv.getLen() - sizeof(dtLen) - dtLen));
 }
 
 uint8_t* VariantRuntime::allocScratch(int64_t bytes) {
@@ -383,6 +423,10 @@ int8_t VariantRuntime::compareBlobLiteral(int64_t lhsPayload, int32_t lhsTag, in
     auto lhsLit = reconstructLiteral(lhsPayload, lhsTag);
     auto rhsLit = reconstructLiteral(rhsPayload, rhsTag);
     if (!lhsLit.has_value() || !rhsLit.has_value()) return -1;
+    if ((predicate == 0 || predicate == 1) && (isCustomDatatypeTag(lhsTag) || isCustomDatatypeTag(rhsTag))) {
+        rdf4cpp::TriBool eq = termEq(*lhsLit, *rhsLit);
+        return triBoolToInt8(predicate == 0 ? eq : !eq);
+    }
     return triBoolToInt8(applyPredicate(*lhsLit, *rhsLit, predicate));
 }
 

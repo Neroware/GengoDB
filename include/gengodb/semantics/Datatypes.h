@@ -89,7 +89,9 @@ enum class Type : std::int32_t {
     // ---- GengoDB-specific: (1000 - 1099) ----
     RDFNode            = 1000,
     LangString         = 1001,
-    AnyIRI              = 1002
+    AnyIRI             = 1002,
+    AnyLiteralNode      = 1003, // A literal whose datatype IRI falls outside the XSD namespace backed by a graph node
+    AnyLiteralScalar    = 1004  // A scalar literal whose datatype IRI falls outside the XSD namespace
 };
 
 inline constexpr std::int32_t to_int32(Type t) {
@@ -117,6 +119,8 @@ inline std::optional<Type> from_int32(std::int32_t value) {
         case Type::UnsignedShort: case Type::UnsignedByte:
         case Type::PositiveInteger:
         case Type::LangString:
+        case Type::AnyLiteralNode:
+        case Type::AnyLiteralScalar:
             return static_cast<Type>(value);
         default:
             return std::nullopt;
@@ -175,6 +179,8 @@ inline const std::string& to_string(Type t) {
         {Type::PositiveInteger,    "positiveInteger"},
 
         {Type::LangString,         "langString"},
+        {Type::AnyLiteralNode,     "anyLiteralNode"},
+        {Type::AnyLiteralScalar,   "anyLiteralScalar"},
     };
     return names.at(t);
 }
@@ -231,6 +237,8 @@ inline std::optional<Type> from_string(const std::string& name) {
         {"positiveInteger",    Type::PositiveInteger},
 
         {"langString",         Type::LangString},
+        {"anyLiteralNode",     Type::AnyLiteralNode},
+        {"anyLiteralScalar",   Type::AnyLiteralScalar},
     };
     auto it = lookup.find(name);
     if (it == lookup.end()) return std::nullopt;

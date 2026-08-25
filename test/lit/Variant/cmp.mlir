@@ -92,6 +92,39 @@ module {
         //CHECK: bool(true)
         db.runtime_call "DumpValue" (%ltInteger) : (!db.nullable<i1>) -> ()
 
+        // AnyLiteralScalar (tag 1004)
+        %al1 = util.varlen32_create_const "\0C\00\00\00http://ex/dt5"
+        %al2 = util.varlen32_create_const "\0C\00\00\00http://ex/dt5"
+        %al3 = util.varlen32_create_const "\0C\00\00\00http://ex/dt7"
+        %al4 = util.varlen32_create_const "\0D\00\00\00http://ex/dtx5"
+        %vAl1 = variant.create_scalar %al1 : !util.varlen32 { type = 1004 }
+        %vAl2 = variant.create_scalar %al2 : !util.varlen32 { type = 1004 }
+        %vAl3 = variant.create_scalar %al3 : !util.varlen32 { type = 1004 }
+        %vAl4 = variant.create_scalar %al4 : !util.varlen32 { type = 1004 }
+
+        // Same datatype IRI + same lexical form -> term-equal.
+        %eqAlSame = variant.cmp eq %vAl1, %vAl2 -> !db.nullable<i1>
+        //CHECK: bool(true)
+        db.runtime_call "DumpValue" (%eqAlSame) : (!db.nullable<i1>) -> ()
+
+        // Same datatype IRI, different lexical form -> not term-equal.
+        %eqAlDiffLex = variant.cmp eq %vAl1, %vAl3 -> !db.nullable<i1>
+        //CHECK: bool(false)
+        db.runtime_call "DumpValue" (%eqAlDiffLex) : (!db.nullable<i1>) -> ()
+        %neqAlDiffLex = variant.cmp neq %vAl1, %vAl3 -> !db.nullable<i1>
+        //CHECK: bool(true)
+        db.runtime_call "DumpValue" (%neqAlDiffLex) : (!db.nullable<i1>) -> ()
+
+        // Same lexical form, different datatype IRI -> not term-equal.
+        %eqAlDiffDt = variant.cmp eq %vAl1, %vAl4 -> !db.nullable<i1>
+        //CHECK: bool(false)
+        db.runtime_call "DumpValue" (%eqAlDiffDt) : (!db.nullable<i1>) -> ()
+
+        // Ordering operators on a non-XSD datatype are a SPARQL type error.
+        %ltAlErr = variant.cmp lt %vAl1, %vAl3 -> !db.nullable<i1>
+        //CHECK: bool(NULL)
+        db.runtime_call "DumpValue" (%ltAlErr) : (!db.nullable<i1>) -> ()
+
         return
     }
 }

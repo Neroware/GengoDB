@@ -94,6 +94,7 @@ struct VariableExpr : Expr {
 struct LiteralExpr : Expr {
    std::string lexicalForm;
    gengodb::semantics::xsd::Type xsdType{gengodb::semantics::xsd::Type::Unspecified};
+   std::string datatypeIri;
    Kind kind() const override { return Kind::Literal; }
 };
 
@@ -387,9 +388,13 @@ class Parser {
             if (is(TK::IRI))               { dtIri = tok.value; advance(); }
             else if (is(TK::PrefixedName)) { dtIri = expandPrefix(tok.value, pref); advance(); }
             else throw std::runtime_error("Expected datatype IRI after '^^' at line " + std::to_string(tok.line));
-            auto parsed = resolveXsdTypeFromIri(dtIri);
-            if (!parsed) throw sparql::UnsupportedFeatureError("Unsupported XSD datatype '" + dtIri + "' at line " + std::to_string(tok.line));
-            e->xsdType = *parsed;
+            auto resolved = gengodb::semantics::xsd::from_iri(rdf4cpp::IRI(dtIri));
+            if (resolved == gengodb::semantics::xsd::Type::AnyLiteralNode) {
+               e->xsdType = gengodb::semantics::xsd::Type::AnyLiteralScalar;
+               e->datatypeIri = dtIri;
+            } else {
+               e->xsdType = resolved;
+            }
          }
          return e;
       }
@@ -996,6 +1001,14 @@ class Translator {
          case Type::String:
          case Type::AnyIRI:
             return builder.create<db::ConstantOp>(loc, db::StringType::get(ctxt), builder.getStringAttr(lit.lexicalForm));
+         case Type::AnyLiteralScalar: {
+            std::string encoded;
+            uint32_t dtLen = static_cast<uint32_t>(lit.datatypeIri.size());
+            encoded.append(reinterpret_cast<const char*>(&dtLen), sizeof(dtLen));
+            encoded.append(lit.datatypeIri);
+            encoded.append(lit.lexicalForm);
+            return builder.create<util::CreateConstVarLen>(loc, util::VarLen32Type::get(ctxt), builder.getStringAttr(encoded));
+         }
          default:
             throw sparql::UnsupportedFeatureError("FILTER literal datatype '" + gengodb::semantics::xsd::to_string(lit.xsdType) +
                "' is not supported (only boolean, integer-family, float, double, decimal, and string literals are)");
@@ -1019,6 +1032,11 @@ class Translator {
             if (lit.xsdType == gengodb::semantics::xsd::Type::AnyIRI) {
                mlir::Value scalar = literalScalar(lit, loc);
                auto typeIdAttr = builder.getI32IntegerAttr(gengodb::semantics::xsd::to_int32(gengodb::semantics::xsd::Type::AnyIRI));
+               return builder.create<variant::CreateScalarOp>(loc, variantType, scalar, typeIdAttr);
+            }
+            if (lit.xsdType == gengodb::semantics::xsd::Type::AnyLiteralScalar) {
+               mlir::Value scalar = literalScalar(lit, loc);
+               auto typeIdAttr = builder.getI32IntegerAttr(gengodb::semantics::xsd::to_int32(gengodb::semantics::xsd::Type::AnyLiteralScalar));
                return builder.create<variant::CreateScalarOp>(loc, variantType, scalar, typeIdAttr);
             }
             mlir::Value scalar = literalScalar(lit, loc);

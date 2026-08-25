@@ -47,6 +47,17 @@ module {
         //CHECK: string(""passthrough"")
         db.runtime_call "DumpValue" (%sStrFull) : (!db.string) -> ()
 
+        // AnyLiteralScalar (tag 1004)
+        %anyLit = util.varlen32_create_const "\0C\00\00\00http://ex/dt5"
+        %vAnyLit = variant.create_scalar %anyLit : !util.varlen32 { type = 1004 }
+        %sAnyLit = variant.to_string %vAnyLit -> !db.string
+        //CHECK: string("5")
+        db.runtime_call "DumpValue" (%sAnyLit) : (!db.string) -> ()
+
+        %sAnyLitFull = variant.to_string %vAnyLit -> !db.string {full}
+        //CHECK: string(""5"^^<http://ex/dt>")
+        db.runtime_call "DumpValue" (%sAnyLitFull) : (!db.string) -> ()
+
         return
     }
 }
