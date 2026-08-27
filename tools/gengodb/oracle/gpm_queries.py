@@ -4,14 +4,6 @@ answers via rdflib against resources/ttl/coffee/coffee.ttl.
 
 These are hand-derived from reading each .mlir file; see the comment on any
 entry that needed a non-obvious reading of the GPM semantics.
-
-`optional/optional_chained_anchor.2.mlir` is intentionally NOT listed here:
-it exercises a GPM-specific choice (a mandatory pattern reusing a variable
-that an earlier OPTIONAL may have left unbound requires that variable to
-actually be bound -- unlike plain SPARQL, where reusing an unbound variable
-in a later mandatory triple pattern just treats it as fresh/unconstrained).
-That is a deliberate divergence from generic SPARQL var-scoping, not
-something an SPARQL-based oracle can validate.
 """
 
 EX = "PREFIX ex: <http://example.org/>\n"
@@ -109,6 +101,13 @@ SELECT ?person ?food ?cup ?drink WHERE {
   ?person ex:eats ?food .
   OPTIONAL { ?person ex:cup ?cup }
   OPTIONAL { ?cup ex:drinks ?drink }
+}""",
+
+"optional/optional_chained_anchor.2.mlir": EX + """
+SELECT ?person ?food ?cup ?drink WHERE {
+   ?person ex:eats ?food.
+   OPTIONAL { ?person ex:cup ?cup }
+   { ?cup ex:drinks ?drink. }
 }""",
 
 "optional/optional_filter_unbound.mlir": EX + """

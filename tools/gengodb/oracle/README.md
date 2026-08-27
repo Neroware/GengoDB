@@ -14,8 +14,6 @@ real `.sparql` query files under `resources/sparql/`, run against `resources/ttl
 - `mlir-oracle.sh` / `sparql-oracle.sh` — invoke `check_result.py` automatically for any snippet/query that has a matching `golden/<category>__<name>.json` file (name includes the `.mlir`/`.sparql` extension), in addition to their existing crash check. A snippet/query can now fail two ways: `FAIL` (non-zero exit / crash) or `MISMATCH` (ran fine, wrong rows). Each takes one directory (plus a matching ttl-dir) at a time.
 - `all-oracle.sh` — the "run everything" entry point. Auto-discovers every leaf directory under `test/gengodb/` holding `.mlir` files and every dataset directory under `resources/sparql/`, runs both oracles over all of them, and prints an aggregate pass/fail/mismatch total (exit code = total failures across every directory).
 
-(!) `optional/optional_chained_anchor.2.mlir` intentionally has no fixture: it exercises a GPM-specific rule (a mandatory pattern reusing a variable an earlier `OPTIONAL` may have left unbound requires that variable to actually be bound) that plain SPARQL doesn't have, so a generic SPARQL oracle can't validate it (see the comment in `gpm_queries.py`).
-
 ## Regenerating the fixtures
 
 ```
