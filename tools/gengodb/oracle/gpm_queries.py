@@ -96,6 +96,19 @@ SELECT ?person ?age ?size WHERE {
 
 "optional/optional_bound.mlir": EX + "SELECT ?person ?food ?cup WHERE { ?person ex:eats ?food . OPTIONAL { ?person ex:cup ?cup } }",
 
+"optional/optional_double_outer_join_inner.mlir": EX + """
+SELECT ?person ?food ?cup ?drink ?more
+WHERE {
+  {
+    ?person ex:eats ?food .
+    OPTIONAL { ?person ex:cup ?cup . }
+  }
+  {
+    ?person ex:drinks ?drink .
+    OPTIONAL { ?drink ex:asksForMore ?more . }
+  }
+}""",
+
 "optional/optional_chained_anchor.mlir": EX + """
 SELECT ?person ?food ?cup ?drink WHERE {
   ?person ex:eats ?food .
