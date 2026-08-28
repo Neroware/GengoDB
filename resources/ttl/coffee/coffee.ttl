@@ -54,12 +54,15 @@ ex:bob ex:drinks ex:tea .
 ex:bob ex:drinks ex:soda .
 ex:bob ex:drinks ex:beer .
 
+# --- single relation triples ---
+ex:daria ex:drinks ex:coffee .
+ex:anna ex:eats ex:chocolate .
+
 # --- food, including an IRI-object shared across subjects (ex:sushi) ---
 ex:bob ex:eats ex:steak .
 ex:bob ex:eats ex:egg .
 ex:bob ex:eats ex:sushi .
 ex:steve ex:eats ex:sushi .
-ex:anna ex:eats ex:chocolate .
 
 # --- dedup checks: same (datatype, value) reused across different subjects,
 #     across every storage tier, should collapse onto the same literal node ---
