@@ -1,0 +1,15 @@
+PREFIX ex: <http://example.org/>
+
+SELECT ?person ?food ?cup ?drink
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        {
+            ?person ex:eats ?food .
+            OPTIONAL { ?person ex:cup ?cup . }
+        }
+        OPTIONAL {
+            ?person2 ex:drinks ?drink .
+            OPTIONAL { ?person2 ex:cup ?cup . }
+        }
+    }
+}
