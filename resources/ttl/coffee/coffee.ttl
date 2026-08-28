@@ -38,6 +38,8 @@ ex:coffee ex:batchId "987654321098765"^^xsd:long .
 ex:coffee ex:brewRatio "3.14159265358979311600"^^xsd:double .
 
 ex:bob ex:cup _:cup1 .
+ex:anna ex:cup _:cup2 .
+_:cup2 ex:drinks ex:coffee .
 
 _:cup1 ex:contains ex:coffee .
 _:cup1 ex:size "1"^^xsd:int .
@@ -57,6 +59,7 @@ ex:bob ex:eats ex:steak .
 ex:bob ex:eats ex:egg .
 ex:bob ex:eats ex:sushi .
 ex:steve ex:eats ex:sushi .
+ex:anna ex:eats ex:chocolate .
 
 # --- dedup checks: same (datatype, value) reused across different subjects,
 #     across every storage tier, should collapse onto the same literal node ---
