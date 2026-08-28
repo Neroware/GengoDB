@@ -24,7 +24,7 @@ module {
       // top-level inner join, combining the two OPTIONAL-bearing branches on ?person
       %11 = relalg.join %5, %10 (%arg0: !tuples.tuple){
         tuples.return
-      } attributes {impl = "hash", leftHash = [#tuples.columnref<@vars::@person>], nullsEqual = [0 : i8], rightHash = [#tuples.columnref<@vars_u_1::@person>], useHashJoin}
+      } attributes {impl = "hash", leftHash = [#tuples.columnref<@vars::@person>], nullsEqual = [0 : i8], rightHash = [#tuples.columnref<@vars_u_1::@person>], nullMatchesAll = [1 : i8], useHashJoin}
 
       %12 = relalg.materialize %11 [@vars::@person,@vars::@food,@outerjoin::@cup,@vars_u_1::@drink,@outerjoin_u_1::@more] => ["person", "food", "cup", "drink", "more"] : !subop.local_table<[col1$0 : !db.string, col2$0 : !db.string, col3$0 : !db.string, col4$0 : !db.string, col5$0 : !db.string], ["person", "food", "cup", "drink", "more"]>
       relalg.query_return %12 : !subop.local_table<[col1$0 : !db.string, col2$0 : !db.string, col3$0 : !db.string, col4$0 : !db.string, col5$0 : !db.string], ["person", "food", "cup", "drink", "more"]>
