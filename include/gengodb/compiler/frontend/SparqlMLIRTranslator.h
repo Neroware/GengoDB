@@ -59,7 +59,7 @@ struct Triple {
 };
 
 struct PatternElement {
-   enum class Kind { Graph, Optional, Filter, Union };
+   enum class Kind { Graph, Optional, Filter, Union, Group };
    virtual ~PatternElement() = default;
    virtual Kind kind() const = 0;
 };
@@ -68,6 +68,11 @@ struct GraphPattern : PatternElement {
    std::string graphUri;
    std::vector<Triple> triples;
    Kind kind() const override { return Kind::Graph; }
+};
+
+struct GroupPattern : PatternElement {
+   std::vector<std::unique_ptr<PatternElement>> patterns;
+   Kind kind() const override { return Kind::Group; }
 };
 
 struct OptionalPattern : PatternElement {
@@ -594,7 +599,9 @@ class Parser {
             if      (is(TK::IRI))          { uri = tok.value; advance(); }
             else if (is(TK::PrefixedName)) { uri = expandPrefix(tok.value, prefixes); advance(); }
             else throw std::runtime_error("Expected graph IRI after GRAPH at line " + std::to_string(tok.line));
-            parseGroup(out, prefixes, uri);
+            auto group = std::make_unique<sparql::GroupPattern>();
+            parseGroup(group->patterns, prefixes, uri);
+            out.push_back(std::move(group));
             continue;
          }
 
@@ -633,7 +640,9 @@ class Parser {
                }
                out.push_back(std::move(up));
             } else {
-               for (auto& elem : firstGroup) out.push_back(std::move(elem));
+               auto group = std::make_unique<sparql::GroupPattern>();
+               group->patterns = std::move(firstGroup);
+               out.push_back(std::move(group));
             }
             continue;
          }
@@ -855,6 +864,51 @@ class Translator {
          builder.create<tuples::ReturnOp>(loc, result);
       }
       return optOp.getRes();
+   }
+
+   static const sparql::GraphPattern* firstGraphPattern(const std::vector<std::unique_ptr<sparql::PatternElement>>& patterns) {
+      for (const auto& elemPtr : patterns) {
+         switch (elemPtr->kind()) {
+            case sparql::PatternElement::Kind::Graph:
+               return static_cast<const sparql::GraphPattern*>(elemPtr.get());
+            case sparql::PatternElement::Kind::Group:
+               if (auto* gp = firstGraphPattern(static_cast<const sparql::GroupPattern&>(*elemPtr).patterns)) return gp;
+               break;
+            case sparql::PatternElement::Kind::Union:
+               for (const auto& branch : static_cast<const sparql::UnionPattern&>(*elemPtr).branches) {
+                  if (auto* gp = firstGraphPattern(branch)) return gp;
+               }
+               break;
+            default:
+               break;
+         }
+      }
+      return nullptr;
+   }
+
+   mlir::Value buildGroup(const sparql::GroupPattern& group, mlir::Value inputStream) {
+      auto loc = builder.getUnknownLoc();
+      if (!inputStream) {
+         const auto* gp = firstGraphPattern(group.patterns);
+         if (!gp || gp->graphUri.empty())
+            throw std::runtime_error("Triple patterns without an explicit GRAPH clause are not supported. Did you forget to define a default graph?");
+         inputStream = namedGraph(gp->graphUri).second;
+      }
+      auto groupOp = builder.create<gpm::BasicGraphPatternOp>(
+         loc, tuples::TupleStreamType::get(ctxt), inputStream);
+
+      auto* block = new mlir::Block;
+      block->addArgument(tuples::TupleStreamType::get(ctxt), loc);
+      groupOp.getPattern().push_back(block);
+      {
+         mlir::OpBuilder::InsertionGuard guard(builder);
+         builder.setInsertionPointToStart(block);
+         mlir::Value result = buildPatternGroup(group.patterns, block->getArgument(0));
+         if (!result)
+            throw sparql::UnsupportedFeatureError("Group graph pattern contains no supported graph patterns");
+         builder.create<tuples::ReturnOp>(loc, result);
+      }
+      return groupOp.getRes();
    }
 
    mlir::Value buildUnionBranch(const std::vector<std::unique_ptr<sparql::PatternElement>>& branch, mlir::Value inputStream) {
@@ -1188,6 +1242,9 @@ class Translator {
 
    mlir::Value buildPatternGroup(const std::vector<std::unique_ptr<sparql::PatternElement>>& patterns,
                                  mlir::Value externalInput) {
+      if (patterns.size() == 1 && patterns.front()->kind() == sparql::PatternElement::Kind::Group)
+         return buildPatternGroup(static_cast<const sparql::GroupPattern&>(*patterns.front()).patterns, externalInput);
+
       mlir::Value prevStream = externalInput;
       for (const auto& elemPtr : patterns) {
          if (elemPtr->kind() == sparql::PatternElement::Kind::Graph) {
@@ -1213,6 +1270,8 @@ class Translator {
          } else if (elemPtr->kind() == sparql::PatternElement::Kind::Union) {
             const auto& up = static_cast<const sparql::UnionPattern&>(*elemPtr);
             prevStream = buildUnion(up, prevStream);
+         } else if (elemPtr->kind() == sparql::PatternElement::Kind::Group) {
+            prevStream = buildGroup(static_cast<const sparql::GroupPattern&>(*elemPtr), prevStream);
          }
       }
       return prevStream;
@@ -1229,6 +1288,8 @@ class Translator {
          } else if (elemPtr->kind() == sparql::PatternElement::Kind::Union) {
             const auto& up = static_cast<const sparql::UnionPattern&>(*elemPtr);
             for (const auto& branch : up.branches) preRegisterGraphs(branch);
+         } else if (elemPtr->kind() == sparql::PatternElement::Kind::Group) {
+            preRegisterGraphs(static_cast<const sparql::GroupPattern&>(*elemPtr).patterns);
          }
       }
    }
