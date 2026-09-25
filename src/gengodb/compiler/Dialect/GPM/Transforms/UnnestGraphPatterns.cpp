@@ -169,9 +169,9 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       }
       ColumnPairs splitPairs;
       if (accumulator && elementStream) splitPairs = matchSplitVariables(accumulator, elementStream, nestedRemaps);
-      if (!splitPairs.empty() && kind != gpm::PatternKind::basic) {
+      if (!splitPairs.empty() && kind == gpm::PatternKind::minus) {
          auto& columnManager = patternOp->getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-         patternOp->emitOpError("unsupported: variable ?") << columnManager.getName(splitPairs.front().first).second << " is bound independently inside an OPTIONAL/MINUS and outside of it";
+         patternOp->emitOpError("unsupported: variable ?") << columnManager.getName(splitPairs.front().first).second << " is bound independently inside a MINUS and outside of it";
          signalPassFailure();
          return {};
       }
@@ -309,6 +309,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       }
       if (auto outerJoin = mlir::dyn_cast<relalg::OuterJoinOp>(op)) {
          insertMapping(outerJoin.getMapping());
+         if (auto merged = outerJoin->getAttrOfType<mlir::ArrayAttr>(gpm::kMergedColumnsAttr)) insertMapping(merged);
          result.insert(producedColumns(outerJoin.getLeft(), visited));
          return result;
       }
@@ -441,15 +442,48 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       builder.setInsertionPoint(insertPoint);
       auto streamType = tuples::TupleStreamType::get(builder.getContext());
       if (elementKind == gpm::PatternKind::optional) {
+         ColumnPairs sharedPairs;
+         {
+            llvm::SmallPtrSet<mlir::Operation*, 16> visitedLeft;
+            sharedPairs = sharedVariablePairs(elementStream, loc, collectTripleVariables(accumulator, visitedLeft));
+         }
+         ColumnPairs mergePairs;
+         for (auto pair : sharedPairs) {
+            if (mlir::isa<db::NullableType>(pair.first->type)) mergePairs.push_back(pair);
+         }
+         for (auto pair : splitPairs) {
+            if (mlir::isa<db::NullableType>(pair.first->type)) mergePairs.push_back(pair);
+         }
+         relalg::ColumnSet paddedVars = elementCreatedVars;
+         for (auto [leftCol, rightCol] : mergePairs) paddedVars.insert(rightCol);
          ColumnMapper nullableColMap;
-         auto mapping = buildNullableMapping(builder, elementCreatedVars, nullableColMap);
+         auto mapping = buildNullableMapping(builder, paddedVars, nullableColMap);
          auto join = builder.create<relalg::OuterJoinOp>(loc, streamType, accumulator, elementStream, mapping);
          join.initPredicate();
-         addSharedVariablePredicate(join, accumulator, elementStream, loc);
+         addSharedVariablePredicate(join, sharedPairs, loc, /*nullTolerant=*/true);
+         addNameMatchedPredicate(join, splitPairs, loc, /*recordMerges=*/false);
          llvm::SmallPtrSet<mlir::Operation*, 32> preMergeOps;
          collectSubtreeOps(accumulator, preMergeOps);
          collectSubtreeOps(elementStream, preMergeOps);
-         remapColumnsEverywhere(join.getOperation(), nullableColMap, &preMergeOps);
+         join->walk([&](mlir::Operation* op) { preMergeOps.insert(op); });
+         for (auto [leftCol, rightCol] : splitPairs) {
+            if (!mlir::isa<db::NullableType>(leftCol->type)) nameMerges[nullableColMap.lookup(rightCol)] = leftCol;
+         }
+         ColumnMapper colMap = nullableColMap;
+         if (!mergePairs.empty()) {
+            auto mergedCols = buildMergedColumns(mergePairs, nullableColMap);
+            join->setAttr(gpm::kMergedColumnsAttr, mergedCols);
+            for (auto [attr, pair] : llvm::zip(mergedCols, mergePairs)) {
+               const auto* merged = &mlir::cast<tuples::ColumnDefAttr>(attr).getColumn();
+               const auto* paddedRight = nullableColMap.lookup(pair.second);
+               colMap[pair.first] = merged;
+               colMap[pair.second] = merged;
+               colMap[paddedRight] = merged;
+               nameMerges[pair.first] = merged;
+               nameMerges[paddedRight] = merged;
+            }
+         }
+         remapColumnsEverywhere(join.getOperation(), colMap, &preMergeOps);
          return join.getResult();
       }
       if (elementKind == gpm::PatternKind::minus) {
@@ -480,6 +514,9 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       if (auto outerJoin = mlir::dyn_cast<relalg::OuterJoinOp>(op)) {
          for (auto mappingAttr : outerJoin.getMapping()) {
             result.insert(&mlir::cast<tuples::ColumnDefAttr>(mappingAttr).getColumn());
+         }
+         if (auto merged = outerJoin->getAttrOfType<mlir::ArrayAttr>(gpm::kMergedColumnsAttr)) {
+            for (auto mergedAttr : merged) result.insert(&mlir::cast<tuples::ColumnDefAttr>(mergedAttr).getColumn());
          }
          result.insert(collectTripleVariables(outerJoin.getLeft(), visited));
          return result;
@@ -572,42 +609,45 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       return result;
    }
    void addSharedVariablePredicate(PredicateOperator join, mlir::Value left, mlir::Value right, mlir::Location loc) {
-      auto* ctxt = join.getOperation()->getContext();
-      auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
       llvm::SmallPtrSet<mlir::Operation*, 16> visitedLeft;
       relalg::ColumnSet leftVars = collectTripleVariables(left, visitedLeft);
+      addSharedVariablePredicate(join, sharedVariablePairs(right, loc, leftVars), loc);
+   }
+   ColumnPairs sharedVariablePairs(mlir::Value right, mlir::Location loc, const relalg::ColumnSet& leftVars) {
       auto pairs = ensureBindingsColumns(right, loc, [&](const tuples::Column* c) { return leftVars.contains(c); });
-      if (pairs.empty()) return;
-
+      ColumnPairs result;
+      if (pairs.empty()) return result;
       ColumnMapper unionRemaps;
       {
          llvm::SmallPtrSet<mlir::Operation*, 16> visited;
          collectOuterJoinRemaps(right, visited, unionRemaps);
       }
-      auto resolveThroughUnion = [&](tuples::ColumnRefAttr ref) {
-         const tuples::Column* col = &ref.getColumn();
-         for (auto it = unionRemaps.find(col); it != unionRemaps.end(); it = unionRemaps.find(col)) {
-            col = it->second;
-         }
-         return col == &ref.getColumn() ? ref : columnManager.createRef(col);
-      };
-
-      llvm::SmallVector<mlir::Attribute> leftHash, rightHash;
       llvm::SmallPtrSet<const tuples::Column*, 8> seenOuterCols;
       for (auto& pair : pairs) {
-         auto bindingsRef = resolveThroughUnion(pair.bindingsRef);
          if (!seenOuterCols.insert(&pair.outerRef.getColumn()).second) continue;
+         result.emplace_back(&pair.outerRef.getColumn(), resolveThroughRemaps(unionRemaps, &pair.bindingsRef.getColumn()));
+      }
+      return result;
+   }
+   void addSharedVariablePredicate(PredicateOperator join, const ColumnPairs& pairs, mlir::Location loc, bool nullTolerant = false) {
+      if (pairs.empty()) return;
+      auto& columnManager = join.getOperation()->getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      llvm::SmallVector<mlir::Attribute> leftHash, rightHash;
+      for (auto [outerCol, bindingsCol] : pairs) {
+         auto outerRef = columnManager.createRef(outerCol);
+         auto bindingsRef = columnManager.createRef(bindingsCol);
          join.addPredicate([&](mlir::Value tuple, mlir::OpBuilder& builder) -> mlir::Value {
-            mlir::Value lhsVal = builder.create<tuples::GetColumnOp>(loc, pair.outerRef.getColumn().type, pair.outerRef, tuple);
-            mlir::Value rhsVal = builder.create<tuples::GetColumnOp>(loc, bindingsRef.getColumn().type, bindingsRef, tuple);
+            mlir::Value lhsVal = builder.create<tuples::GetColumnOp>(loc, outerCol->type, outerRef, tuple);
+            mlir::Value rhsVal = builder.create<tuples::GetColumnOp>(loc, bindingsCol->type, bindingsRef, tuple);
+            if (nullTolerant) return buildCompatible(builder, loc, lhsVal, rhsVal, /*rhsMayBeNull=*/false);
             return builder.create<gpm::IdentifiersEqualOp>(loc, builder.getI1Type(), lhsVal, rhsVal);
          });
-         leftHash.push_back(pair.outerRef);
+         leftHash.push_back(outerRef);
          rightHash.push_back(bindingsRef);
       }
       appendHashKeys(join, leftHash, rightHash);
    }
-   void addNameMatchedPredicate(PredicateOperator join, const ColumnPairs& pairs, mlir::Location loc) {
+   void addNameMatchedPredicate(PredicateOperator join, const ColumnPairs& pairs, mlir::Location loc, bool recordMerges = true) {
       if (pairs.empty()) return;
       auto& columnManager = join.getOperation()->getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
       llvm::SmallVector<mlir::Attribute> leftHash, rightHash;
@@ -617,20 +657,22 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          join.addPredicate([&](mlir::Value tuple, mlir::OpBuilder& builder) -> mlir::Value {
             mlir::Value lhsVal = builder.create<tuples::GetColumnOp>(loc, leftCol->type, leftRef, tuple);
             mlir::Value rhsVal = builder.create<tuples::GetColumnOp>(loc, rightCol->type, rightRef, tuple);
-            mlir::Value eq = builder.create<gpm::IdentifiersEqualOp>(loc, builder.getI1Type(), lhsVal, rhsVal);
-            llvm::SmallVector<mlir::Value> compatible;
-            for (auto val : {lhsVal, rhsVal}) {
-               if (mlir::isa<db::NullableType>(val.getType())) compatible.push_back(builder.create<db::IsNullOp>(loc, val));
-            }
-            if (compatible.empty()) return eq;
-            compatible.push_back(eq);
-            return builder.create<db::OrOp>(loc, compatible);
+            return buildCompatible(builder, loc, lhsVal, rhsVal);
          });
          leftHash.push_back(leftRef);
          rightHash.push_back(rightRef);
-         nameMerges[rightCol] = leftCol;
+         if (recordMerges) nameMerges[rightCol] = leftCol;
       }
       appendHashKeys(join, leftHash, rightHash);
+   }
+   mlir::Value buildCompatible(mlir::OpBuilder& builder, mlir::Location loc, mlir::Value lhsVal, mlir::Value rhsVal, bool rhsMayBeNull = true) {
+      mlir::Value eq = builder.create<gpm::IdentifiersEqualOp>(loc, builder.getI1Type(), lhsVal, rhsVal);
+      llvm::SmallVector<mlir::Value> compatible;
+      if (mlir::isa<db::NullableType>(lhsVal.getType())) compatible.push_back(builder.create<db::IsNullOp>(loc, lhsVal));
+      if (rhsMayBeNull && mlir::isa<db::NullableType>(rhsVal.getType())) compatible.push_back(builder.create<db::IsNullOp>(loc, rhsVal));
+      if (compatible.empty()) return eq;
+      compatible.push_back(eq);
+      return builder.create<db::OrOp>(loc, compatible);
    }
    void appendHashKeys(PredicateOperator join, llvm::ArrayRef<mlir::Attribute> leftKeys, llvm::ArrayRef<mlir::Attribute> rightKeys) {
       auto* ctxt = join.getOperation()->getContext();
@@ -693,6 +735,20 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          colMap[column] = &newDef.getColumn();
       }
       return mlir::ArrayAttr::get(ctxt, mappingEntries);
+   }
+   mlir::ArrayAttr buildMergedColumns(const ColumnPairs& pairs, const ColumnMapper& paddedColMap) {
+      auto* ctxt = insertPoint->getContext();
+      auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      auto scope = columnManager.getUniqueScope("merge");
+      llvm::SmallVector<mlir::Attribute> mergedCols;
+      for (auto [leftCol, rightCol] : pairs) {
+         const auto* paddedCol = paddedColMap.lookup(rightCol);
+         auto sources = mlir::ArrayAttr::get(ctxt, {columnManager.createRef(leftCol), columnManager.createRef(paddedCol)});
+         auto mergedDef = columnManager.createDef(scope, columnManager.getName(leftCol).second, sources);
+         mergedDef.getColumn().type = leftCol->type;
+         mergedCols.push_back(mergedDef);
+      }
+      return mlir::ArrayAttr::get(ctxt, mergedCols);
    }
    mlir::Attribute remapColumnAttr(mlir::Attribute attr, const llvm::DenseMap<const tuples::Column*, const tuples::Column*>& colMap, tuples::ColumnManager& columnManager) {
       if (!attr) return attr;

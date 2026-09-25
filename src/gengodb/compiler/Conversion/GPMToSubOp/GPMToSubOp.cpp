@@ -680,6 +680,54 @@ void GPMToSubOpLoweringPass::runOnOperation() {
 
    refreshNullableTypes(module);
 }
+static void expandMergedColumns(ModuleOp module) {
+   auto* ctxt = module.getContext();
+   auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+   module.walk([&](relalg::OuterJoinOp join) {
+      auto mergedCols = join->getAttrOfType<mlir::ArrayAttr>(gpm::kMergedColumnsAttr);
+      if (!mergedCols) return;
+      join->removeAttr(gpm::kMergedColumnsAttr);
+      auto loc = join.getLoc();
+      OpBuilder builder(join);
+      builder.setInsertionPointAfter(join);
+      auto* block = new Block;
+      mlir::Value tuple = block->addArgument(tuples::TupleType::get(ctxt), loc);
+      {
+         OpBuilder::InsertionGuard guard(builder);
+         builder.setInsertionPointToStart(block);
+         llvm::SmallVector<mlir::Value> results;
+         for (auto attr : mergedCols) {
+            auto mergedDef = mlir::cast<tuples::ColumnDefAttr>(attr);
+            auto sources = mlir::cast<mlir::ArrayAttr>(mergedDef.getFromExisting());
+            auto leftRef = mlir::cast<tuples::ColumnRefAttr>(sources[0]);
+            auto rightRef = mlir::cast<tuples::ColumnRefAttr>(sources[1]);
+            mlir::Value left = builder.create<tuples::GetColumnOp>(loc, leftRef.getColumn().type, leftRef, tuple);
+            mergedDef.getColumn().type = left.getType();
+            if (!mlir::isa<db::NullableType>(left.getType())) {
+               results.push_back(left);
+               continue;
+            }
+            mlir::Value right = builder.create<tuples::GetColumnOp>(loc, rightRef.getColumn().type, rightRef, tuple);
+            if (right.getType() != left.getType()) right = builder.create<db::AsNullableOp>(loc, left.getType(), right);
+            mlir::Value leftIsNull = builder.create<db::IsNullOp>(loc, left);
+            auto ifOp = builder.create<scf::IfOp>(
+               loc, leftIsNull,
+               [&](OpBuilder& b, Location l) { b.create<scf::YieldOp>(l, right); },
+               [&](OpBuilder& b, Location l) { b.create<scf::YieldOp>(l, left); });
+            results.push_back(ifOp.getResult(0));
+         }
+         builder.create<tuples::ReturnOp>(loc, results);
+      }
+      llvm::SmallVector<mlir::Attribute> computedCols;
+      for (auto attr : mergedCols) {
+         auto mergedDef = mlir::cast<tuples::ColumnDefAttr>(attr);
+         computedCols.push_back(columnManager.createDef(&mergedDef.getColumn()));
+      }
+      auto mapOp = builder.create<relalg::MapOp>(loc, tuples::TupleStreamType::get(ctxt), join.getResult(), builder.getArrayAttr(computedCols));
+      mapOp.getPredicate().push_back(block);
+      join.getResult().replaceAllUsesExcept(mapOp.getResult(), mapOp);
+   });
+}
 void GPMScalarToSubOpLoweringPass::runOnOperation() {
    auto module = getOperation();
    getContext().getLoadedDialect<util::UtilDialect>()->getFunctionHelper().setParentModule(module);
@@ -698,6 +746,8 @@ void GPMScalarToSubOpLoweringPass::runOnOperation() {
    RewritePatternSet patterns(ctxt);
    patterns.insert<GpmIdentifiersEqualLowering>(typeConverter, ctxt);
    patterns.insert<GetBindingOpLowering>(typeConverter, ctxt);
+
+   expandMergedColumns(module);
 
    if (failed(applyFullConversion(module, target, std::move(patterns)))) {
       signalPassFailure();
