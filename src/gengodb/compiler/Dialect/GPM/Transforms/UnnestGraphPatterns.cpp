@@ -17,6 +17,7 @@ namespace {
 using namespace gengodb::compiler::dialect;
 using namespace lingodb::compiler::dialect;
 using ColumnMapper = llvm::DenseMap<const tuples::Column*, const tuples::Column*>;
+using ColumnPairs = llvm::SmallVector<std::pair<const tuples::Column*, const tuples::Column*>>;
 const tuples::Column* getBNodeScopeColumn(mlir::Attribute entry) {
    if (auto def = mlir::dyn_cast<tuples::ColumnDefAttr>(entry)) 
       return &def.getColumn();
@@ -82,6 +83,8 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
    llvm::DenseMap<mlir::Value, mlir::Value> rewritten;
    mlir::Operation* insertPoint = nullptr;
    llvm::StringMap<tuples::ColumnRefAttr>* bnodeScope = nullptr;
+   llvm::MapVector<const tuples::Column*, const tuples::Column*> splitOrigin;
+   ColumnMapper nameMerges;
    mlir::Value rewrite(mlir::Value v) {
       if (!v) return v;
       if (auto it = rewritten.find(v); it != rewritten.end()) return it->second;
@@ -154,6 +157,9 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       auto loc = patternOp.getLoc();
       mlir::Value accumulator = rewrite(patternOp.getRel());
       mlir::Value elementStream = rewriteRegion(patternOp.getPattern());
+      if (accumulator && elementStream && (kind == gpm::PatternKind::basic || kind == gpm::PatternKind::optional)) {
+         if (!splitDanglingReferences(patternOp, accumulator, elementStream, createdVars)) return {};
+      }
       ColumnMapper nestedRemaps;
       llvm::SmallPtrSet<mlir::Operation*, 16> visitedRemaps;
       collectOuterJoinRemaps(elementStream, visitedRemaps, nestedRemaps);
@@ -161,7 +167,86 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       for (const auto* column : createdVars) {
          liveCreatedVars.insert(resolveThroughRemaps(nestedRemaps, column));
       }
-      return fold(accumulator, elementStream, kind, liveCreatedVars, loc);
+      ColumnPairs splitPairs;
+      if (accumulator && elementStream) splitPairs = matchSplitVariables(accumulator, elementStream, nestedRemaps);
+      if (!splitPairs.empty() && kind != gpm::PatternKind::basic) {
+         auto& columnManager = patternOp->getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+         patternOp->emitOpError("unsupported: variable ?") << columnManager.getName(splitPairs.front().first).second << " is bound independently inside an OPTIONAL/MINUS and outside of it";
+         signalPassFailure();
+         return {};
+      }
+      return fold(accumulator, elementStream, kind, liveCreatedVars, loc, splitPairs);
+   }
+   bool splitDanglingReferences(GraphPatternOp patternOp, mlir::Value accumulator, mlir::Value elementStream, relalg::ColumnSet& createdVars) {
+      auto* ctxt = patternOp->getContext();
+      auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      relalg::ColumnSet leftVars;
+      {
+         llvm::SmallPtrSet<mlir::Operation*, 16> visited;
+         leftVars = collectTripleVariables(accumulator, visited);
+      }
+      relalg::ColumnSet elementProduced = producedColumns(elementStream);
+      llvm::SmallVector<gpm::TriplePatternOp> triples;
+      {
+         llvm::SmallPtrSet<mlir::Operation*, 16> visited;
+         collectTriples(elementStream, visited, triples);
+      }
+      ColumnMapper splits;
+      for (auto triple : triples) {
+         auto bindings = triple->getAttrOfType<mlir::DictionaryAttr>("bindings");
+         for (auto [position, term] : {std::pair{"s", triple.getS()}, std::pair{"p", triple.getP()}, std::pair{"o", triple.getO()}}) {
+            auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term);
+            if (!varTerm || !varTerm.hasBinding()) continue;
+            if (bindings && bindings.get(position)) continue;
+            const auto* column = &varTerm.getBindingReference().getColumn();
+            if (leftVars.contains(column) || elementProduced.contains(column)) continue;
+            if (splits.contains(column)) {
+               triple.emitOpError("unsupported: variable ?") << columnManager.getName(column).second << " is bound more than once inside an independently evaluated pattern";
+               signalPassFailure();
+               return false;
+            }
+            auto freshDef = columnManager.createDef(columnManager.getUniqueScope("vars"), columnManager.getName(column).second);
+            freshDef.getColumn().type = column->type;
+            auto newTerm = gpm::VariableTermAttr::get(ctxt, freshDef);
+            if (position == std::string_view("s")) triple.setSAttr(newTerm);
+            else if (position == std::string_view("p")) triple.setPAttr(newTerm);
+            else triple.setOAttr(newTerm);
+            splits[column] = &freshDef.getColumn();
+            splitOrigin[&freshDef.getColumn()] = column;
+            createdVars.insert(&freshDef.getColumn());
+         }
+      }
+      if (!splits.empty()) {
+         llvm::SmallPtrSet<mlir::Operation*, 32> elementOps;
+         collectSubtreeOps(elementStream, elementOps);
+         remapColumnsIn(elementOps, splits);
+      }
+      return true;
+   }
+   ColumnPairs matchSplitVariables(mlir::Value accumulator, mlir::Value elementStream, const ColumnMapper& elementRemaps) {
+      ColumnMapper outerRemaps;
+      {
+         llvm::SmallPtrSet<mlir::Operation*, 16> visited;
+         collectOuterJoinRemaps(accumulator, visited, outerRemaps);
+      }
+      relalg::ColumnSet outerProduced = producedColumns(accumulator);
+      relalg::ColumnSet innerProduced = producedColumns(elementStream);
+      ColumnPairs pairs;
+      for (auto [fresh, origin] : splitOrigin) {
+         const auto* innerLive = resolveLive(elementRemaps, fresh);
+         if (!innerProduced.contains(innerLive)) continue;
+         const auto* outerLive = resolveLive(outerRemaps, origin);
+         if (!outerProduced.contains(outerLive) || outerLive == innerLive) continue;
+         pairs.emplace_back(outerLive, innerLive);
+      }
+      return pairs;
+   }
+   const tuples::Column* resolveLive(const ColumnMapper& remaps, const tuples::Column* column) {
+      for (const tuples::Column* prev = nullptr; prev != column;) {
+         prev = column;
+         column = resolveThroughRemaps(nameMerges, resolveThroughRemaps(remaps, column));
+      }
+      return column;
    }
    mlir::Value rewriteRegion(mlir::Region& region) {
       auto* terminator = region.front().getTerminator();
@@ -350,7 +435,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       triple.getRelMutable().set(namedGraph.getRes());
       triple->moveBefore(insertBefore);
    }
-   mlir::Value fold(mlir::Value accumulator, mlir::Value elementStream, gpm::PatternKind elementKind, const relalg::ColumnSet& elementCreatedVars, mlir::Location loc) {
+   mlir::Value fold(mlir::Value accumulator, mlir::Value elementStream, gpm::PatternKind elementKind, const relalg::ColumnSet& elementCreatedVars, mlir::Location loc, const ColumnPairs& splitPairs = {}) {
       if (!accumulator) return elementStream;
       mlir::OpBuilder builder(insertPoint->getContext());
       builder.setInsertionPoint(insertPoint);
@@ -376,6 +461,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       auto join = builder.create<relalg::InnerJoinOp>(loc, streamType, accumulator, elementStream);
       join.initPredicate();
       addSharedVariablePredicate(join, accumulator, elementStream, loc);
+      addNameMatchedPredicate(join, splitPairs, loc);
       return join.getResult();
    }
    relalg::ColumnSet collectTripleVariables(mlir::Value v, llvm::SmallPtrSet<mlir::Operation*, 16>& visited) {
@@ -519,15 +605,48 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          leftHash.push_back(pair.outerRef);
          rightHash.push_back(bindingsRef);
       }
-      join->setAttr("leftHash", mlir::ArrayAttr::get(ctxt, leftHash));
-      join->setAttr("rightHash", mlir::ArrayAttr::get(ctxt, rightHash));
+      appendHashKeys(join, leftHash, rightHash);
+   }
+   void addNameMatchedPredicate(PredicateOperator join, const ColumnPairs& pairs, mlir::Location loc) {
+      if (pairs.empty()) return;
+      auto& columnManager = join.getOperation()->getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      llvm::SmallVector<mlir::Attribute> leftHash, rightHash;
+      for (auto [leftCol, rightCol] : pairs) {
+         auto leftRef = columnManager.createRef(leftCol);
+         auto rightRef = columnManager.createRef(rightCol);
+         join.addPredicate([&](mlir::Value tuple, mlir::OpBuilder& builder) -> mlir::Value {
+            mlir::Value lhsVal = builder.create<tuples::GetColumnOp>(loc, leftCol->type, leftRef, tuple);
+            mlir::Value rhsVal = builder.create<tuples::GetColumnOp>(loc, rightCol->type, rightRef, tuple);
+            mlir::Value eq = builder.create<gpm::IdentifiersEqualOp>(loc, builder.getI1Type(), lhsVal, rhsVal);
+            llvm::SmallVector<mlir::Value> compatible;
+            for (auto val : {lhsVal, rhsVal}) {
+               if (mlir::isa<db::NullableType>(val.getType())) compatible.push_back(builder.create<db::IsNullOp>(loc, val));
+            }
+            if (compatible.empty()) return eq;
+            compatible.push_back(eq);
+            return builder.create<db::OrOp>(loc, compatible);
+         });
+         leftHash.push_back(leftRef);
+         rightHash.push_back(rightRef);
+         nameMerges[rightCol] = leftCol;
+      }
+      appendHashKeys(join, leftHash, rightHash);
+   }
+   void appendHashKeys(PredicateOperator join, llvm::ArrayRef<mlir::Attribute> leftKeys, llvm::ArrayRef<mlir::Attribute> rightKeys) {
+      auto* ctxt = join.getOperation()->getContext();
+      auto append = [&](llvm::StringRef name, llvm::ArrayRef<mlir::Attribute> added) {
+         llvm::SmallVector<mlir::Attribute> values;
+         if (auto existing = join->getAttrOfType<mlir::ArrayAttr>(name)) values.append(existing.begin(), existing.end());
+         values.append(added.begin(), added.end());
+         join->setAttr(name, mlir::ArrayAttr::get(ctxt, values));
+      };
+      append("leftHash", leftKeys);
+      append("rightHash", rightKeys);
       join->setAttr("impl", mlir::StringAttr::get(ctxt, "hash"));
       join->setAttr("useHashJoin", mlir::UnitAttr::get(ctxt));
-      llvm::SmallVector<mlir::Attribute> nullsEqual(leftHash.size(), mlir::IntegerAttr::get(mlir::IntegerType::get(ctxt, 8), 0));
-      join->setAttr("nullsEqual", mlir::ArrayAttr::get(ctxt, nullsEqual));
-      llvm::SmallVector<mlir::Attribute> nullMatchesAll(leftHash.size(), mlir::IntegerAttr::get(mlir::IntegerType::get(ctxt, 8), 1));
+      append("nullsEqual", llvm::SmallVector<mlir::Attribute>(leftKeys.size(), mlir::IntegerAttr::get(mlir::IntegerType::get(ctxt, 8), 0)));
       // Special outer join semantics for null (unbound) handling
-      join->setAttr("nullMatchesAll", mlir::ArrayAttr::get(ctxt, nullMatchesAll));
+      append("nullMatchesAll", llvm::SmallVector<mlir::Attribute>(leftKeys.size(), mlir::IntegerAttr::get(mlir::IntegerType::get(ctxt, 8), 1)));
    }
    void fixStaleTripleColumnReferences(mlir::Value subtreeRoot, const tuples::Column* oldColumn, tuples::ColumnRefAttr newRef, llvm::SmallPtrSetImpl<mlir::Operation*>& visited) {
       auto* op = subtreeRoot.getDefiningOp();
@@ -628,6 +747,20 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       if (!op || ops.contains(op)) return;
       op->walk([&](mlir::Operation* nested) { ops.insert(nested); });
       for (auto operand : op->getOperands()) collectSubtreeOps(operand, ops);
+   }
+   void remapColumnsIn(const llvm::SmallPtrSetImpl<mlir::Operation*>& ops, const ColumnMapper& colMap) {
+      if (colMap.empty()) return;
+      auto& columnManager = getOperation()->getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      for (auto* op : ops) {
+         bool changed = false;
+         llvm::SmallVector<mlir::NamedAttribute> newAttrs;
+         for (auto namedAttr : op->getAttrDictionary()) {
+            auto remapped = remapColumnAttr(namedAttr.getValue(), colMap, columnManager);
+            changed |= remapped != namedAttr.getValue();
+            newAttrs.emplace_back(namedAttr.getName(), remapped);
+         }
+         if (changed) op->setAttrs(mlir::DictionaryAttr::get(op->getContext(), newAttrs));
+      }
    }
    void remapColumnsEverywhere(mlir::Operation* skip, const ColumnMapper& colMap, const llvm::SmallPtrSetImpl<mlir::Operation*>* exclude = nullptr) {
       if (colMap.empty()) return;

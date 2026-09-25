@@ -518,6 +518,9 @@ class MaterializationHelper {
    Member lookupStateMemberForMaterializedColumn(const tuples::Column* column) {
       return members[colToMemberPos.at(column)];
    }
+   bool isMaterialized(const tuples::Column* column) {
+      return colToMemberPos.contains(column);
+   }
 };
 class ConstRelationLowering : public OpConversionPattern<relalg::ConstRelationOp> {
    public:
@@ -1193,6 +1196,46 @@ static mlir::Value applyFillIn(mlir::Value stream, llvm::SmallVectorImpl<std::pa
    fillMapOp.getFn().push_back(fillHelper.getMapBlock());
    return fillMapOp.getResult();
 }
+static mlir::Value applyFillIn(mlir::Value buffer, MaterializationHelper& helper, mlir::Value tuple, llvm::SmallVectorImpl<std::pair<tuples::ColumnRefAttr, tuples::ColumnRefAttr>>& fillPairs, mlir::ConversionPatternRewriter& rewriter, mlir::Location loc) {
+   auto& colManager = rewriter.getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+   DefMappingCollector storedDefs;
+   llvm::SmallDenseSet<Member> redirectedMembers;
+   llvm::SmallVector<std::tuple<tuples::ColumnRefAttr, tuples::ColumnRefAttr, tuples::ColumnRefAttr>> fills;
+   for (auto& [targetRef, sourceRef] : fillPairs) {
+      auto* target = &targetRef.getColumn();
+      if (!helper.isMaterialized(target)) continue;
+      auto member = helper.lookupStateMemberForMaterializedColumn(target);
+      if (!redirectedMembers.insert(member).second) continue;
+      auto [storedDef, storedRef] = createColumn(target->type, "nullkey_fill", colManager.getName(target).second);
+      storedDefs.push_back({member, storedDef});
+      fills.push_back({targetRef, storedRef, sourceRef});
+   }
+   mlir::Value scan = rewriter.create<subop::ScanOp>(loc, buffer, helper.createStateColumnMapping(storedDefs, redirectedMembers));
+   mlir::Value combined = rewriter.create<subop::CombineTupleOp>(loc, scan, tuple);
+   if (fills.empty()) return combined;
+   subop::MapCreationHelper fillHelper(rewriter.getContext());
+   llvm::SmallVector<mlir::Attribute> fillDefs;
+   fillHelper.buildBlock(rewriter, [&](mlir::ConversionPatternRewriter& rewriter) {
+      std::vector<mlir::Value> res;
+      for (auto& [targetRef, storedRef, sourceRef] : fills) {
+         auto targetType = targetRef.getColumn().type;
+         mlir::Value storedVal = fillHelper.access(storedRef, loc);
+         mlir::Value sourceVal = fillHelper.access(sourceRef, loc);
+         if (sourceVal.getType() != targetType) sourceVal = rewriter.create<db::AsNullableOp>(loc, targetType, sourceVal);
+         mlir::Value storedIsNull = rewriter.create<db::IsNullOp>(loc, storedVal);
+         auto ifOp = rewriter.create<mlir::scf::IfOp>(
+            loc, storedIsNull,
+            [&](mlir::OpBuilder& b, mlir::Location l) { b.create<mlir::scf::YieldOp>(l, sourceVal); },
+            [&](mlir::OpBuilder& b, mlir::Location l) { b.create<mlir::scf::YieldOp>(l, storedVal); });
+         res.push_back(ifOp.getResult(0));
+         fillDefs.push_back(colManager.createDef(&targetRef.getColumn()));
+      }
+      rewriter.create<tuples::ReturnOp>(loc, res);
+   });
+   auto fillMapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(rewriter.getContext()), combined, rewriter.getArrayAttr(fillDefs), fillHelper.getColRefs());
+   fillMapOp.getFn().push_back(fillHelper.getMapBlock());
+   return fillMapOp.getResult();
+}
 
 static mlir::Value translateHJNullMatchesAllFolded(mlir::Value left, mlir::Value right, mlir::ArrayAttr nullsEqual, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, relalg::ColumnSet columns, mlir::ConversionPatternRewriter& rewriter, mlir::Location loc, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn, mlir::ArrayAttr nullMatchesAll = mlir::ArrayAttr()) {
    mlir::Value fullRightStream = right;
@@ -1220,7 +1263,7 @@ static mlir::Value translateHJNullMatchesAllFolded(mlir::Value left, mlir::Value
       right = markedRight;
    }
 
-   // Probe side: a null-keyed probe row must cross-join with the entire build side
+   // Probe side: a null-keyed probe row must cross-join with the build side.
    llvm::SmallVector<std::pair<tuples::ColumnRefAttr, tuples::ColumnRefAttr>> fillFromRight;
    auto [markedLeft, probeMarkerRef] = computeNullKeyMarker(left, hashLeft, hashLeft, hashRight, nullMatchesAll, rewriter, loc, fillFromRight);
    mlir::Value fullRightBuffer;
@@ -1228,7 +1271,7 @@ static mlir::Value translateHJNullMatchesAllFolded(mlir::Value left, mlir::Value
       auto& helper = ensureRightColumnsHelper();
       auto bufferType = subop::BufferType::get(rewriter.getContext(), helper.createStateMembersAttr());
       fullRightBuffer = rewriter.create<subop::GenericCreateOp>(loc, bufferType);
-      rewriter.create<subop::MaterializeOp>(loc, fullRightStream, fullRightBuffer, helper.createColumnstateMapping());
+      rewriter.create<subop::MaterializeOp>(loc, nullKeyBuffer ? right : fullRightStream, fullRightBuffer, helper.createColumnstateMapping());
    }
    left = markedLeft;
 
@@ -1262,18 +1305,13 @@ static mlir::Value translateHJNullMatchesAllFolded(mlir::Value left, mlir::Value
       llvm::SmallVector<mlir::Value> branches{combined};
 
       if (nullKeyBuffer) {
-         auto& helper = *rightColumnsHelper;
-         mlir::Value catchAllScan = rewriter.create<subop::ScanOp>(loc, nullKeyBuffer, helper.createStateColumnMapping());
-         mlir::Value catchAllCombined = rewriter.create<subop::CombineTupleOp>(loc, catchAllScan, tuple);
-         catchAllCombined = applyFillIn(catchAllCombined, fillFromLeft, rewriter, loc);
-         branches.push_back(catchAllCombined);
+         branches.push_back(applyFillIn(nullKeyBuffer, *rightColumnsHelper, tuple, fillFromLeft, rewriter, loc));
       }
       if (fullRightBuffer) {
          auto& helper = *rightColumnsHelper;
          mlir::Value probeScan = rewriter.create<subop::ScanOp>(loc, fullRightBuffer, helper.createStateColumnMapping());
          mlir::Value probeCombined = rewriter.create<subop::CombineTupleOp>(loc, probeScan, tuple);
          mlir::Value probeFiltered = rewriter.create<subop::FilterOp>(loc, probeCombined, subop::FilterSemantic::all_true, rewriter.getArrayAttr(probeMarkerRef));
-         probeFiltered = applyFillIn(probeFiltered, fillFromRight, rewriter, loc);
          branches.push_back(probeFiltered);
       }
 
