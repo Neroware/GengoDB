@@ -92,9 +92,22 @@ SELECT ?person ?age ?size WHERE {
 
 "filter/filter_literal_le_excludes.mlir": EX + "SELECT ?person ?age WHERE { ?person ex:age ?age . FILTER(?age <= 25) }",
 
-"filter/limit_basic.mlir": EX + "SELECT ?who ?what WHERE { ?who ex:drinks ?what } LIMIT 5",
+"filter/limit_basic.mlir": EX + "SELECT ?who ?what WHERE { ?who ex:drinks ?what } ORDER BY ?who ?what LIMIT 5",
 
 "optional/optional_bound.mlir": EX + "SELECT ?person ?food ?cup WHERE { ?person ex:eats ?food . OPTIONAL { ?person ex:cup ?cup } }",
+
+"optional/optional_double_outer_join_inner.mlir": EX + """
+SELECT ?person ?food ?cup ?drink ?more
+WHERE {
+  {
+    ?person ex:eats ?food .
+    OPTIONAL { ?person ex:cup ?cup . }
+  }
+  {
+    ?person ex:drinks ?drink .
+    OPTIONAL { ?drink ex:asksForMore ?more . }
+  }
+}""",
 
 "optional/optional_chained_anchor.mlir": EX + """
 SELECT ?person ?food ?cup ?drink WHERE {

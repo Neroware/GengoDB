@@ -518,6 +518,9 @@ class MaterializationHelper {
    Member lookupStateMemberForMaterializedColumn(const tuples::Column* column) {
       return members[colToMemberPos.at(column)];
    }
+   bool isMaterialized(const tuples::Column* column) {
+      return colToMemberPos.contains(column);
+   }
 };
 class ConstRelationLowering : public OpConversionPattern<relalg::ConstRelationOp> {
    public:
@@ -1174,27 +1177,49 @@ static std::pair<mlir::Value, tuples::ColumnRefAttr> computeNullKeyMarker(mlir::
    mapOp.getFn().push_back(helper.getMapBlock());
    return {mapOp.getResult(), colManager.createRef(&markerDef.getColumn())};
 }
-static mlir::Value applyFillIn(mlir::Value stream, llvm::SmallVectorImpl<std::pair<tuples::ColumnRefAttr, tuples::ColumnRefAttr>>& fillPairs, mlir::ConversionPatternRewriter& rewriter, mlir::Location loc) {
-   if (fillPairs.empty()) return stream;
+static mlir::Value applyFillIn(mlir::Value buffer, MaterializationHelper& helper, mlir::Value tuple, llvm::SmallVectorImpl<std::pair<tuples::ColumnRefAttr, tuples::ColumnRefAttr>>& fillPairs, mlir::ConversionPatternRewriter& rewriter, mlir::Location loc) {
    auto& colManager = rewriter.getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+   DefMappingCollector storedDefs;
+   llvm::SmallDenseSet<Member> redirectedMembers;
+   llvm::SmallVector<std::tuple<tuples::ColumnRefAttr, tuples::ColumnRefAttr, tuples::ColumnRefAttr>> fills;
+   for (auto& [targetRef, sourceRef] : fillPairs) {
+      auto* target = &targetRef.getColumn();
+      if (!helper.isMaterialized(target)) continue;
+      auto member = helper.lookupStateMemberForMaterializedColumn(target);
+      if (!redirectedMembers.insert(member).second) continue;
+      auto [storedDef, storedRef] = createColumn(target->type, "nullkey_fill", colManager.getName(target).second);
+      storedDefs.push_back({member, storedDef});
+      fills.push_back({targetRef, storedRef, sourceRef});
+   }
+   mlir::Value scan = rewriter.create<subop::ScanOp>(loc, buffer, helper.createStateColumnMapping(storedDefs, redirectedMembers));
+   mlir::Value combined = rewriter.create<subop::CombineTupleOp>(loc, scan, tuple);
+   if (fills.empty()) return combined;
    subop::MapCreationHelper fillHelper(rewriter.getContext());
    llvm::SmallVector<mlir::Attribute> fillDefs;
    fillHelper.buildBlock(rewriter, [&](mlir::ConversionPatternRewriter& rewriter) {
       std::vector<mlir::Value> res;
-      for (auto& [targetRef, sourceRef] : fillPairs) {
+      for (auto& [targetRef, storedRef, sourceRef] : fills) {
+         auto targetType = targetRef.getColumn().type;
+         mlir::Value storedVal = fillHelper.access(storedRef, loc);
          mlir::Value sourceVal = fillHelper.access(sourceRef, loc);
-         mlir::Value filled = sourceVal.getType() == targetRef.getColumn().type ? sourceVal : rewriter.create<db::AsNullableOp>(loc, targetRef.getColumn().type, sourceVal).getResult();
-         res.push_back(filled);
+         if (sourceVal.getType() != targetType) sourceVal = rewriter.create<db::AsNullableOp>(loc, targetType, sourceVal);
+         mlir::Value storedIsNull = rewriter.create<db::IsNullOp>(loc, storedVal);
+         auto ifOp = rewriter.create<mlir::scf::IfOp>(
+            loc, storedIsNull,
+            [&](mlir::OpBuilder& b, mlir::Location l) { b.create<mlir::scf::YieldOp>(l, sourceVal); },
+            [&](mlir::OpBuilder& b, mlir::Location l) { b.create<mlir::scf::YieldOp>(l, storedVal); });
+         res.push_back(ifOp.getResult(0));
          fillDefs.push_back(colManager.createDef(&targetRef.getColumn()));
       }
       rewriter.create<tuples::ReturnOp>(loc, res);
    });
-   auto fillMapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(rewriter.getContext()), stream, rewriter.getArrayAttr(fillDefs), fillHelper.getColRefs());
+   auto fillMapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(rewriter.getContext()), combined, rewriter.getArrayAttr(fillDefs), fillHelper.getColRefs());
    fillMapOp.getFn().push_back(fillHelper.getMapBlock());
    return fillMapOp.getResult();
 }
-static mlir::Value translateHJNullMatchesAll(mlir::Value left, mlir::Value right, mlir::ArrayAttr nullsEqual, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, relalg::ColumnSet columns, mlir::ConversionPatternRewriter& rewriter, mlir::Location loc, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn, mlir::ArrayAttr nullMatchesAll = mlir::ArrayAttr(), relalg::ColumnSet fullOutputColumns = relalg::ColumnSet(), relalg::ColumnSet leftColumns = relalg::ColumnSet()) {
-   mlir::Value fullRightStream = right; // captured before any build-side null-key split, for probe-side handling below
+
+static mlir::Value translateHJNullMatchesAll(mlir::Value left, mlir::Value right, mlir::ArrayAttr nullsEqual, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, relalg::ColumnSet columns, mlir::ConversionPatternRewriter& rewriter, mlir::Location loc, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn, mlir::ArrayAttr nullMatchesAll = mlir::ArrayAttr()) {
+   mlir::Value fullRightStream = right;
 
    std::optional<MaterializationHelper> rightColumnsHelper;
    auto ensureRightColumnsHelper = [&]() -> MaterializationHelper& {
@@ -1207,14 +1232,6 @@ static mlir::Value translateHJNullMatchesAll(mlir::Value left, mlir::Value right
    auto [markedRight, buildMarkerRef] = computeNullKeyMarker(right, hashRight, hashRight, hashLeft, nullMatchesAll, rewriter, loc, fillFromLeft);
    mlir::Value nullKeyBuffer;
    if (buildMarkerRef) {
-      relalg::ColumnSet rightPlusMarker = columns;
-      rightPlusMarker.insert(&buildMarkerRef.getColumn());
-      rightPlusMarker.insert(relalg::ColumnSet::fromArrayAttr(hashRight));
-      MaterializationHelper rightSplitHelper(rightPlusMarker, rewriter.getContext());
-      auto rightBufferType = subop::BufferType::get(rewriter.getContext(), rightSplitHelper.createStateMembersAttr());
-      mlir::Value rightBuffer = rewriter.create<subop::GenericCreateOp>(loc, rightBufferType);
-      rewriter.create<subop::MaterializeOp>(loc, markedRight, rightBuffer, rightSplitHelper.createColumnstateMapping());
-      markedRight = rewriter.create<subop::ScanOp>(loc, rightBuffer, rightSplitHelper.createStateColumnMapping());
       auto& helper = ensureRightColumnsHelper();
       mlir::Value rightNonNull = rewriter.create<subop::FilterOp>(loc, markedRight, subop::FilterSemantic::none_true, rewriter.getArrayAttr(buildMarkerRef));
       mlir::Value rightNullOnly = rewriter.create<subop::FilterOp>(loc, markedRight, subop::FilterSemantic::all_true, rewriter.getArrayAttr(buildMarkerRef));
@@ -1227,33 +1244,17 @@ static mlir::Value translateHJNullMatchesAll(mlir::Value left, mlir::Value right
       right = markedRight;
    }
 
-   // Probe side: a null-keyed probe row must cross-join with the entire build side
+   // Probe side: a null-keyed probe row must cross-join with the build side. Its key is never filled (fillFromRight stays unused).
    llvm::SmallVector<std::pair<tuples::ColumnRefAttr, tuples::ColumnRefAttr>> fillFromRight;
    auto [markedLeft, probeMarkerRef] = computeNullKeyMarker(left, hashLeft, hashLeft, hashRight, nullMatchesAll, rewriter, loc, fillFromRight);
    mlir::Value fullRightBuffer;
-   mlir::Value leftNullOnly;
-   if (buildMarkerRef || probeMarkerRef) {
-      relalg::ColumnSet leftPlusMarker = leftColumns;
-      if (probeMarkerRef) leftPlusMarker.insert(&probeMarkerRef.getColumn());
-      leftPlusMarker.insert(relalg::ColumnSet::fromArrayAttr(hashLeft));
-      MaterializationHelper leftHelper(leftPlusMarker, rewriter.getContext());
-      auto leftBufferType = subop::BufferType::get(rewriter.getContext(), leftHelper.createStateMembersAttr());
-      mlir::Value leftBuffer = rewriter.create<subop::GenericCreateOp>(loc, leftBufferType);
-      rewriter.create<subop::MaterializeOp>(loc, markedLeft, leftBuffer, leftHelper.createColumnstateMapping());
-      markedLeft = rewriter.create<subop::ScanOp>(loc, leftBuffer, leftHelper.createStateColumnMapping());
-   }
-   mlir::Value fullLeftForBuildCatchAll = markedLeft;
    if (probeMarkerRef) {
       auto& helper = ensureRightColumnsHelper();
       auto bufferType = subop::BufferType::get(rewriter.getContext(), helper.createStateMembersAttr());
       fullRightBuffer = rewriter.create<subop::GenericCreateOp>(loc, bufferType);
-      rewriter.create<subop::MaterializeOp>(loc, fullRightStream, fullRightBuffer, helper.createColumnstateMapping());
-      left = rewriter.create<subop::FilterOp>(loc, markedLeft, subop::FilterSemantic::none_true, rewriter.getArrayAttr(probeMarkerRef));
-      leftNullOnly = rewriter.create<subop::FilterOp>(loc, markedLeft, subop::FilterSemantic::all_true, rewriter.getArrayAttr(probeMarkerRef));
-   } 
-   else {
-      left = markedLeft;
+      rewriter.create<subop::MaterializeOp>(loc, nullKeyBuffer ? right : fullRightStream, fullRightBuffer, helper.createColumnstateMapping());
    }
+   left = markedLeft;
 
    auto keyColumns = relalg::ColumnSet::fromArrayAttr(hashRight);
    MaterializationHelper keyHelper(hashRight, rewriter.getContext());
@@ -1282,53 +1283,30 @@ static mlir::Value translateHJNullMatchesAll(mlir::Value left, mlir::Value right
       mlir::Value scan = rewriter.create<subop::ScanListOp>(loc, list, entryDef);
       mlir::Value gathered = rewriter.create<subop::GatherOp>(loc, scan, entryRef, keyHelper.createStateColumnMapping(valueHelper.getRawDefMapping()));
       mlir::Value combined = rewriter.create<subop::CombineTupleOp>(loc, gathered, tuple);
-      rewriter.create<tuples::ReturnOp>(loc, fn(combined, rewriter));
-   }
-   std::optional<MaterializationHelper> outputColumnsHelper;
-   auto materializeAndScanCatchAll = [&](mlir::Value catchAllResult) -> mlir::Value {
-      if (!outputColumnsHelper) outputColumnsHelper.emplace(fullOutputColumns, rewriter.getContext());
-      auto& helper = *outputColumnsHelper;
-      auto bufferType = subop::BufferType::get(rewriter.getContext(), helper.createStateMembersAttr());
-      mlir::Value buffer = rewriter.create<subop::GenericCreateOp>(loc, bufferType);
-      rewriter.create<subop::MaterializeOp>(loc, catchAllResult, buffer, helper.createColumnstateMapping());
-      return rewriter.create<subop::ScanOp>(loc, buffer, helper.createStateColumnMapping());
-   };
-   llvm::SmallVector<mlir::Value> topLevelResults{nestedMapOp.getRes()};
-   if (nullKeyBuffer) {
-      auto& helper = *rightColumnsHelper;
-      auto catchAllNestedMap = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(rewriter.getContext()), fullLeftForBuildCatchAll, rewriter.getArrayAttr({}));
-      auto* cb = new Block;
-      mlir::Value cTuple = cb->addArgument(tuples::TupleType::get(rewriter.getContext()), loc);
-      catchAllNestedMap.getRegion().push_back(cb);
-      {
-         mlir::OpBuilder::InsertionGuard guard(rewriter);
-         rewriter.setInsertionPointToStart(cb);
-         mlir::Value catchAllScan = rewriter.create<subop::ScanOp>(loc, nullKeyBuffer, helper.createStateColumnMapping());
-         mlir::Value catchAllCombined = rewriter.create<subop::CombineTupleOp>(loc, catchAllScan, cTuple);
-         catchAllCombined = applyFillIn(catchAllCombined, fillFromLeft, rewriter, loc);
-         rewriter.create<tuples::ReturnOp>(loc, fn(catchAllCombined, rewriter));
+      llvm::SmallVector<mlir::Value> branches{combined};
+
+      if (nullKeyBuffer) {
+         branches.push_back(applyFillIn(nullKeyBuffer, *rightColumnsHelper, tuple, fillFromLeft, rewriter, loc));
       }
-      topLevelResults.push_back(materializeAndScanCatchAll(catchAllNestedMap.getRes()));
-   }
-   if (fullRightBuffer) {
-      auto& helper = *rightColumnsHelper;
-      auto probeCatchAllNestedMap = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(rewriter.getContext()), leftNullOnly, rewriter.getArrayAttr({}));
-      auto* pb = new Block;
-      mlir::Value pTuple = pb->addArgument(tuples::TupleType::get(rewriter.getContext()), loc);
-      probeCatchAllNestedMap.getRegion().push_back(pb);
-      {
-         mlir::OpBuilder::InsertionGuard guard(rewriter);
-         rewriter.setInsertionPointToStart(pb);
+      if (fullRightBuffer) {
+         auto& helper = *rightColumnsHelper;
          mlir::Value probeScan = rewriter.create<subop::ScanOp>(loc, fullRightBuffer, helper.createStateColumnMapping());
-         mlir::Value probeCombined = rewriter.create<subop::CombineTupleOp>(loc, probeScan, pTuple);
-         probeCombined = applyFillIn(probeCombined, fillFromRight, rewriter, loc);
-         rewriter.create<tuples::ReturnOp>(loc, fn(probeCombined, rewriter));
+         mlir::Value probeCombined = rewriter.create<subop::CombineTupleOp>(loc, probeScan, tuple);
+         mlir::Value probeFiltered = rewriter.create<subop::FilterOp>(loc, probeCombined, subop::FilterSemantic::all_true, rewriter.getArrayAttr(probeMarkerRef));
+         branches.push_back(probeFiltered);
       }
-      topLevelResults.push_back(materializeAndScanCatchAll(probeCatchAllNestedMap.getRes()));
+
+      mlir::Value preFn;
+      if (branches.size() == 1) {
+         preFn = branches[0];
+      } else {
+         preFn = rewriter.create<subop::UnionOp>(loc, mlir::ValueRange(branches));
+      }
+      rewriter.create<tuples::ReturnOp>(loc, fn(preFn, rewriter));
    }
-   if (topLevelResults.size() == 1) return topLevelResults[0];
-   return rewriter.create<subop::UnionOp>(loc, mlir::ValueRange(topLevelResults));
+   return nestedMapOp.getRes();
 }
+
 static mlir::Value translateHJ(mlir::Value left, mlir::Value right, mlir::ArrayAttr nullsEqual, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, relalg::ColumnSet columns, mlir::ConversionPatternRewriter& rewriter, mlir::Location loc, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn) {
    auto keyColumns = relalg::ColumnSet::fromArrayAttr(hashRight);
    MaterializationHelper keyHelper(hashRight, rewriter.getContext());
@@ -1439,10 +1417,10 @@ static mlir::Value translateINLJ(mlir::Value left, mlir::Value right, mlir::Arra
    }
    return nestedMapOp.getRes();
 }
-static mlir::Value translateNL(mlir::Value left, mlir::Value right, bool useHash, bool useIndexNestedLoop, bool useNullMatchesAll, mlir::ArrayAttr nullsEqual, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, relalg::ColumnSet columns, mlir::ConversionPatternRewriter& rewriter, mlir::Operation* op, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn, mlir::ArrayAttr nullMatchesAll = mlir::ArrayAttr(), relalg::ColumnSet fullOutputColumns = relalg::ColumnSet(), relalg::ColumnSet leftColumns = relalg::ColumnSet()) {
+static mlir::Value translateNL(mlir::Value left, mlir::Value right, bool useHash, bool useIndexNestedLoop, bool useNullMatchesAll, mlir::ArrayAttr nullsEqual, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, relalg::ColumnSet columns, mlir::ConversionPatternRewriter& rewriter, mlir::Operation* op, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn, mlir::ArrayAttr nullMatchesAll = mlir::ArrayAttr()) {
    if (useHash) {
       if (useNullMatchesAll) {
-         return translateHJNullMatchesAll(left, right, nullsEqual, hashLeft, hashRight, columns, rewriter, op->getLoc(), fn, nullMatchesAll, fullOutputColumns, leftColumns);
+         return translateHJNullMatchesAll(left, right, nullsEqual, hashLeft, hashRight, columns, rewriter, op->getLoc(), fn, nullMatchesAll);
       } else {
          return translateHJ(left, right, nullsEqual, hashLeft, hashRight, columns, rewriter, op->getLoc(), fn);
       }
@@ -1575,7 +1553,7 @@ class InnerJoinNLLowering : public OpConversionPattern<relalg::InnerJoinOp> {
       rewriter.replaceOp(innerJoinOp, translateNL(adaptor.getRight(), adaptor.getLeft(), useHash, useIndexNestedLoop, useNullMatchesAll, nullsEqual, rightHash, leftHash, requiredColumns.lookup(mlir::cast<Operator>(innerJoinOp.getLeft().getDefiningOp())), rewriter, innerJoinOp, [loc, &innerJoinOp](mlir::Value v, mlir::ConversionPatternRewriter& rewriter) -> mlir::Value {
                             return translateSelection(v, innerJoinOp.getPredicate(), rewriter, loc);
                          }, 
-                         nullMatchesAll, requiredColumns.lookup(mlir::cast<Operator>(innerJoinOp.getOperation())), requiredColumns.lookup(mlir::cast<Operator>(innerJoinOp.getRight().getDefiningOp()))));
+                         nullMatchesAll));
       return success();
    }
 };
@@ -1752,7 +1730,7 @@ class OuterJoinLowering : public OpConversionPattern<relalg::OuterJoinOp> {
                                auto mappedNullable = mapColsToNullable(filtered, rewriter, loc, outerJoinOp.getMapping());
                                return rewriter.create<subop::UnionOp>(loc, mlir::ValueRange{mappedNullable, mappedNull});
                             },
-                            nullMatchesAll, requiredColumns.lookup(mlir::cast<Operator>(outerJoinOp.getOperation())), requiredColumns.lookup(mlir::cast<Operator>(outerJoinOp.getLeft().getDefiningOp()))));
+                            nullMatchesAll));
       } else {
          auto [flagAttrDef, flagAttrRef] = createColumn(rewriter.getI1Type(), "materialized", "marker");
          auto [stream, scan] = translateNLWithMarker(adaptor.getLeft(), adaptor.getRight(), useHash, nullsEqual, leftHash, rightHash, requiredColumns.lookup(mlir::cast<Operator>(outerJoinOp.getLeft().getDefiningOp())), rewriter, loc, flagAttrDef, [loc, &outerJoinOp](mlir::Value v, mlir::Value, mlir::ConversionPatternRewriter& rewriter, tuples::ColumnRefAttr ref, Member flagMember) -> mlir::Value {

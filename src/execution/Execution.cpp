@@ -72,7 +72,7 @@ class DefaultQueryOptimizer : public QueryOptimizer {
       pm.enableVerifier(verify);
       addLingoDBInstrumentation(pm, getSerializationState());
       pm.addPass(gpm::createUnnestGraphPatternsPass());
-      relalg::createQueryOptPipeline(pm, catalog);
+      // relalg::createQueryOptPipeline(pm, catalog);
       if (mlir::failed(pm.run(moduleOp))) {
          error.emit() << " Query Optimization failed";
       }
