@@ -199,24 +199,6 @@ static bool isRelAlgOperator(mlir::Operation* op) {
    return op && !mlir::isa<GPMOperator>(op) && mlir::isa<Operator>(op);
 }
 
-// The algorithm we use to lower triples differentiates terms into four distinct categories,
-// which change the behavior of the TriplePatternOp lowering pattern.
-enum class TermClass {
-   // a constant identifier (e.g. IRI)
-   CONSTANT,
-   // first occurrence of a variable/bnode that requires a new binding.
-   FRESH,
-   // bound variable/bnode reused across triples.
-   EXTERNAL_CANDIDATE,
-   // bound variable/bnode reused in the same triple patten.
-   SAME_TRIPLE_REUSE,
-};
-struct ClassifiedTerm {
-   TermClass cls = TermClass::FRESH;
-   gpm::IdentifierTermAttr constant;
-   std::string targetScope, targetName;
-   tuples::ColumnRefAttr existingRef;
-};
 class TripleEmitter {
    ConversionPatternRewriter& rewriter;
    MLIRContext* ctxt;
@@ -229,7 +211,6 @@ class TripleEmitter {
    mlir::SymbolRefAttr graphSym;
    std::string group, graph;
    mlir::Attribute sTerm, pTerm, oTerm;
-   mlir::DictionaryAttr bindingsAttr, bnodeScopeAttr;
    llvm::DenseMap<const tuples::Column*, tuples::ColumnRefAttr> localTerms;
 
    public:
@@ -238,9 +219,7 @@ class TripleEmitter {
       columnManager(ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager()),
       memberManager(ctxt->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager()),
       graphs(graphs), loc(tripleOp->getLoc()), graphRefAttr(tripleOp.getGraphRef()),
-      graphSym(graphRefAttr.getName()), sTerm(tripleOp.getS()), pTerm(tripleOp.getP()), oTerm(tripleOp.getO()),
-      bindingsAttr(tripleOp->getAttrOfType<mlir::DictionaryAttr>("bindings")),
-      bnodeScopeAttr(tripleOp->getAttrOfType<mlir::DictionaryAttr>("bnodeScope")) {
+      graphSym(graphRefAttr.getName()), sTerm(tripleOp.getS()), pTerm(tripleOp.getP()), oTerm(tripleOp.getO()) {
       std::tie(group, graph) = splitGraphRef(graphRefAttr);
       assert(graphs.count(graphSym) && "graph must already be lowered");
    }
@@ -252,11 +231,11 @@ class TripleEmitter {
       if (anchorSubject) {
          stream = scanFromConstantAnchor(stream, mlir::cast<gpm::IdentifierTermAttr>(sTerm), EdgeDirection::Outgoing, edgeRefType, edgeRef, op.getParamId(gpm::TripleSlot::subject));
          stream = emitPredicate(stream, edgeRef, op.getParamId(gpm::TripleSlot::predicate));
-         stream = emitTerm(stream, oTerm, "o", edgeRefType.getToMembers().getMembers()[0], edgeRef, op.getParamId(gpm::TripleSlot::object));
+         stream = emitTerm(stream, oTerm, edgeRefType.getToMembers().getMembers()[0], edgeRef, op.getParamId(gpm::TripleSlot::object));
       }
       else if (anchorObject) {
          stream = scanFromConstantAnchor(stream, mlir::cast<gpm::IdentifierTermAttr>(oTerm), EdgeDirection::Incoming, edgeRefType, edgeRef, op.getParamId(gpm::TripleSlot::object));
-         stream = emitTerm(stream, sTerm, "s", edgeRefType.getFromMembers().getMembers()[0], edgeRef, op.getParamId(gpm::TripleSlot::subject));
+         stream = emitTerm(stream, sTerm, edgeRefType.getFromMembers().getMembers()[0], edgeRef, op.getParamId(gpm::TripleSlot::subject));
          stream = emitPredicate(stream, edgeRef, op.getParamId(gpm::TripleSlot::predicate));
       }
       else {
@@ -264,81 +243,14 @@ class TripleEmitter {
          auto edgesRef = columnManager.createRef(graphData.edgeSetColumn);
          auto edgeSetType = graphData.edgeSetColumn->type;
          stream = scanEdges(stream, edgesRef, edgeSetType, edgeRefType, edgeRef);
-         stream = emitTerm(stream, sTerm, "s", edgeRefType.getFromMembers().getMembers()[0], edgeRef, op.getParamId(gpm::TripleSlot::subject));
+         stream = emitTerm(stream, sTerm, edgeRefType.getFromMembers().getMembers()[0], edgeRef, op.getParamId(gpm::TripleSlot::subject));
          stream = emitPredicate(stream, edgeRef, op.getParamId(gpm::TripleSlot::predicate));
-         stream = emitTerm(stream, oTerm, "o", edgeRefType.getToMembers().getMembers()[0], edgeRef, op.getParamId(gpm::TripleSlot::object));
+         stream = emitTerm(stream, oTerm, edgeRefType.getToMembers().getMembers()[0], edgeRef, op.getParamId(gpm::TripleSlot::object));
       }
       return stream;
    }
    private:
    enum EdgeDirection { Incoming, Outgoing };
-   ClassifiedTerm classify(mlir::StringRef pos, mlir::Attribute term) {
-      if (auto ident = mlir::dyn_cast<gpm::IdentifierTermAttr>(term)) {
-         ClassifiedTerm ct;
-         ct.cls = TermClass::CONSTANT;
-         ct.constant = ident;
-         return ct;
-      }
-      if (bindingsAttr) {
-         if (auto entry = bindingsAttr.get(pos)) {
-            auto name = mlir::cast<tuples::ColumnDefAttr>(entry).getName();
-            ClassifiedTerm ct;
-            ct.cls = TermClass::EXTERNAL_CANDIDATE;
-            ct.targetScope = name.getRootReference().str();
-            ct.targetName = name.getLeafReference().str();
-            return ct;
-         }
-      }
-      if (auto var = mlir::dyn_cast<gpm::VariableTermAttr>(term)) {
-         if (!var.hasBinding()) {
-            auto name = var.getProducedBinding().getName();
-            ClassifiedTerm ct;
-            ct.cls = TermClass::FRESH;
-            ct.targetScope = name.getRootReference().str();
-            ct.targetName = name.getLeafReference().str();
-            return ct;
-         }
-         auto bindingRef = var.getBindingReference();
-         auto it = localTerms.find(&bindingRef.getColumn());
-         if (it != localTerms.end()) {
-            ClassifiedTerm ct;
-            ct.cls = TermClass::SAME_TRIPLE_REUSE;
-            ct.existingRef = it->second;
-            return ct;
-         }
-         auto name = bindingRef.getName();
-         ClassifiedTerm ct;
-         ct.cls = TermClass::FRESH;
-         ct.targetScope = name.getRootReference().str();
-         ct.targetName = name.getLeafReference().str();
-         return ct;
-      }
-      auto bnode = mlir::cast<gpm::BNodeTermAttr>(term);
-      tuples::ColumnRefAttr canonicalRef;
-      if (bnodeScopeAttr) {
-         if (auto entry = bnodeScopeAttr.get(bnode.getLocalId().getValue())) {
-            if (auto def = mlir::dyn_cast<tuples::ColumnDefAttr>(entry)) {
-               canonicalRef = columnManager.createRef(def.getColumnPtr().get());
-            } else {
-               canonicalRef = mlir::cast<tuples::ColumnRefAttr>(entry);
-            }
-         }
-      }
-      assert(canonicalRef && "blank node term without a bnodeScope entry");
-      auto it = localTerms.find(&canonicalRef.getColumn());
-      if (it != localTerms.end()) {
-         ClassifiedTerm ct;
-         ct.cls = TermClass::SAME_TRIPLE_REUSE;
-         ct.existingRef = it->second;
-         return ct;
-      }
-      auto name = canonicalRef.getName();
-      ClassifiedTerm ct;
-      ct.cls = TermClass::FRESH;
-      ct.targetScope = name.getRootReference().str();
-      ct.targetName = name.getLeafReference().str();
-      return ct;
-   }
    mlir::Value wrapVariant(mlir::Value stream, tuples::ColumnRefAttr rawRef, tuples::ColumnDefAttr variantDef) {
       subop::MapCreationHelper helper(ctxt);
       helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
@@ -365,17 +277,17 @@ class TripleEmitter {
       mapOp.getFn().push_back(helper.getMapBlock());
       return rewriter.create<subop::FilterOp>(loc, mapOp.getResult(), subop::FilterSemantic::all_true, rewriter.getArrayAttr({eqRef}));
    }
-   mlir::Value finishVariableOrBNode(mlir::Value stream, const ClassifiedTerm& ct, tuples::ColumnRefAttr rawRef) {
-      if (ct.cls == TermClass::SAME_TRIPLE_REUSE) {
+   mlir::Value finish(mlir::Value stream, mlir::Attribute term, tuples::ColumnRefAttr rawRef) {
+      const auto* column = &mlir::cast<gpm::VariableTermAttr>(term).getProducedBinding().getColumn();
+      if (auto it = localTerms.find(column); it != localTerms.end()) {
          auto [tmpDef, tmpRef] = createColumn(variant::VariantType::get(ctxt), "nodes", "tmp");
          stream = wrapVariant(stream, rawRef, tmpDef);
-         return filterVariantsEqual(stream, tmpRef, ct.existingRef);
+         return filterVariantsEqual(stream, tmpRef, it->second);
       }
-      auto variantDef = createDef(columnManager, ct.targetScope, ct.targetName, variant::VariantType::get(ctxt), false);
+      auto variantDef = columnManager.createDef(column);
+      variantDef.getColumn().type = variant::VariantType::get(ctxt);
       stream = wrapVariant(stream, rawRef, variantDef);
-      if (ct.cls == TermClass::FRESH) {
-         localTerms[&variantDef.getColumn()] = columnManager.createRef(variantDef.getColumnPtr().get());
-      }
+      localTerms[column] = columnManager.createRef(column);
       return stream;
    }
    mlir::Value filterValidIdentifier(mlir::Value stream, tuples::ColumnRefAttr identRef) {
@@ -446,7 +358,6 @@ class TripleEmitter {
          if (paramId) relalg::forwardParameter(op, *paramId, ident.getOperation());
          return rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, edgeRef, ident);
       }
-      auto ct = classify("p", pTerm);
       auto nodeRefType = createNodeRefType(ctxt, group, graph);
       auto& graphData = graphs[graphSym];
       auto nodesRef = columnManager.createRef(graphData.nodeSetColumn);
@@ -466,12 +377,12 @@ class TripleEmitter {
             return identVal;
          });
          inner = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), inner, nodeSetArg, rewriter.getArrayAttr({scanIdentRef}), rawDef);
-         inner = finishVariableOrBNode(inner, ct, rawRef);
+         inner = finish(inner, pTerm, rawRef);
          rewriter.create<tuples::ReturnOp>(loc, inner);
       }
       return nestedMapOp.getRes();
    }
-   mlir::Value emitTerm(mlir::Value stream, mlir::Attribute term, mlir::StringRef pos, Member nodeMember, tuples::ColumnRefAttr edgeRef, std::optional<size_t> paramId = std::nullopt) {
+   mlir::Value emitTerm(mlir::Value stream, mlir::Attribute term, Member nodeMember, tuples::ColumnRefAttr edgeRef, std::optional<size_t> paramId = std::nullopt) {
       if (auto constTerm = mlir::dyn_cast<gpm::IdentifierTermAttr>(term)) {
          auto [def, ref] = createColumn(memberManager.getType(nodeMember), "nodes", "id");
          auto ident = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, constTerm.getIdent());
@@ -479,10 +390,9 @@ class TripleEmitter {
          stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(ctxt, {{nodeMember, def}}));
          return rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, ref, ident);
       }
-      auto ct = classify(pos, term);
       auto [rawDef, rawRef] = createColumn(memberManager.getType(nodeMember), "nodes", "raw");
       stream = rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(ctxt, {{nodeMember, rawDef}}));
-      return finishVariableOrBNode(stream, ct, rawRef);
+      return finish(stream, term, rawRef);
    }
 }; // TripleEmitter
 
@@ -503,6 +413,14 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
    TriplePatternLowering(TypeConverter& typeConverter, MLIRContext* context, NamedGraphMapper& graphs)
       : OpConversionPattern<gpm::TriplePatternOp>(typeConverter, context), graphs(graphs) {}
    LogicalResult matchAndRewrite(gpm::TriplePatternOp tripleOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      bool normalized = llvm::all_of(mlir::ArrayRef<mlir::Attribute>{tripleOp.getS(), tripleOp.getP(), tripleOp.getO()}, [](mlir::Attribute term) {
+         if (mlir::isa<gpm::IdentifierTermAttr>(term)) return true;
+         auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term);
+         return varTerm && varTerm.getProducedBinding();
+      });
+      if (!normalized) {
+         return tripleOp.emitOpError("triple pattern is not normalized (expected only identifiers and column defs); run gpm-unnest-patterns first");
+      }
       bool needsInFlight = llvm::any_of(tripleOp.getRes().getUses(), [](mlir::OpOperand& use) {
          return isRelAlgOperator(use.getOwner());
       });
