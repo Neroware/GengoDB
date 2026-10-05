@@ -27,8 +27,12 @@ class ColumnManager {
 
    std::string getUniqueScope(llvm::StringRef base) {
       if (scopeUnifier.count(std::string(base))) {
-         scopeUnifier[std::string(base)] += 1;
-         return std::string(base) + std::string("_u_") + std::to_string(scopeUnifier[std::string(base)]);
+         std::string candidate;
+         do {
+            scopeUnifier[std::string(base)] += 1;
+            candidate = std::string(base) + std::string("_u_") + std::to_string(scopeUnifier[std::string(base)]);
+         } while (scopeUnifier.count(candidate));
+         return candidate;
       } else {
          scopeUnifier[std::string(base)] = 0;
          return std::string(base);
