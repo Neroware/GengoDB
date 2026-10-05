@@ -2,20 +2,20 @@ module {
   func.func @main() {
     %0 = relalg.query (){
       // left branch: ?person eats ?food . OPTIONAL { ?person cup ?cup }
-      %1 = gpm.named_graph column : @graphs_u_1::@ref({type = !gpm.graph_ref<"defaultGraph", "gengodb://sparql/settings/defaultGraph#rdf">})
-      %2 = gpm.triple_pattern %1 @graphs_u_1::@ref(?{@vars::@person({type = !gpm.variable_binding})}, id{"http://example.org/eats"}, ?{@vars::@food({type = !gpm.variable_binding})})
-      %3 = gpm.named_graph column : @graphs_u_2::@ref({type = !gpm.graph_ref<"defaultGraph", "gengodb://sparql/settings/defaultGraph#rdf">})
-      %4 = gpm.triple_pattern %3 @graphs_u_2::@ref(?{@bindings::@s({type = !gpm.variable_binding})=[@vars::@person]}, id{"http://example.org/cup"}, ?{@vars::@cup({type = !gpm.variable_binding})})
+      %1 = gpm.relalg.named_graph column : @graphs_u_1::@ref({type = !gpm.graph_ref<"defaultGraph", "gengodb://sparql/settings/defaultGraph#rdf">})
+      %2 = gpm.relalg.triple_pattern %1 @graphs_u_1::@ref(?{@vars::@person({type = !gpm.variable_binding})}, id{"http://example.org/eats"}, ?{@vars::@food({type = !gpm.variable_binding})})
+      %3 = gpm.relalg.named_graph column : @graphs_u_2::@ref({type = !gpm.graph_ref<"defaultGraph", "gengodb://sparql/settings/defaultGraph#rdf">})
+      %4 = gpm.relalg.triple_pattern %3 @graphs_u_2::@ref(?{@bindings::@s({type = !gpm.variable_binding})=[@vars::@person]}, id{"http://example.org/cup"}, ?{@vars::@cup({type = !gpm.variable_binding})})
       %5 = relalg.outerjoin %2, %4 (%arg0: !tuples.tuple){
         %true = db.constant(true) : i1
         tuples.return %true : i1
       }  mapping: {@outerjoin::@cup({type = !db.nullable<!gpm.variable_binding>})=[@vars::@cup]} attributes {impl = "hash", leftHash = [#tuples.columnref<@vars::@person>], bindingCompatible = [1 : i8], nullsEqual = [0 : i8], rightHash = [#tuples.columnref<@bindings::@s>], useHashJoin}
 
       // right branch: ?person drinks ?drink . OPTIONAL { ?drink asksForMore ?more }
-      %6 = gpm.named_graph column : @graphs_u_3::@ref({type = !gpm.graph_ref<"defaultGraph", "gengodb://sparql/settings/defaultGraph#rdf">})
-      %7 = gpm.triple_pattern %6 @graphs_u_3::@ref(?{@vars_u_1::@person({type = !gpm.variable_binding})}, id{"http://example.org/drinks"}, ?{@vars_u_1::@drink({type = !gpm.variable_binding})})
-      %8 = gpm.named_graph column : @graphs_u_4::@ref({type = !gpm.graph_ref<"defaultGraph", "gengodb://sparql/settings/defaultGraph#rdf">})
-      %9 = gpm.triple_pattern %8 @graphs_u_4::@ref(?{@bindings_u_1::@s({type = !gpm.variable_binding})=[@vars_u_1::@drink]}, id{"http://example.org/asksForMore"}, ?{@vars_u_1::@more({type = !gpm.variable_binding})})
+      %6 = gpm.relalg.named_graph column : @graphs_u_3::@ref({type = !gpm.graph_ref<"defaultGraph", "gengodb://sparql/settings/defaultGraph#rdf">})
+      %7 = gpm.relalg.triple_pattern %6 @graphs_u_3::@ref(?{@vars_u_1::@person({type = !gpm.variable_binding})}, id{"http://example.org/drinks"}, ?{@vars_u_1::@drink({type = !gpm.variable_binding})})
+      %8 = gpm.relalg.named_graph column : @graphs_u_4::@ref({type = !gpm.graph_ref<"defaultGraph", "gengodb://sparql/settings/defaultGraph#rdf">})
+      %9 = gpm.relalg.triple_pattern %8 @graphs_u_4::@ref(?{@bindings_u_1::@s({type = !gpm.variable_binding})=[@vars_u_1::@drink]}, id{"http://example.org/asksForMore"}, ?{@vars_u_1::@more({type = !gpm.variable_binding})})
       %10 = relalg.outerjoin %7, %9 (%arg0: !tuples.tuple){
         %true = db.constant(true) : i1
         tuples.return %true : i1
