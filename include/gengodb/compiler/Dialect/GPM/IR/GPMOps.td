@@ -114,8 +114,8 @@ def FilterOp : GPM_Op<"filter", [Pure,GPMOperator,Operator,UnaryOperator]> {
   let assemblyFormat = [{  $rel custom<CustRegion>($predicate) attr-dict-with-keyword }];
 }
 
-def IdentifiersEqualOp : GPM_Op<"identifiers_equal", [Pure,DeclareOpInterfaceMethods<Relalg_CmpOpInterface>]> {
-  let summary = "global identifier equality check";
+def BindingsCompatibleOp : GPM_Op<"bindings_compatible", [Pure,DeclareOpInterfaceMethods<Relalg_CmpOpInterface>]> {
+  let summary = "variable binding compatbility check";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);
   let results = (outs I1:$result);
   let assemblyFormat = [{ $lhs `:` type($lhs) `,` $rhs `:` type($rhs) attr-dict }];

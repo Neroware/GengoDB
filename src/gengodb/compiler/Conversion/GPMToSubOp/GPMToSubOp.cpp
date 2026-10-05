@@ -531,10 +531,10 @@ static mlir::Value refreshStaleRefOperand(mlir::Value operand, ConversionPattern
    if (liveType == operand.getType()) return operand;
    return rewriter.create<tuples::GetColumnOp>(getColOp.getLoc(), liveType, getColOp.getAttr(), getColOp.getTuple());
 }
-class GpmIdentifiersEqualLowering : public OpConversionPattern<gpm::IdentifiersEqualOp> {
+class GpmBindingsCompatibleLowering : public OpConversionPattern<gpm::BindingsCompatibleOp> {
    public:
-   using OpConversionPattern<gpm::IdentifiersEqualOp>::OpConversionPattern;
-   LogicalResult matchAndRewrite(gpm::IdentifiersEqualOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+   using OpConversionPattern<gpm::BindingsCompatibleOp>::OpConversionPattern;
+   LogicalResult matchAndRewrite(gpm::BindingsCompatibleOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
       auto* ctxt = rewriter.getContext();
       auto loc = op.getLoc();
       mlir::Value lhs = refreshStaleRefOperand(adaptor.getLhs(), rewriter);
@@ -560,7 +560,7 @@ class GpmIdentifiersEqualLowering : public OpConversionPattern<gpm::IdentifiersE
       auto ifOp = rewriter.create<mlir::scf::IfOp>(
          loc, anyNull,
          [&](mlir::OpBuilder& b, mlir::Location l) {
-            b.create<mlir::scf::YieldOp>(l, b.create<mlir::arith::ConstantIntOp>(l, 0, 1).getResult());
+            b.create<mlir::scf::YieldOp>(l, b.create<mlir::arith::ConstantIntOp>(l, 1, 1).getResult());
          },
          [&](mlir::OpBuilder& b, mlir::Location l) {
             auto cmp = b.create<variant::CmpOp>(l, cmpType, variant::VariantCmpPredicate::eq, lhsRaw, rhsRaw);
@@ -744,7 +744,7 @@ void GPMScalarToSubOpLoweringPass::runOnOperation() {
    target.addIllegalDialect<gpm::GPMDialect>();
 
    RewritePatternSet patterns(ctxt);
-   patterns.insert<GpmIdentifiersEqualLowering>(typeConverter, ctxt);
+   patterns.insert<GpmBindingsCompatibleLowering>(typeConverter, ctxt);
    patterns.insert<GetBindingOpLowering>(typeConverter, ctxt);
 
    expandMergedColumns(module);

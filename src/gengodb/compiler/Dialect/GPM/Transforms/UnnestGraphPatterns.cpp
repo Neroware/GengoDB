@@ -460,7 +460,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          auto mapping = buildNullableMapping(builder, paddedVars, nullableColMap);
          auto join = builder.create<relalg::OuterJoinOp>(loc, streamType, accumulator, elementStream, mapping);
          join.initPredicate();
-         addSharedVariablePredicate(join, sharedPairs, loc, /*nullTolerant=*/true);
+         addSharedVariablePredicate(join, sharedPairs, loc);
          addNameMatchedPredicate(join, splitPairs, loc, /*recordMerges=*/false);
          llvm::SmallPtrSet<mlir::Operation*, 32> preMergeOps;
          collectSubtreeOps(accumulator, preMergeOps);
@@ -489,7 +489,10 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       if (elementKind == gpm::PatternKind::minus) {
          auto join = builder.create<relalg::AntiSemiJoinOp>(loc, streamType, accumulator, elementStream);
          join.initPredicate();
-         addSharedVariablePredicate(join, accumulator, elementStream, loc);
+         llvm::SmallPtrSet<mlir::Operation*, 16> visitedLeft;
+         auto pairs = sharedVariablePairs(elementStream, loc, collectTripleVariables(accumulator, visitedLeft));
+         addSharedVariablePredicate(join, pairs, loc);
+         addDomainOverlapPredicate(join, pairs, loc);
          return join.getResult();
       }
       auto join = builder.create<relalg::InnerJoinOp>(loc, streamType, accumulator, elementStream);
@@ -629,7 +632,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       }
       return result;
    }
-   void addSharedVariablePredicate(PredicateOperator join, const ColumnPairs& pairs, mlir::Location loc, bool nullTolerant = false) {
+   void addSharedVariablePredicate(PredicateOperator join, const ColumnPairs& pairs, mlir::Location loc) {
       if (pairs.empty()) return;
       auto& columnManager = join.getOperation()->getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
       llvm::SmallVector<mlir::Attribute> leftHash, rightHash;
@@ -639,8 +642,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          join.addPredicate([&](mlir::Value tuple, mlir::OpBuilder& builder) -> mlir::Value {
             mlir::Value lhsVal = builder.create<tuples::GetColumnOp>(loc, outerCol->type, outerRef, tuple);
             mlir::Value rhsVal = builder.create<tuples::GetColumnOp>(loc, bindingsCol->type, bindingsRef, tuple);
-            if (nullTolerant) return buildCompatible(builder, loc, lhsVal, rhsVal, /*rhsMayBeNull=*/false);
-            return builder.create<gpm::IdentifiersEqualOp>(loc, builder.getI1Type(), lhsVal, rhsVal);
+            return buildCompatible(builder, loc, lhsVal, rhsVal);
          });
          leftHash.push_back(outerRef);
          rightHash.push_back(bindingsRef);
@@ -665,14 +667,29 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       }
       appendHashKeys(join, leftHash, rightHash);
    }
-   mlir::Value buildCompatible(mlir::OpBuilder& builder, mlir::Location loc, mlir::Value lhsVal, mlir::Value rhsVal, bool rhsMayBeNull = true) {
-      mlir::Value eq = builder.create<gpm::IdentifiersEqualOp>(loc, builder.getI1Type(), lhsVal, rhsVal);
-      llvm::SmallVector<mlir::Value> compatible;
-      if (mlir::isa<db::NullableType>(lhsVal.getType())) compatible.push_back(builder.create<db::IsNullOp>(loc, lhsVal));
-      if (rhsMayBeNull && mlir::isa<db::NullableType>(rhsVal.getType())) compatible.push_back(builder.create<db::IsNullOp>(loc, rhsVal));
-      if (compatible.empty()) return eq;
-      compatible.push_back(eq);
-      return builder.create<db::OrOp>(loc, compatible);
+   mlir::Value buildCompatible(mlir::OpBuilder& builder, mlir::Location loc, mlir::Value lhsVal, mlir::Value rhsVal) {
+      return builder.create<gpm::BindingsCompatibleOp>(loc, builder.getI1Type(), lhsVal, rhsVal);
+   }
+   void addDomainOverlapPredicate(PredicateOperator join, const ColumnPairs& pairs, mlir::Location loc) {
+      if (pairs.empty()) return;
+      for (auto [leftCol, rightCol] : pairs) {
+         if (!mlir::isa<db::NullableType>(leftCol->type) && !mlir::isa<db::NullableType>(rightCol->type)) return;
+      }
+      auto& columnManager = join.getOperation()->getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      join.addPredicate([&](mlir::Value tuple, mlir::OpBuilder& builder) -> mlir::Value {
+         llvm::SmallVector<mlir::Value> overlaps;
+         for (auto [leftCol, rightCol] : pairs) {
+            llvm::SmallVector<mlir::Value> bothBound;
+            for (const auto* col : {leftCol, rightCol}) {
+               if (!mlir::isa<db::NullableType>(col->type)) continue;
+               mlir::Value val = builder.create<tuples::GetColumnOp>(loc, col->type, columnManager.createRef(col), tuple);
+               mlir::Value isNull = builder.create<db::IsNullOp>(loc, val);
+               bothBound.push_back(builder.create<db::NotOp>(loc, isNull));
+            }
+            overlaps.push_back(bothBound.size() == 1 ? bothBound[0] : builder.create<db::AndOp>(loc, bothBound).getResult());
+         }
+         return overlaps.size() == 1 ? overlaps[0] : builder.create<db::OrOp>(loc, overlaps).getResult();
+      });
    }
    void appendHashKeys(PredicateOperator join, llvm::ArrayRef<mlir::Attribute> leftKeys, llvm::ArrayRef<mlir::Attribute> rightKeys) {
       auto* ctxt = join.getOperation()->getContext();
@@ -684,11 +701,12 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       };
       append("leftHash", leftKeys);
       append("rightHash", rightKeys);
-      join->setAttr("impl", mlir::StringAttr::get(ctxt, "hash"));
-      join->setAttr("useHashJoin", mlir::UnitAttr::get(ctxt));
+      // TODO: Select join strategy withing the RelAlg query optimizer!
+      // join->setAttr("impl", mlir::StringAttr::get(ctxt, "hash"));
+      // join->setAttr("useHashJoin", mlir::UnitAttr::get(ctxt));
       append("nullsEqual", llvm::SmallVector<mlir::Attribute>(leftKeys.size(), mlir::IntegerAttr::get(mlir::IntegerType::get(ctxt, 8), 0)));
-      // Special outer join semantics for null (unbound) handling
-      append("nullMatchesAll", llvm::SmallVector<mlir::Attribute>(leftKeys.size(), mlir::IntegerAttr::get(mlir::IntegerType::get(ctxt, 8), 1)));
+      // variable binding compatibility semantics for join operators
+      append("bindingCompatible", llvm::SmallVector<mlir::Attribute>(leftKeys.size(), mlir::IntegerAttr::get(mlir::IntegerType::get(ctxt, 8), 1)));
    }
    void fixStaleTripleColumnReferences(mlir::Value subtreeRoot, const tuples::Column* oldColumn, tuples::ColumnRefAttr newRef, llvm::SmallPtrSetImpl<mlir::Operation*>& visited) {
       auto* op = subtreeRoot.getDefiningOp();

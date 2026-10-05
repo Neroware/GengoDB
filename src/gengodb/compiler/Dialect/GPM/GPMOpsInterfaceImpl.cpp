@@ -241,22 +241,22 @@ void gpm::TriplePatternOp::maskParameters() {
     if (mlir::isa<gpm::IdentifierTermAttr>(getO())) setOAttr(placeholder);
 }
 
-bool gpm::IdentifiersEqualOp::isEqualityPred(bool nullsAreEqual) {
+bool gpm::BindingsCompatibleOp::isEqualityPred(bool nullsAreEqual) {
     return true;
 }
-bool gpm::IdentifiersEqualOp::isUnequalityPred() {
+bool gpm::BindingsCompatibleOp::isUnequalityPred() {
     return false;
 }
-bool gpm::IdentifiersEqualOp::isLessPred(bool eq) {
+bool gpm::BindingsCompatibleOp::isLessPred(bool eq) {
     return false;
 }
-bool gpm::IdentifiersEqualOp::isGreaterPred(bool eq) {
+bool gpm::BindingsCompatibleOp::isGreaterPred(bool eq) {
     return false;
 }
-mlir::Value gpm::IdentifiersEqualOp::getLeft() {
+mlir::Value gpm::BindingsCompatibleOp::getLeft() {
     return getLhs();
 }
-mlir::Value gpm::IdentifiersEqualOp::getRight() {
+mlir::Value gpm::BindingsCompatibleOp::getRight() {
     return getRhs();
 }
 
