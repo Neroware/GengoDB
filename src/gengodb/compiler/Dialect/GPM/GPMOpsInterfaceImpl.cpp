@@ -163,14 +163,14 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::BasicGraphPatternOp::getUsedV
 
 lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getBindingColumns() {
     ColumnSet columns;
-    if (auto bindings = (*this)->getAttrOfType<mlir::DictionaryAttr>("bindings")) {
+    if (auto bindings = getBindingsAttr()) {
         for (auto key : {"s", "p", "o"}) {
             if (auto def = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(bindings.get(key))) {
                 columns.insert(def.getColumnPtr().get());
             }
         }
     }
-    if (auto bnodeScope = (*this)->getAttrOfType<mlir::DictionaryAttr>("bnodeScope")) {
+    if (auto bnodeScope = getBnodeScopeAttr()) {
         for (auto entry : bnodeScope) {
             if (auto def = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(entry.getValue())) {
                 columns.insert(def.getColumnPtr().get());
@@ -187,7 +187,7 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getCreatedCo
 }
 lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getUsedColumns() {
     auto used = getBoundVariables();
-    if (auto bnodeScope = (*this)->getAttrOfType<mlir::DictionaryAttr>("bnodeScope")) {
+    if (auto bnodeScope = getBnodeScopeAttr()) {
         for (auto entry : bnodeScope) {
             if (auto ref = mlir::dyn_cast_or_null<tuples::ColumnRefAttr>(entry.getValue())) {
                 used.insert(ref.getColumnPtr().get());

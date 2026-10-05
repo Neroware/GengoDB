@@ -205,6 +205,54 @@ void printTerm(OpAsmPrinter& p, mlir::Operation* op, mlir::Attribute attr) {
             p << "}";
         });
 }
+ParseResult parseTripleBindings(OpAsmParser& parser, DictionaryAttr& result) {
+    SmallVector<NamedAttribute> entries;
+    auto parseEntry = [&]() -> ParseResult {
+        std::string position;
+        tuples::ColumnDefAttr def;
+        if (parser.parseKeywordOrString(&position) || parser.parseColon() || parseCustDef(parser, def)) { return failure(); }
+        entries.emplace_back(StringAttr::get(parser.getContext(), position), def);
+        return success();
+    };
+    if (parser.parseCommaSeparatedList(parseEntry)) { return failure(); }
+    result = DictionaryAttr::get(parser.getContext(), entries);
+    return success();
+}
+void printTripleBindings(OpAsmPrinter& p, mlir::Operation* op, DictionaryAttr bindings) {
+    SmallVector<NamedAttribute> entries;
+    for (auto position : {"s", "p", "o"}) {
+        if (auto entry = bindings.getNamed(position)) entries.push_back(*entry);
+    }
+    llvm::interleaveComma(entries, p, [&](NamedAttribute entry) {
+        p << entry.getName().getValue() << ": ";
+        printCustDef(p, op, mlir::cast<tuples::ColumnDefAttr>(entry.getValue()));
+    });
+}
+ParseResult parseTripleBNodes(OpAsmParser& parser, DictionaryAttr& result) {
+    SmallVector<NamedAttribute> entries;
+    auto parseEntry = [&]() -> ParseResult {
+        std::string localId;
+        mlir::Attribute column;
+        if (parser.parseKeywordOrString(&localId) || parser.parseColon() || parseBinding(parser, column)) { return failure(); }
+        entries.emplace_back(StringAttr::get(parser.getContext(), localId), column);
+        return success();
+    };
+    if (parser.parseCommaSeparatedList(parseEntry)) { return failure(); }
+    result = DictionaryAttr::get(parser.getContext(), entries);
+    return success();
+}
+void printTripleBNodes(OpAsmPrinter& p, mlir::Operation* op, DictionaryAttr bnodeScope) {
+    llvm::interleaveComma(bnodeScope, p, [&](NamedAttribute entry) {
+        p.printKeywordOrString(entry.getName().getValue());
+        p << ": ";
+        if (auto def = mlir::dyn_cast<tuples::ColumnDefAttr>(entry.getValue())) {
+            printCustDef(p, op, def);
+        }
+        else {
+            printCustRef(p, op, mlir::cast<tuples::ColumnRefAttr>(entry.getValue()));
+        }
+    });
+}
 ParseResult parseCustRegion(OpAsmParser& parser, Region& result) {
     OpAsmParser::Argument predArgument;
     SmallVector<OpAsmParser::Argument, 4> regionArgs;
@@ -265,6 +313,35 @@ void printCustRegion(OpAsmPrinter& p, Operation* op, Region& r) {
     }
     if (mlir::isa<BNodeTermAttr>(getP())) {
         return emitOpError("predicate cannot be a blank node");
+    }
+    std::pair<llvm::StringRef, mlir::Attribute> positions[] = {{"s", getS()}, {"p", getP()}, {"o", getO()}};
+    if (auto bindings = getBindingsAttr()) {
+        for (auto entry : bindings) {
+            auto* position = llvm::find_if(positions, [&](auto& pos) { return pos.first == entry.getName().getValue(); });
+            if (position == std::end(positions)) {
+                return emitOpError("binding key must be one of 's', 'p' or 'o', got '") << entry.getName().getValue() << "'";
+            }
+            if (!mlir::isa<VariableTermAttr, BNodeTermAttr>(position->second)) {
+                return emitOpError("binding for '") << position->first << "' requires a variable or blank node term";
+            }
+            if (!mlir::isa<tuples::ColumnDefAttr>(entry.getValue())) {
+                return emitOpError("binding for '") << position->first << "' must be a column definition";
+            }
+        }
+    }
+    if (auto bnodeScope = getBnodeScopeAttr()) {
+        for (auto entry : bnodeScope) {
+            bool used = llvm::any_of(positions, [&](auto& pos) {
+                auto bnode = mlir::dyn_cast<BNodeTermAttr>(pos.second);
+                return bnode && bnode.getLocalId().getValue() == entry.getName().getValue();
+            });
+            if (!used) {
+                return emitOpError("bnode entry '") << entry.getName().getValue() << "' does not correspond to a blank node of this pattern";
+            }
+            if (!mlir::isa<tuples::ColumnDefAttr, tuples::ColumnRefAttr>(entry.getValue())) {
+                return emitOpError("bnode entry '") << entry.getName().getValue() << "' must be a column definition or reference";
+            }
+        }
     }
     return mlir::success();
 }

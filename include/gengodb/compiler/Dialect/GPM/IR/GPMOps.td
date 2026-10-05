@@ -22,11 +22,27 @@ class GPM_Op<string mnemonic, list<Trait> traits = []> : Op<GPM_Dialect, mnemoni
   let hasCustomAssemblyFormat = 1;
 }
 
-def TriplePatternOp : GPM_Op<"triple_pattern", [Pure,GPMOperator,Operator,UnaryOperator,DeclareOpInterfaceMethods<Parameterizable>]> {
+def TriplePatternOp : GPM_Op<"relalg.triple_pattern", [Pure,GPMOperator,Operator,UnaryOperator,DeclareOpInterfaceMethods<Parameterizable>]> {
   let summary = "triple pattern";
-  let arguments = (ins TupleStream:$rel, ColumnRefAttr:$graphRef, AnyAttr:$s, AnyAttr:$p, AnyAttr:$o);
+  let description = [{
+    Matches a triple pattern `(s, p, o)` against a graph referenced by `graphRef`.
+
+    The optional `bindings` attribute maps a term position to a new column that receives the 
+    matched binding of an already declared variable or blank node column at this position.
+    The optional `bnodeScope` attribute maps the local identifier of a blank node used within the
+    triple pattern to either a column def (first occurence within this scope) or a column ref.
+
+    Example:
+    ```mlir
+    %1 = gpm.relalg.triple_pattern %0 @graphs::@ref(?{@vars::@x}, id{"http://example.org/p"}, _{"b0"})
+           binding_columns(s: @bindings::@s({type = !gpm.variable_binding})=[@vars::@x])
+           bnode_columns(b0: @bnode::@b0({type = !gpm.variable_binding}))
+    ```
+  }];
+  let arguments = (ins TupleStream:$rel, ColumnRefAttr:$graphRef, AnyAttr:$s, AnyAttr:$p, AnyAttr:$o,
+                       OptionalAttr<DictionaryAttr>:$bindings, OptionalAttr<DictionaryAttr>:$bnodeScope);
   let results = (outs TupleStream:$res);
-  let assemblyFormat = [{  $rel custom<CustRef>($graphRef) `(` custom<Term>($s) `,` custom<Term>($p) `,` custom<Term>($o) `)` attr-dict }];
+  let assemblyFormat = [{  $rel custom<CustRef>($graphRef) `(` custom<Term>($s) `,` custom<Term>($p) `,` custom<Term>($o) `)` (`binding_columns` `(` custom<TripleBindings>($bindings)^ `)`)? (`bnode_columns` `(` custom<TripleBNodes>($bnodeScope)^ `)`)? attr-dict }];
   let hasVerifier = 1;
   let extraClassDeclaration = [{
     lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
@@ -38,7 +54,7 @@ def TriplePatternOp : GPM_Op<"triple_pattern", [Pure,GPMOperator,Operator,UnaryO
   }];
 }
 
-def NamedGraphOp : GPM_Op<"named_graph", [Pure,GPMOperator,Operator]> {
+def NamedGraphOp : GPM_Op<"relalg.named_graph", [Pure,GPMOperator,Operator]> {
   let summary = "named graph";
   let arguments = (ins ColumnDefAttr:$def);
   let results = (outs TupleStream:$res);

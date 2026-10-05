@@ -193,7 +193,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       }
       ColumnMapper splits;
       for (auto triple : triples) {
-         auto bindings = triple->getAttrOfType<mlir::DictionaryAttr>("bindings");
+         auto bindings = triple.getBindingsAttr();
          for (auto [position, term] : {std::pair{"s", triple.getS()}, std::pair{"p", triple.getP()}, std::pair{"o", triple.getO()}}) {
             auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term);
             if (!varTerm || !varTerm.hasBinding()) continue;
@@ -508,7 +508,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       if (auto triple = mlir::dyn_cast<gpm::TriplePatternOp>(op)) {
          result.insert(triple.getCreatedVariables());
          result.insert(triple.getBoundVariables());
-         if (auto bnodeScope = triple->getAttrOfType<mlir::DictionaryAttr>("bnodeScope")) {
+         if (auto bnodeScope = triple.getBnodeScopeAttr()) {
             for (auto entry : bnodeScope) {
                result.insert(getBNodeScopeColumn(entry.getValue()));
             }
@@ -564,12 +564,12 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
 
       llvm::SmallVector<BindingPair> result;
       for (auto triple : rightTriples) {
-         auto existingBindings = triple->getAttrOfType<mlir::DictionaryAttr>("bindings");
+         auto existingBindings = triple.getBindingsAttr();
          llvm::SmallVector<mlir::NamedAttribute> bindings;
          if (existingBindings) {
             for (auto namedAttr : existingBindings) bindings.push_back(namedAttr);
          }
-         auto bnodeScope = triple->getAttrOfType<mlir::DictionaryAttr>("bnodeScope");
+         auto bnodeScope = triple.getBnodeScopeAttr();
          for (auto [position, term] : {std::pair{"s", triple.getS()}, std::pair{"p", triple.getP()}, std::pair{"o", triple.getO()}}) {
             tuples::ColumnRefAttr outerRef;
             if (auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term)) {
@@ -606,7 +606,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
             result.push_back({outerRef, newRef});
          }
          if (!bindings.empty()) {
-            triple->setAttr("bindings", mlir::DictionaryAttr::get(ctxt, bindings));
+            triple.setBindingsAttr(mlir::DictionaryAttr::get(ctxt, bindings));
          }
       }
       return result;
@@ -878,7 +878,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          llvm::SmallVector<mlir::NamedAttribute> entries;
          for (auto& entry : usedHere)
             entries.emplace_back(mlir::StringAttr::get(ctxt, entry.getKey()), entry.getValue());
-         triple->setAttr("bnodeScope", mlir::DictionaryAttr::get(ctxt, entries));
+         triple.setBnodeScopeAttr(mlir::DictionaryAttr::get(ctxt, entries));
       }
    }
 };

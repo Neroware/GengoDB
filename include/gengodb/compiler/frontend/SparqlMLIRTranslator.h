@@ -840,7 +840,7 @@ class Translator {
             auto p = termAttr(triple.p);
             auto o = termAttr(triple.o);
             cur = builder.create<gpm::TriplePatternOp>(
-               loc, tuples::TupleStreamType::get(ctxt), cur, graphRef, s, p, o);
+               loc, tuples::TupleStreamType::get(ctxt), cur, graphRef, s, p, o, mlir::DictionaryAttr{}, mlir::DictionaryAttr{});
          }
          builder.create<tuples::ReturnOp>(loc, cur);
       }

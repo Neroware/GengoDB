@@ -239,8 +239,8 @@ class TripleEmitter {
       memberManager(ctxt->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager()),
       graphs(graphs), loc(tripleOp->getLoc()), graphRefAttr(tripleOp.getGraphRef()),
       graphSym(graphRefAttr.getName()), sTerm(tripleOp.getS()), pTerm(tripleOp.getP()), oTerm(tripleOp.getO()),
-      bindingsAttr(tripleOp->getAttrOfType<mlir::DictionaryAttr>("bindings")),
-      bnodeScopeAttr(tripleOp->getAttrOfType<mlir::DictionaryAttr>("bnodeScope")) {
+      bindingsAttr(tripleOp.getBindingsAttr()),
+      bnodeScopeAttr(tripleOp.getBnodeScopeAttr()) {
       std::tie(group, graph) = splitGraphRef(graphRefAttr);
       assert(graphs.count(graphSym) && "graph must already be lowered");
    }
