@@ -1221,18 +1221,15 @@ static mlir::Value applyFillIn(mlir::Value buffer, MaterializationHelper& helper
 static mlir::Value translateHJBindingCompatible(mlir::Value left, mlir::Value right, mlir::ArrayAttr nullsEqual, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, relalg::ColumnSet columns, mlir::ConversionPatternRewriter& rewriter, mlir::Location loc, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn, mlir::ArrayAttr bindingCompatible = mlir::ArrayAttr()) {
    mlir::Value fullRightStream = right;
 
-   std::optional<MaterializationHelper> rightColumnsHelper;
-   auto ensureRightColumnsHelper = [&]() -> MaterializationHelper& {
-      if (!rightColumnsHelper) rightColumnsHelper.emplace(columns, rewriter.getContext());
-      return *rightColumnsHelper;
-   };
+   std::optional<MaterializationHelper> nullKeyColumnsHelper;
+   std::optional<MaterializationHelper> fullRightColumnsHelper;
 
    // Build side: a null-keyed build row must cross-join with every probe row
    llvm::SmallVector<std::pair<tuples::ColumnRefAttr, tuples::ColumnRefAttr>> fillFromLeft;
    auto [markedRight, buildMarkerRef] = computeNullKeyMarker(right, hashRight, hashRight, hashLeft, bindingCompatible, rewriter, loc, fillFromLeft);
    mlir::Value nullKeyBuffer;
    if (buildMarkerRef) {
-      auto& helper = ensureRightColumnsHelper();
+      auto& helper = nullKeyColumnsHelper.emplace(columns, rewriter.getContext());
       mlir::Value rightNonNull = rewriter.create<subop::FilterOp>(loc, markedRight, subop::FilterSemantic::none_true, rewriter.getArrayAttr(buildMarkerRef));
       mlir::Value rightNullOnly = rewriter.create<subop::FilterOp>(loc, markedRight, subop::FilterSemantic::all_true, rewriter.getArrayAttr(buildMarkerRef));
       auto bufferType = subop::BufferType::get(rewriter.getContext(), helper.createStateMembersAttr());
@@ -1249,7 +1246,7 @@ static mlir::Value translateHJBindingCompatible(mlir::Value left, mlir::Value ri
    auto [markedLeft, probeMarkerRef] = computeNullKeyMarker(left, hashLeft, hashLeft, hashRight, bindingCompatible, rewriter, loc, fillFromRight);
    mlir::Value fullRightBuffer;
    if (probeMarkerRef) {
-      auto& helper = ensureRightColumnsHelper();
+      auto& helper = fullRightColumnsHelper.emplace(columns, rewriter.getContext());
       auto bufferType = subop::BufferType::get(rewriter.getContext(), helper.createStateMembersAttr());
       fullRightBuffer = rewriter.create<subop::GenericCreateOp>(loc, bufferType);
       rewriter.create<subop::MaterializeOp>(loc, nullKeyBuffer ? right : fullRightStream, fullRightBuffer, helper.createColumnstateMapping());
@@ -1286,10 +1283,10 @@ static mlir::Value translateHJBindingCompatible(mlir::Value left, mlir::Value ri
       llvm::SmallVector<mlir::Value> branches{combined};
 
       if (nullKeyBuffer) {
-         branches.push_back(applyFillIn(nullKeyBuffer, *rightColumnsHelper, tuple, fillFromLeft, rewriter, loc));
+         branches.push_back(applyFillIn(nullKeyBuffer, *nullKeyColumnsHelper, tuple, fillFromLeft, rewriter, loc));
       }
       if (fullRightBuffer) {
-         auto& helper = *rightColumnsHelper;
+         auto& helper = *fullRightColumnsHelper;
          mlir::Value probeScan = rewriter.create<subop::ScanOp>(loc, fullRightBuffer, helper.createStateColumnMapping());
          mlir::Value probeCombined = rewriter.create<subop::CombineTupleOp>(loc, probeScan, tuple);
          mlir::Value probeFiltered = rewriter.create<subop::FilterOp>(loc, probeCombined, subop::FilterSemantic::all_true, rewriter.getArrayAttr(probeMarkerRef));

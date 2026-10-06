@@ -218,6 +218,7 @@ BinaryOperatorType getBinaryOperatorType(mlir::Operation* op);
 UnaryOperatorType getUnaryOperatorType(mlir::Operation* op);
 
 bool isJoin(mlir::Operation* op);
+bool isNonDecomposableJoin(mlir::Operation* op);
 
 void addPredicate(mlir::Operation* op, std::function<mlir::Value(mlir::Value, mlir::OpBuilder& builder)> predicateProducer);
 void initPredicate(mlir::Operation* op);

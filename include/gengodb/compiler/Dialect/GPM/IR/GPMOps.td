@@ -112,7 +112,7 @@ def FilterOp : GPM_Op<"filter", [Pure,GPMOperator]> {
   let assemblyFormat = [{  $rel custom<CustRegion>($predicate) attr-dict-with-keyword }];
 }
 
-def BindingsCompatibleOp : GPM_Op<"bindings_compatible", [Pure,DeclareOpInterfaceMethods<Relalg_CmpOpInterface>]> {
+def BindingsCompatibleOp : GPM_Op<"bindings_compatible", [Pure,DeclareOpInterfaceMethods<Relalg_CmpOpInterface, ["isBindingCompatiblePred"]>]> {
   let summary = "variable binding compatbility check";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);
   let results = (outs I1:$result);

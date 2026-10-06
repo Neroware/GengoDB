@@ -48,9 +48,10 @@ class HashJoinUtils {
          results.push_back(v);
       }
    }
-   static std::pair<std::vector<mlir::Attribute>, std::vector<mlir::Attribute>> extractKeys(mlir::Block* block, relalg::ColumnSet keyAttributes, relalg::ColumnSet otherAttributes, MapBlockInfo& mapBlockInfo) {
+   static std::tuple<std::vector<mlir::Attribute>, std::vector<mlir::Attribute>, std::vector<mlir::Attribute>> extractKeys(mlir::Block* block, relalg::ColumnSet keyAttributes, relalg::ColumnSet otherAttributes, MapBlockInfo& mapBlockInfo) {
       std::vector<mlir::Attribute> toHash;
       std::vector<mlir::Attribute> nullsEqual;
+      std::vector<mlir::Attribute> bindingCompatible;
       llvm::DenseMap<mlir::Value, relalg::ColumnSet> required;
       mlir::IRMapping mapping;
       mapping.map(block->getArgument(0), mapBlockInfo.block->getArgument(0));
@@ -101,10 +102,13 @@ class HashJoinUtils {
                            keyVal.replaceAllUsesWith(builder2.create<tuples::GetColumnOp>(builder2.getUnknownLoc(), keyVal.getType(), ref, block->getArgument(0)));
                         }
                      }
-                     nullsEqual.push_back(mlir::IntegerAttr::get(mlir::IntegerType::get(cmpOp.getContext(), 8), !cmpOp.isEqualityPred(false)));
-                     //remove cmpOp.getResult() from andedResults
-                     mlir::Value opToRemove = cmpOp->getResult(0);
-                     andedResults.erase(std::remove(andedResults.begin(), andedResults.end(), opToRemove), andedResults.end());
+                     bool isBindingCompatible = cmpOp.isBindingCompatiblePred();
+                     nullsEqual.push_back(mlir::IntegerAttr::get(mlir::IntegerType::get(cmpOp.getContext(), 8), !isBindingCompatible && !cmpOp.isEqualityPred(false)));
+                     bindingCompatible.push_back(mlir::IntegerAttr::get(mlir::IntegerType::get(cmpOp.getContext(), 8), isBindingCompatible));
+                     if (!isBindingCompatible) {
+                        mlir::Value opToRemove = cmpOp->getResult(0);
+                        andedResults.erase(std::remove(andedResults.begin(), andedResults.end(), opToRemove), andedResults.end());
+                     }
                   }
                }
             } else {
@@ -133,7 +137,7 @@ class HashJoinUtils {
          }
       }
 
-      return {toHash, nullsEqual};
+      return {toHash, nullsEqual, bindingCompatible};
    }
 };
 class OptimizeImplementations : public mlir::PassWrapper<OptimizeImplementations, mlir::OperationPass<mlir::func::FuncOp>> {
@@ -253,7 +257,7 @@ class OptimizeImplementations : public mlir::PassWrapper<OptimizeImplementations
          HashJoinUtils::MapBlockInfo mapBlockInfo;
          mapBlockInfo.block = new mlir::Block;
          mapBlockInfo.block->addArgument(tuples::TupleType::get(builder.getContext()), builder.getUnknownLoc());
-         auto [keys, nullsEqual] = HashJoinUtils::extractKeys(&predicateOperator.getPredicateBlock(), left.getAvailableColumns(cache), right.getAvailableColumns(cache), mapBlockInfo);
+         auto [keys, nullsEqual, bindingCompatible] = HashJoinUtils::extractKeys(&predicateOperator.getPredicateBlock(), left.getAvailableColumns(cache), right.getAvailableColumns(cache), mapBlockInfo);
          if (!mapBlockInfo.createdColumns.empty()) {
             builder.setInsertionPoint(predicateOperator);
             auto mapOp = builder.create<relalg::MapOp>(builder.getUnknownLoc(), tuples::TupleStreamType::get(builder.getContext()), left.asRelation(), builder.getArrayAttr(mapBlockInfo.createdColumns));
@@ -267,6 +271,11 @@ class OptimizeImplementations : public mlir::PassWrapper<OptimizeImplementations
          }
          predicateOperator->setAttr("leftHash", builder.getArrayAttr(keys));
          predicateOperator->setAttr("nullsEqual", builder.getArrayAttr(nullsEqual));
+         if (llvm::any_of(bindingCompatible, [](mlir::Attribute a) { return mlir::cast<mlir::IntegerAttr>(a).getInt() != 0; })) {
+            predicateOperator->setAttr("bindingCompatible", builder.getArrayAttr(bindingCompatible));
+         } else {
+            predicateOperator->removeAttr("bindingCompatible");
+         }
       }
 
       //right
@@ -275,7 +284,7 @@ class OptimizeImplementations : public mlir::PassWrapper<OptimizeImplementations
          HashJoinUtils::MapBlockInfo mapBlockInfo;
          mapBlockInfo.block = new mlir::Block;
          mapBlockInfo.block->addArgument(tuples::TupleType::get(builder.getContext()), builder.getUnknownLoc());
-         auto [keys, nullEquals] = HashJoinUtils::extractKeys(&predicateOperator.getPredicateBlock(), right.getAvailableColumns(cache), left.getAvailableColumns(cache), mapBlockInfo);
+         auto [keys, nullEquals, bindingCompatible] = HashJoinUtils::extractKeys(&predicateOperator.getPredicateBlock(), right.getAvailableColumns(cache), left.getAvailableColumns(cache), mapBlockInfo);
          if (!mapBlockInfo.createdColumns.empty()) {
             builder.setInsertionPoint(predicateOperator);
             auto mapOp = builder.create<relalg::MapOp>(builder.getUnknownLoc(), tuples::TupleStreamType::get(builder.getContext()), right.asRelation(), builder.getArrayAttr(mapBlockInfo.createdColumns));
@@ -656,6 +665,11 @@ class OptimizeImplementations : public mlir::PassWrapper<OptimizeImplementations
                   } else {
                      op->setAttr("impl", mlir::StringAttr::get(op.getContext(), "hash"));
                   }
+               }
+               // TODO find out why this fails with reverse sides
+               if (op->hasAttr("bindingCompatible")) {
+                  op->removeAttr("reverseSides");
+                  if (op->hasAttr("useHashJoin")) op->setAttr("impl", mlir::StringAttr::get(op.getContext(), "hash"));
                }
             })
             .Case<relalg::SingleJoinOp>([&](relalg::SingleJoinOp op) {

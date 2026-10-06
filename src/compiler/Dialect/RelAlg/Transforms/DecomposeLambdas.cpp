@@ -17,6 +17,9 @@ class DecomposeInnerJoin : public mlir::RewritePattern {
       : RewritePattern(relalg::InnerJoinOp::getOperationName(), 1, context) {}
    mlir::LogicalResult matchAndRewrite(mlir::Operation* op, mlir::PatternRewriter& rewriter) const override {
       auto innerJoin = mlir::cast<relalg::InnerJoinOp>(op);
+      if (relalg::detail::isNonDecomposableJoin(op)) {
+         return mlir::failure();
+      }
       auto cp = rewriter.create<relalg::CrossProductOp>(op->getLoc(), innerJoin.getLeft(), innerJoin.getRight());
       auto sel = rewriter.create<relalg::SelectionOp>(op->getLoc(), cp);
       rewriter.inlineRegionBefore(innerJoin.getPredicate(), sel.getPredicate(), sel.getPredicate().end());

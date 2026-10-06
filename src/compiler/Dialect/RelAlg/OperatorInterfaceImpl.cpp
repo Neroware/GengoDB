@@ -4,6 +4,8 @@
 #include "lingodb/compiler/Dialect/RelAlg/Transforms/QueryParameters.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
 
+#include "gengodb/compiler/Dialect/GPM/Transforms/Passes.h"
+
 #include "llvm/ADT/TypeSwitch.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -381,6 +383,12 @@ ColumnSet OuterJoinOp::getCreatedColumns() {
       auto relationDefAttr = mlir::dyn_cast_or_null<ColumnDefAttr>(attr);
       created.insert(&relationDefAttr.getColumn());
    }
+
+   if (auto merged = getOperation()->getAttrOfType<mlir::ArrayAttr>(gengodb::compiler::dialect::gpm::kMergedColumnsAttr)) {
+      for (mlir::Attribute attr : merged) {
+         created.insert(&mlir::cast<ColumnDefAttr>(attr).getColumn());
+      }
+   }
    return created;
 }
 ColumnSet OuterJoinOp::getUsedColumns() {
@@ -719,6 +727,19 @@ bool relalg::detail::isJoin(mlir::Operation* op) {
    auto opType = getBinaryOperatorType(op);
    return BinaryOperatorType::InnerJoin <= opType && opType <= BinaryOperatorType::CollectionJoin;
 }
+bool relalg::detail::isNonDecomposableJoin(mlir::Operation* op) {
+   if (op->hasAttr("impl")) return true;
+   auto predicateOperator = mlir::dyn_cast_or_null<PredicateOperator>(op);
+   if (!predicateOperator) return false;
+   bool nullableBindingCompatible = false;
+   predicateOperator.getPredicateBlock().walk([&](CmpOpInterface cmpOp) {
+      if (cmpOp.isBindingCompatiblePred() && (mlir::isa<db::NullableType>(cmpOp.getLeft().getType()) 
+         || mlir::isa<db::NullableType>(cmpOp.getRight().getType()))) {
+            nullableBindingCompatible = true;
+      }
+   });
+   return nullableBindingCompatible;
+}
 
 void relalg::detail::addPredicate(mlir::Operation* op, std::function<mlir::Value(mlir::Value, mlir::OpBuilder&)> predicateProducer) {
    auto lambdaOperator = mlir::dyn_cast_or_null<PredicateOperator>(op);
@@ -1056,7 +1077,13 @@ mlir::LogicalResult relalg::OuterJoinOp::foldColumns(relalg::ColumnFoldInfo& col
 }
 mlir::LogicalResult relalg::OuterJoinOp::eliminateDeadColumns(relalg::ColumnSet& usedColumns, mlir::Value& newStream) {
    auto mapping = getMapping();
-   auto newColDefs = eliminateDeadColumnsInMapping(getContext(), mapping, usedColumns);
+   relalg::ColumnSet keptColumns = usedColumns;
+   if (auto merged = getOperation()->getAttrOfType<mlir::ArrayAttr>(gengodb::compiler::dialect::gpm::kMergedColumnsAttr)) {
+      for (mlir::Attribute attr : merged) {
+         keptColumns.insert(relalg::ColumnSet::fromArrayAttr(mlir::cast<mlir::ArrayAttr>(mlir::cast<ColumnDefAttr>(attr).getFromExisting())));
+      }
+   }
+   auto newColDefs = eliminateDeadColumnsInMapping(getContext(), mapping, keptColumns);
    if (newColDefs.size() == mapping.size()) {
       return mlir::failure();
    }

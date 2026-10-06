@@ -213,6 +213,10 @@ void gpm::TriplePatternOp::maskParameters() {
 }
 
 bool gpm::BindingsCompatibleOp::isEqualityPred(bool nullsAreEqual) {
+    return nullsAreEqual || (!mlir::isa<db::NullableType>(getLhs().getType()) 
+        && !mlir::isa<db::NullableType>(getRhs().getType()));
+}
+bool gpm::BindingsCompatibleOp::isBindingCompatiblePred() {
     return true;
 }
 bool gpm::BindingsCompatibleOp::isUnequalityPred() {
