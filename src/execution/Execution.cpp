@@ -104,11 +104,6 @@ class GpmLoweringStep : public LoweringStep {
          if (auto getExternalOp = mlir::dyn_cast_or_null<gsubop::GetExternalGraphOp>(*op)) {
             ensureNamedGraphLoaded(moduleOp->getContext(), getCatalog(), getExternalOp.getName());
          }
-         // graph expansions are lowered later (with RelAlg) and may access graphs no other operator scans
-         if (auto expansionOp = mlir::dyn_cast_or_null<gpm::GraphExpansionOp>(*op)) {
-            auto refType = mlir::cast<gpm::GraphReferenceType>(expansionOp.getGraphRef().getColumn().type);
-            ensureNamedGraphLoaded(moduleOp->getContext(), getCatalog(), refType.getName());
-         }
       });
    }
 };

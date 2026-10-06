@@ -203,10 +203,8 @@ static mlir::Value scanNamedGraph(ConversionPatternRewriter& rewriter, mlir::Loc
    auto& data = getOrCreateExternalGraph(rewriter, loc, graphAttr, externalGraphs, rewriter.getInsertionBlock());
    return scanExternalGraph(rewriter, loc, graphAttr, data, graphs, uniqueScope);
 }
-// Consumers that are still lowered by RelAlgToSubOp (and therefore need the available columns of
-// their lowered GPM input), i.e. relational operators and graph expansions.
 static bool isRelAlgOperator(mlir::Operation* op) {
-   return op && mlir::isa<Operator>(op) && (!mlir::isa<GPMOperator>(op) || mlir::isa<gpm::GraphExpansionOp>(op));
+   return op && !mlir::isa<GPMOperator>(op) && mlir::isa<Operator>(op);
 }
 
 // Emits the edge scan of a single triple pattern (s, p, o) over a lowered graph. Variable terms
@@ -508,32 +506,14 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
    }
 };
 
-// Reuses a gsubop.get_external_graph of the same graph that dominates `op` (e.g. created when the
-// named graphs were lowered), otherwise creates one at the start of op's block.
-static ExternalGraphData& findOrCreateExternalGraph(ConversionPatternRewriter& rewriter, gpm::GraphExpansionOp op, ExternalGraphMapper& externalGraphs) {
-   auto graphRefType = mlir::cast<gpm::GraphReferenceType>(op.getGraphRef().getColumn().type);
-   GraphIdentity identity{graphRefType.getName(), graphRefType.getGlobalId()};
-   auto& memberManager = rewriter.getContext()->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
-   for (mlir::Operation* ancestor = op; ancestor && !externalGraphs.count(identity); ancestor = ancestor->getParentOp()) {
-      mlir::Block* block = ancestor->getBlock();
-      if (!block) break;
-      for (auto extGraph : block->getOps<gsubop::GetExternalGraphOp>()) {
-         if (extGraph.getNameAttr() != identity.first || extGraph.getGraphIdAttr() != identity.second) continue;
-         if (!extGraph->isBeforeInBlock(ancestor)) continue;
-         auto graphType = mlir::cast<gsubop::GraphType>(extGraph.getType());
-         auto nodeSetType = mlir::cast<gsubop::NodeSetType>(memberManager.getType(graphType.getNodeMembers().getMembers()[0]));
-         auto edgeSetType = mlir::cast<gsubop::EdgeSetType>(memberManager.getType(graphType.getEdgeMembers().getMembers()[0]));
-         externalGraphs.insert({identity, ExternalGraphData{graphType, nodeSetType, edgeSetType, extGraph.getResult()}});
-         break;
-      }
-   }
-   return getOrCreateExternalGraph(rewriter, op->getLoc(), op.getGraphRef(), externalGraphs, op->getBlock());
-}
 // ひ_G,t(R): per tuple of R, resolve the primary anchor to a node of G and expand over its edges.
-// Runs as part of RelAlgToSubOp, as R is a relational stream until then.
+// R may still be a relational stream: RelAlgToSubOp keeps all columns of a stream consumed by
+// sub-operators.
 class GraphExpansionLowering : public OpConversionPattern<gpm::GraphExpansionOp> {
+   ExternalGraphMapper& externalGraphs;
    public:
-   using OpConversionPattern<gpm::GraphExpansionOp>::OpConversionPattern;
+   GraphExpansionLowering(TypeConverter& typeConverter, MLIRContext* context, ExternalGraphMapper& externalGraphs)
+      : OpConversionPattern<gpm::GraphExpansionOp>(typeConverter, context), externalGraphs(externalGraphs) {}
    LogicalResult matchAndRewrite(gpm::GraphExpansionOp expansionOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
       auto* ctxt = rewriter.getContext();
       auto loc = expansionOp->getLoc();
@@ -552,9 +532,16 @@ class GraphExpansionLowering : public OpConversionPattern<gpm::GraphExpansionOp>
          return expansionOp.isExpandColumn(&ref.getColumn()) ? tuples::ColumnRefAttr() : ref;
       };
 
-      ExternalGraphMapper externalGraphs;
+      bool needsInFlight = llvm::any_of(expansionOp.getRes().getUses(), [](mlir::OpOperand& use) {
+         return isRelAlgOperator(use.getOwner());
+      });
+      mlir::ArrayAttr availableColumns;
+      if (needsInFlight) {
+         relalg::AvailabilityCache availabilityCache;
+         availableColumns = mlir::cast<Operator>(expansionOp.getOperation()).getAvailableColumns(availabilityCache).asRefArrayAttr(ctxt);
+      }
       NamedGraphMapper graphs;
-      auto& graphData = findOrCreateExternalGraph(rewriter, expansionOp, externalGraphs);
+      auto& graphData = getOrCreateExternalGraph(rewriter, loc, expansionOp.getGraphRef(), externalGraphs, expansionOp->getBlock());
       // R x {G}: makes the node/edge set of G available to every tuple of R
       auto withGraph = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), adaptor.getRel(), rewriter.getArrayAttr({}));
       {
@@ -579,6 +566,12 @@ class GraphExpansionLowering : public OpConversionPattern<gpm::GraphExpansionOp>
       } else {
          // only the predicate is anchored: constant subject/object or all edges, anchor filters
          lowered = emitter.lower(withGraph.getRes());
+      }
+      if (needsInFlight) {
+         auto inFlight = rewriter.create<relalg::InFlightOp>(loc, lowered, availableColumns);
+         rewriter.replaceUsesWithIf(expansionOp.getRes(), inFlight.getRes(), [](mlir::OpOperand& use) {
+            return isRelAlgOperator(use.getOwner());
+         });
       }
       rewriter.replaceOp(expansionOp, lowered);
       return success();
@@ -737,11 +730,12 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    ConversionTarget target(getContext());
    addCommonLegalDialects(target);
    target.addLegalDialect<gpm::GPMDialect>();
-   target.addIllegalOp<gpm::NamedGraphOp, gpm::TriplePatternOp>();
+   target.addIllegalOp<gpm::NamedGraphOp, gpm::TriplePatternOp, gpm::GraphExpansionOp>();
 
    RewritePatternSet patterns(ctxt);
    patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs, externalGraphs);
    patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs);
+   patterns.insert<GraphExpansionLowering>(typeConverter, ctxt, externalGraphs);
 
    retypeExpandedColumns(module);
 
@@ -814,8 +808,6 @@ void GPMScalarToSubOpLoweringPass::runOnOperation() {
    ConversionTarget target(getContext());
    addCommonLegalDialects(target);
    target.addIllegalDialect<gpm::GPMDialect>();
-   // lowered together with its relational input by RelAlgToSubOp
-   target.addLegalOp<gpm::GraphExpansionOp>();
 
    RewritePatternSet patterns(ctxt);
    patterns.insert<GpmBindingsCompatibleLowering>(typeConverter, ctxt);
@@ -836,9 +828,6 @@ gpm::createLowerToSubOpPass() {
 std::unique_ptr<mlir::Pass>
 gpm::createLowerGPMScalarsToSubOpPass() {
    return std::make_unique<GPMScalarToSubOpLoweringPass>();
-}
-void gpm::populateGraphExpansionToSubOpPatterns(mlir::RewritePatternSet& patterns, mlir::TypeConverter& typeConverter) {
-   patterns.insert<GraphExpansionLowering>(typeConverter, patterns.getContext());
 }
 void gpm::createLowerGPMToSubOpPipeline(mlir::OpPassManager& pm) {
    pm.addPass(gpm::createLowerToSubOpPass());
