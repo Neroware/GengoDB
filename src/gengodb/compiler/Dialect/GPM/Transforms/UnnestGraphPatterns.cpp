@@ -18,15 +18,34 @@ using namespace gengodb::compiler::dialect;
 using namespace lingodb::compiler::dialect;
 using ColumnMapper = llvm::DenseMap<const tuples::Column*, const tuples::Column*>;
 using ColumnPairs = llvm::SmallVector<std::pair<const tuples::Column*, const tuples::Column*>>;
-const tuples::Column* getBNodeScopeColumn(mlir::Attribute entry) {
-   if (auto def = mlir::dyn_cast<tuples::ColumnDefAttr>(entry)) 
-      return &def.getColumn();
-   return &mlir::cast<tuples::ColumnRefAttr>(entry).getColumn();
+constexpr gpm::TripleSlot kTripleSlots[] = {gpm::TripleSlot::subject, gpm::TripleSlot::predicate, gpm::TripleSlot::object};
+llvm::StringRef slotName(gpm::TripleSlot slot) {
+   switch (slot) {
+      case gpm::TripleSlot::subject: return "s";
+      case gpm::TripleSlot::predicate: return "p";
+      default: return "o";
+   }
 }
-tuples::ColumnRefAttr getBNodeScopeRef(mlir::Attribute entry, tuples::ColumnManager& columnManager) {
-   if (auto def = mlir::dyn_cast<tuples::ColumnDefAttr>(entry))
-      return columnManager.createRef(def.getColumnPtr().get());
-   return mlir::cast<tuples::ColumnRefAttr>(entry);
+mlir::Attribute getSlot(gpm::TriplePatternOp triple, gpm::TripleSlot slot) {
+   switch (slot) {
+      case gpm::TripleSlot::subject: return triple.getS();
+      case gpm::TripleSlot::predicate: return triple.getP();
+      default: return triple.getO();
+   }
+}
+void setSlot(gpm::TriplePatternOp triple, gpm::TripleSlot slot, mlir::Attribute term) {
+   switch (slot) {
+      case gpm::TripleSlot::subject: triple.setSAttr(term); break;
+      case gpm::TripleSlot::predicate: triple.setPAttr(term); break;
+      default: triple.setOAttr(term); break;
+   }
+}
+tuples::ColumnRefAttr bindingSource(gpm::VariableTermAttr varTerm) {
+   auto def = varTerm.getProducedBinding();
+   if (!def) return {};
+   auto fromExisting = mlir::dyn_cast_or_null<mlir::ArrayAttr>(def.getFromExisting());
+   if (!fromExisting || fromExisting.empty()) return {};
+   return mlir::dyn_cast<tuples::ColumnRefAttr>(fromExisting[0]);
 }
 const tuples::Column* resolveThroughRemaps(const ColumnMapper& remaps, const tuples::Column* column) {
    for (auto it = remaps.find(column); it != remaps.end(); it = remaps.find(column)) {
@@ -77,6 +96,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
             erasedAny = true;
          }
       }
+      normalizeTriples();
    }
 
    private:
@@ -138,7 +158,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
    mlir::Value rewriteTriple(gpm::TriplePatternOp triple) {
       mlir::Value accumulator = rewrite(triple.getRel());
       llvm::StringMap<tuples::ColumnRefAttr> ownScope;
-      annotateBNodeScope(triple, bnodeScope ? *bnodeScope : ownScope);
+      bnodesToVariables(triple, bnodeScope ? *bnodeScope : ownScope);
       isolateTriple(triple, insertPoint);
       return fold(accumulator, triple.getRes(), gpm::PatternKind::basic, relalg::ColumnSet(), triple.getLoc());
    }
@@ -193,11 +213,9 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       }
       ColumnMapper splits;
       for (auto triple : triples) {
-         auto bindings = triple->getAttrOfType<mlir::DictionaryAttr>("bindings");
-         for (auto [position, term] : {std::pair{"s", triple.getS()}, std::pair{"p", triple.getP()}, std::pair{"o", triple.getO()}}) {
-            auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term);
+         for (auto slot : kTripleSlots) {
+            auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(getSlot(triple, slot));
             if (!varTerm || !varTerm.hasBinding()) continue;
-            if (bindings && bindings.get(position)) continue;
             const auto* column = &varTerm.getBindingReference().getColumn();
             if (leftVars.contains(column) || elementProduced.contains(column)) continue;
             if (splits.contains(column)) {
@@ -207,10 +225,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
             }
             auto freshDef = columnManager.createDef(columnManager.getUniqueScope("vars"), columnManager.getName(column).second);
             freshDef.getColumn().type = column->type;
-            auto newTerm = gpm::VariableTermAttr::get(ctxt, freshDef);
-            if (position == std::string_view("s")) triple.setSAttr(newTerm);
-            else if (position == std::string_view("p")) triple.setPAttr(newTerm);
-            else triple.setOAttr(newTerm);
+            setSlot(triple, slot, gpm::VariableTermAttr::get(ctxt, freshDef));
             splits[column] = &freshDef.getColumn();
             splitOrigin[&freshDef.getColumn()] = column;
             createdVars.insert(&freshDef.getColumn());
@@ -506,11 +521,17 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       auto* op = v.getDefiningOp();
       if (!op || !visited.insert(op).second) return result;
       if (auto triple = mlir::dyn_cast<gpm::TriplePatternOp>(op)) {
-         result.insert(triple.getCreatedVariables());
-         result.insert(triple.getBoundVariables());
-         if (auto bnodeScope = triple->getAttrOfType<mlir::DictionaryAttr>("bnodeScope")) {
-            for (auto entry : bnodeScope) {
-               result.insert(getBNodeScopeColumn(entry.getValue()));
+         for (auto slot : kTripleSlots) {
+            auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(getSlot(triple, slot));
+            if (!varTerm) continue;
+            if (auto ref = varTerm.getBindingReference()) {
+               result.insert(&ref.getColumn());
+            }
+            else if (auto source = bindingSource(varTerm)) {
+               result.insert(&source.getColumn());
+            }
+            else {
+               result.insert(&varTerm.getProducedBinding().getColumn());
             }
          }
       }
@@ -564,49 +585,29 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
 
       llvm::SmallVector<BindingPair> result;
       for (auto triple : rightTriples) {
-         auto existingBindings = triple->getAttrOfType<mlir::DictionaryAttr>("bindings");
-         llvm::SmallVector<mlir::NamedAttribute> bindings;
-         if (existingBindings) {
-            for (auto namedAttr : existingBindings) bindings.push_back(namedAttr);
-         }
-         auto bnodeScope = triple->getAttrOfType<mlir::DictionaryAttr>("bnodeScope");
-         for (auto [position, term] : {std::pair{"s", triple.getS()}, std::pair{"p", triple.getP()}, std::pair{"o", triple.getO()}}) {
-            tuples::ColumnRefAttr outerRef;
-            if (auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term)) {
-               if (!varTerm.hasBinding()) continue;
-               outerRef = varTerm.getBindingReference();
-            }
-            else if (auto bnodeTerm = mlir::dyn_cast<gpm::BNodeTermAttr>(term)) {
-               if (!bnodeScope) continue;
-               auto entry = bnodeScope.get(bnodeTerm.getLocalId().getValue());
-               if (!entry) continue;
-               outerRef = getBNodeScopeRef(entry, columnManager);
-            }
-            else {
-               continue;
-            }
+         for (auto slot : kTripleSlots) {
+            auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(getSlot(triple, slot));
+            if (!varTerm) continue;
+            auto existingSource = bindingSource(varTerm);
+            auto outerRef = existingSource ? existingSource : varTerm.getBindingReference();
+            if (!outerRef) continue;
             const auto* column = &outerRef.getColumn();
             if (!needsBindings(column)) continue;
 
             tuples::ColumnRefAttr newRef;
-            if (existingBindings) {
-               if (auto existingDef = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(existingBindings.get(position))) {
-                  newRef = columnManager.createRef(existingDef.getColumnPtr().get());
-               }
+            if (existingSource) {
+               newRef = columnManager.createRef(varTerm.getProducedBinding().getColumnPtr().get());
             }
-            if (!newRef) {
+            else {
                auto fromExisting = mlir::ArrayAttr::get(ctxt, {outerRef});
-               auto newDef = columnManager.createDef(columnManager.getUniqueScope("bindings"), position, fromExisting);
+               auto newDef = columnManager.createDef(columnManager.getUniqueScope("bindings"), slotName(slot), fromExisting);
                newDef.getColumn().type = column->type;
                newRef = columnManager.createRef(newDef.getColumnPtr().get());
-               bindings.emplace_back(mlir::StringAttr::get(ctxt, position), newDef);
+               setSlot(triple, slot, gpm::VariableTermAttr::get(ctxt, newDef));
                llvm::SmallPtrSet<mlir::Operation*, 16> visitedStale;
                fixStaleTripleColumnReferences(right, column, newRef, visitedStale);
             }
             result.push_back({outerRef, newRef});
-         }
-         if (!bindings.empty()) {
-            triple->setAttr("bindings", mlir::DictionaryAttr::get(ctxt, bindings));
          }
       }
       return result;
@@ -852,34 +853,47 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          if (changed) op->setAttrs(mlir::DictionaryAttr::get(op->getContext(), newAttrs));
       });
    }
-   void annotateBNodeScope(gpm::TriplePatternOp triple, llvm::StringMap<tuples::ColumnRefAttr>& scope) {
+   void bnodesToVariables(gpm::TriplePatternOp triple, llvm::StringMap<tuples::ColumnRefAttr>& scope) {
       auto* ctxt = triple.getContext();
       auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-      llvm::StringMap<mlir::Attribute> usedHere;
-      for (mlir::Attribute term : {triple.getS(), triple.getP(), triple.getO()}) {
-         auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(term);
+      for (auto slot : kTripleSlots) {
+         auto bnode = mlir::dyn_cast<gpm::BNodeTermAttr>(getSlot(triple, slot));
          if (!bnode) continue;
          auto localId = bnode.getLocalId().getValue();
          auto it = scope.find(localId);
-         mlir::Attribute entry;
+         mlir::Attribute binding;
          if (it == scope.end()) {
-            auto uniqueScope = columnManager.getUniqueScope("bnode");
-            auto def = columnManager.createDef(uniqueScope, localId.str());
+            auto def = columnManager.createDef(columnManager.getUniqueScope("bnode"), localId);
             def.getColumn().type = gpm::VariableBindingType::get(ctxt);
             scope[localId] = columnManager.createRef(def.getColumnPtr().get());
-            entry = def;
+            binding = def;
          }
          else {
-            entry = it->second;
+            binding = it->second;
          }
-         usedHere[localId] = entry;
+         setSlot(triple, slot, gpm::VariableTermAttr::get(ctxt, binding));
       }
-      if (!usedHere.empty()) {
-         llvm::SmallVector<mlir::NamedAttribute> entries;
-         for (auto& entry : usedHere)
-            entries.emplace_back(mlir::StringAttr::get(ctxt, entry.getKey()), entry.getValue());
-         triple->setAttr("bnodeScope", mlir::DictionaryAttr::get(ctxt, entries));
-      }
+   }
+   void normalizeTriples() {
+      auto* ctxt = &getContext();
+      auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      getOperation()->walk([&](gpm::TriplePatternOp triple) {
+         for (auto slot : kTripleSlots) {
+            auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(getSlot(triple, slot));
+            if (!varTerm) continue;
+            const tuples::Column* column;
+            if (auto ref = varTerm.getBindingReference()) {
+               column = &ref.getColumn();
+            }
+            else if (bindingSource(varTerm)) {
+               column = &varTerm.getProducedBinding().getColumn();
+            }
+            else {
+               continue;
+            }
+            setSlot(triple, slot, gpm::VariableTermAttr::get(ctxt, columnManager.createDef(column)));
+         }
+      });
    }
 };
 

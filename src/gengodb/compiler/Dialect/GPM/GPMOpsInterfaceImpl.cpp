@@ -161,40 +161,11 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::BasicGraphPatternOp::getUsedV
     return res;
 }
 
-lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getBindingColumns() {
-    ColumnSet columns;
-    if (auto bindings = (*this)->getAttrOfType<mlir::DictionaryAttr>("bindings")) {
-        for (auto key : {"s", "p", "o"}) {
-            if (auto def = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(bindings.get(key))) {
-                columns.insert(def.getColumnPtr().get());
-            }
-        }
-    }
-    if (auto bnodeScope = (*this)->getAttrOfType<mlir::DictionaryAttr>("bnodeScope")) {
-        for (auto entry : bnodeScope) {
-            if (auto def = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(entry.getValue())) {
-                columns.insert(def.getColumnPtr().get());
-            }
-        }
-    }
-    return columns;
-}
 lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getCreatedColumns() {
-    auto created = getCreatedVariables();
-    auto bindings = getBindingColumns();
-    created.insert(bindings);
-    return created;
+    return getCreatedVariables();
 }
 lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getUsedColumns() {
-    auto used = getBoundVariables();
-    if (auto bnodeScope = (*this)->getAttrOfType<mlir::DictionaryAttr>("bnodeScope")) {
-        for (auto entry : bnodeScope) {
-            if (auto ref = mlir::dyn_cast_or_null<tuples::ColumnRefAttr>(entry.getValue())) {
-                used.insert(ref.getColumnPtr().get());
-            }
-        }
-    }
-    return used;
+    return getBoundVariables();
 }
 lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache) {
     lingodb::compiler::dialect::relalg::ColumnSet available;
@@ -332,19 +303,13 @@ bool gpm::OptionalGraphPatternOp::canColumnReach(Operator source, Operator targe
 }
 
 lingodb::compiler::dialect::relalg::ColumnSet gpm::BagOp::getCreatedVariables() {
-    return getCreatedColumns();
-}
-lingodb::compiler::dialect::relalg::ColumnSet gpm::BagOp::getUsedVariables() {
-    return getUsedColumns();
-}
-lingodb::compiler::dialect::relalg::ColumnSet gpm::BagOp::getCreatedColumns() {
     lingodb::compiler::dialect::relalg::ColumnSet res;
     for (auto attr : getMapping()) {
         res.insert(mlir::cast<tuples::ColumnDefAttr>(attr).getColumnPtr().get());
     }
     return res;
 }
-lingodb::compiler::dialect::relalg::ColumnSet gpm::BagOp::getUsedColumns() {
+lingodb::compiler::dialect::relalg::ColumnSet gpm::BagOp::getUsedVariables() {
     lingodb::compiler::dialect::relalg::ColumnSet used;
     for (auto attr : getMapping()) {
         auto fromExisting = mlir::cast<mlir::ArrayAttr>(mlir::cast<tuples::ColumnDefAttr>(attr).getFromExisting());
@@ -355,12 +320,6 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::BagOp::getUsedColumns() {
         }
     }
     return used;
-}
-lingodb::compiler::dialect::relalg::ColumnSet gpm::BagOp::getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache&) {
-    return getCreatedColumns();
-}
-bool gpm::BagOp::canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column) {
-    return lingodb::compiler::dialect::relalg::detail::canColumnReach(getOperation(), source, target, column);
 }
 
 } // namespace gengodb::compiler::dialect

@@ -22,7 +22,10 @@ class GPM_Op<string mnemonic, list<Trait> traits = []> : Op<GPM_Dialect, mnemoni
   let hasCustomAssemblyFormat = 1;
 }
 
-def TriplePatternOp : GPM_Op<"triple_pattern", [Pure,GPMOperator,Operator,UnaryOperator,DeclareOpInterfaceMethods<Parameterizable>]> {
+// True relational operators that can appear in a RelAlg syntax tree.
+class GPM_RelAlgOp<string mnemonic, list<Trait> traits = []> : GPM_Op<"relalg." # mnemonic, traits>;
+
+def TriplePatternOp : GPM_RelAlgOp<"triple_pattern", [Pure,GPMOperator,Operator,UnaryOperator,DeclareOpInterfaceMethods<Parameterizable>]> {
   let summary = "triple pattern";
   let arguments = (ins TupleStream:$rel, ColumnRefAttr:$graphRef, AnyAttr:$s, AnyAttr:$p, AnyAttr:$o);
   let results = (outs TupleStream:$res);
@@ -32,13 +35,12 @@ def TriplePatternOp : GPM_Op<"triple_pattern", [Pure,GPMOperator,Operator,UnaryO
     lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
     lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
     lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
-    lingodb::compiler::dialect::relalg::ColumnSet getBindingColumns();
     bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
     std::optional<size_t> getParamId(TripleSlot slot);
   }];
 }
 
-def NamedGraphOp : GPM_Op<"named_graph", [Pure,GPMOperator,Operator]> {
+def NamedGraphOp : GPM_RelAlgOp<"named_graph", [Pure,GPMOperator,Operator]> {
   let summary = "named graph";
   let arguments = (ins ColumnDefAttr:$def);
   let results = (outs TupleStream:$res);
@@ -89,7 +91,7 @@ def OptionalGraphPatternOp : GPM_Op<"optional_graph_pattern", [Pure,GPMOperator,
   let hasVerifier = 1;
 }
 
-def BagOp : GPM_Op<"bag", [Pure,GPMOperator,Operator,BinaryOperator]> {
+def BagOp : GPM_Op<"bag", [Pure,GPMOperator]> {
   let summary = "graph pattern binding union bag";
   let arguments = (ins TupleStream:$left, TupleStream:$right, ArrayAttr:$mapping);
   let results = (outs TupleStream:$res);
@@ -98,15 +100,11 @@ def BagOp : GPM_Op<"bag", [Pure,GPMOperator,Operator,BinaryOperator]> {
     lingodb::compiler::dialect::relalg::ColumnSet getBoundVariables() { return getUsedVariables(); }
     lingodb::compiler::dialect::relalg::ColumnSet getCreatedVariables();
     lingodb::compiler::dialect::relalg::ColumnSet getUsedVariables();
-    lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
-    lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
-    lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
-    bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
   }];
   let hasVerifier = 1;
 }
 
-def FilterOp : GPM_Op<"filter", [Pure,GPMOperator,Operator,UnaryOperator]> {
+def FilterOp : GPM_Op<"filter", [Pure,GPMOperator]> {
   let summary = "graph pattern filter";
   let arguments = (ins TupleStream:$rel);
   let results = (outs TupleStream:$res);
