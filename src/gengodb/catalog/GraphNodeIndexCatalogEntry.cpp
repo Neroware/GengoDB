@@ -40,7 +40,7 @@ void GraphNodeIndexCatalogEntry::setCatalog(Catalog* catalog) {
                 return static_cast<uint64_t>(mapping.get_global(localId));
             },
             [&mapping](uint64_t globalId) -> int32_t {
-                return mapping.get_local(static_cast<int64_t>(globalId));
+                return mapping.get_local_safe(static_cast<int64_t>(globalId));
             });
     }
 }

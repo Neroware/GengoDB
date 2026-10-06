@@ -76,7 +76,8 @@ void writeLiteral(std::vector<uint8_t>& buffer, size_t id, const relalg::QueryPa
    }
 }
 
-mlir::Attribute termForSlot(gpm::TriplePatternOp op, gpm::TripleSlot slot) {
+template <class OpTy>
+mlir::Attribute termForSlot(OpTy op, gpm::TripleSlot slot) {
    switch (slot) {
       case gpm::TripleSlot::subject: return op.getS();
       case gpm::TripleSlot::predicate: return op.getP();
@@ -101,7 +102,7 @@ std::vector<uint8_t> lingodb::execution::buildQueryParamBuffer(mlir::ModuleOp ma
       auto paramsAttr = op->getAttrOfType<mlir::ArrayAttr>(relalg::kQueryParamsAttrName);
       if (!paramsAttr) return;
 
-      if (auto triple = mlir::dyn_cast<gpm::TriplePatternOp>(op.getOperation())) {
+      auto writeIdentifierParams = [&](auto triple) {
          auto refType = mlir::cast<gpm::GraphReferenceType>(triple.getGraphRef().getColumn().type);
          std::string graphName = refType.getName().str();
          for (auto slot : {gpm::TripleSlot::subject, gpm::TripleSlot::predicate, gpm::TripleSlot::object}) {
@@ -111,6 +112,13 @@ std::vector<uint8_t> lingodb::execution::buildQueryParamBuffer(mlir::ModuleOp ma
             int32_t resolved = namedGraphManager.resolve(graphName, ident.identifier());
             writeI32(buffer, *id, resolved);
          }
+      };
+      if (auto triple = mlir::dyn_cast<gpm::TriplePatternOp>(op.getOperation())) {
+         writeIdentifierParams(triple);
+         return;
+      }
+      if (auto expansion = mlir::dyn_cast<gpm::GraphExpansionOp>(op.getOperation())) {
+         writeIdentifierParams(expansion);
          return;
       }
       auto literals = op.getParamLiterals();

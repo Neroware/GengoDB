@@ -8,6 +8,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/OpImplementation.h"
 
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 using namespace mlir;
@@ -122,6 +123,39 @@ void printCustDef(OpAsmPrinter& p, mlir::Operation* op, tuples::ColumnDefAttr at
         p << "=";
         printCustRefArr(p, op, fromExistingArr);
     }
+}
+ParseResult parseCustDefArr(OpAsmParser& parser, ArrayAttr& res) {
+    std::vector<mlir::Attribute> defs;
+    auto parseElement = [&]() -> ParseResult {
+        tuples::ColumnDefAttr def;
+        if (parseCustDef(parser, def)) {
+            return failure();
+        }
+        defs.push_back(def);
+        return success();
+    };
+    if (parser.parseCommaSeparatedList(OpAsmParser::Delimiter::Square, parseElement)) {
+        return failure();
+    }
+    res = mlir::ArrayAttr::get(parser.getBuilder().getContext(), defs);
+    return success();
+}
+void printCustDefArr(OpAsmPrinter& p, mlir::Operation* op, ArrayAttr arrayAttr) {
+    p << "[";
+    bool first = true;
+    for (auto attr : arrayAttr) {
+        if (first) {
+            first = false;
+        } else {
+            p << ", ";
+        }
+        if (auto def = mlir::dyn_cast<tuples::ColumnDefAttr>(attr)) {
+            printCustDef(p, op, def);
+        } else {
+            p << attr;
+        }
+    }
+    p << "]";
 }
 ParseResult parseCustAttrMapping(OpAsmParser& parser, ArrayAttr& res) {
     if (parser.parseKeyword("mapping") || parser.parseColon() || parser.parseLBrace()) return failure();
@@ -265,6 +299,46 @@ void printCustRegion(OpAsmPrinter& p, Operation* op, Region& r) {
     }
     if (mlir::isa<BNodeTermAttr>(getP())) {
         return emitOpError("predicate cannot be a blank node");
+    }
+    return mlir::success();
+}
+::mlir::LogicalResult gpm::GraphExpansionOp::verify() {
+    static constexpr const char* kSlotNames[3] = {"subject", "predicate", "object"};
+    auto terms = getTerms();
+    llvm::SmallPtrSet<const tuples::Column*, 4> referencedExpand;
+    for (auto [i, term] : llvm::enumerate(terms)) {
+        if (mlir::isa<BNodeTermAttr>(term)) {
+            return emitOpError() << kSlotNames[i] << " must not be a blank node, use a variable instead";
+        }
+        if (mlir::isa<IdentifierTermAttr>(term)) {
+            continue;
+        }
+        auto var = mlir::dyn_cast<VariableTermAttr>(term);
+        if (!var) {
+            return emitOpError() << kSlotNames[i] << " must be a GPM term attribute";
+        }
+        if (!var.hasBinding()) {
+            return emitOpError() << kSlotNames[i] << " must reference a column, new variables are declared in 'expand'";
+        }
+        auto* column = var.getBindingReference().getColumnPtr().get();
+        if (isExpandColumn(column)) {
+            referencedExpand.insert(column);
+        }
+    }
+    if (getExpand().empty()) {
+        return emitOpError("must expand at least one new variable");
+    }
+    for (auto attr : getExpand()) {
+        auto def = mlir::dyn_cast<tuples::ColumnDefAttr>(attr);
+        if (!def) {
+            return emitOpError("expand entries must be column definitions");
+        }
+        if (!referencedExpand.contains(&def.getColumn())) {
+            return emitOpError() << "expanded column " << def.getName() << " is not referenced by the pattern";
+        }
+    }
+    if (getAnchorColumns().empty()) {
+        return emitOpError("pattern must reference at least one anchor column of the input relation");
     }
     return mlir::success();
 }

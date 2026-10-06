@@ -9,6 +9,7 @@
 #include <cstring>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -514,6 +515,126 @@ int8_t VariantRuntime::langMatches(int64_t payload, int32_t tag, VarLen32 langRa
     const std::string_view langTagStr = lit->lexical_form().view();
     const std::string_view range(langRange.data(), langRange.getLen());
     return rdf4cpp::lang_matches(langTagStr, range) ? 1 : 0;
+}
+
+namespace {
+std::string_view stripIriBrackets(std::string_view name) {
+    if (name.size() >= 2 && name.front() == '<' && name.back() == '>') return name.substr(1, name.size() - 2);
+    return name;
+}
+std::string_view varLenView(int64_t payload) {
+    auto* sv = reinterpret_cast<VarLen32*>(payload);
+    return std::string_view(sv->data(), sv->getLen());
+}
+// Same byte layout as the loader's blob literals (RdfGraph's LiteralKey): [langLen][lang][lex].
+std::string untaggedBlobKey(std::string_view lex) {
+    std::string data(1, '\0');
+    data.append(lex);
+    return data;
+}
+// Literal node of another graph -> literal node of `target`, via datatype IRI + storage bytes.
+int32_t resolveForeignLiteral(PropertyGraph* source, PropertyGraph::NodeEntry* ref, PropertyGraph* target) {
+    const auto& prop = source->prop(ref->payload);
+    const std::string datatype = source->getMetadata().get_node_name(static_cast<int32_t>(prop.key));
+    auto t = xsd::from_int32(static_cast<int32_t>(prop.type));
+    const auto shape = t.has_value() ? classifyStorage(*t).shape : StorageShape::Blob;
+    auto& propData = source->getPropData();
+    const char* data = nullptr;
+    size_t len = 0;
+    switch (shape) {
+        case StorageShape::Inline32:
+            data = reinterpret_cast<const char*>(&prop.value);
+            len = sizeof(prop.value);
+            break;
+        case StorageShape::Int64:
+            data = reinterpret_cast<const char*>(propData.get_i64_ptr(static_cast<int32_t>(prop.value)));
+            len = sizeof(int64_t);
+            break;
+        case StorageShape::UInt64:
+            data = reinterpret_cast<const char*>(propData.get_ui64_ptr(static_cast<int32_t>(prop.value)));
+            len = sizeof(uint64_t);
+            break;
+        case StorageShape::Double:
+            data = reinterpret_cast<const char*>(propData.get_double_ptr(static_cast<int32_t>(prop.value)));
+            len = sizeof(double);
+            break;
+        case StorageShape::Blob: {
+            auto [ptr, blobLen] = propData.get_blob<xsd::Type::String>(static_cast<int32_t>(prop.value));
+            data = reinterpret_cast<const char*>(ptr);
+            len = blobLen;
+            break;
+        }
+    }
+    return target->getMetadata().local_literal(stripIriBrackets(datatype), data, len);
+}
+// IRI / blank node of another graph -> node of `target`.
+int32_t resolveForeignNode(PropertyGraph* source, int32_t localId, PropertyGraph* target) {
+    const auto& sourceMeta = source->getMetadata();
+    if (sourceMeta.type_id(localId) == static_cast<int32_t>(RDFNodeType::IRI)) {
+        return target->getMetadata().local_iri(stripIriBrackets(sourceMeta.get_node_name(localId)));
+    }
+    if (!sourceMeta.has_id_mapping() || !target->getMetadata().has_id_mapping()) {
+        throw std::runtime_error("resolving a blank node across graphs requires the global node index (db:initialize)");
+    }
+    return target->getMetadata().local_id(sourceMeta.uid(localId));
+}
+// Literal tags whose variant payload is still the graph node (see CreateNodeRefOp lowering)
+bool hasNodePayload(xsd::Type t) {
+    switch (t) {
+        case xsd::Type::Unspecified:
+        case xsd::Type::String:
+        case xsd::Type::Integer:
+        case xsd::Type::Decimal:
+        case xsd::Type::AnyLiteralScalar:
+            return false;
+        default:
+            return classifyStorage(t).shape == StorageShape::Blob;
+    }
+}
+} // namespace
+
+int32_t VariantRuntime::resolveLocalNode(uint8_t* graph, int32_t tag, int64_t payload) {
+    auto* target = reinterpret_cast<PropertyGraph*>(GraphStorage::graphPtr(graph));
+    const auto& targetMeta = target->getMetadata();
+    auto resolveNode = [&]() {
+        auto* ref = reinterpret_cast<PropertyGraph::NodeEntry*>(payload);
+        PropertyGraph* source = propertyGraphOf(ref);
+        const int32_t localId = GraphStorage::nodeId(reinterpret_cast<uint8_t*>(ref));
+        if (source == target) return localId;
+        return ref->payload < 0 ? resolveForeignNode(source, localId, target) : resolveForeignLiteral(source, ref, target);
+    };
+    // RDFNode and AnyIRI are GengoDB-specific tags, unknown to xsd::from_int32
+    if (tag == xsd::to_int32(xsd::Type::RDFNode)) return resolveNode();
+    if (tag == xsd::to_int32(xsd::Type::AnyIRI)) return targetMeta.local_iri(varLenView(payload));
+    auto t = xsd::from_int32(tag);
+    if (!t.has_value() || *t == xsd::Type::Unspecified) return -1;
+    if (hasNodePayload(*t)) return resolveNode();
+    switch (*t) {
+        case xsd::Type::String:
+        case xsd::Type::Integer:
+        case xsd::Type::Decimal: {
+            const std::string data = untaggedBlobKey(varLenView(payload));
+            return targetMeta.local_literal(std::string(kXsdNamespace) + xsd::to_string(*t), data.data(), data.size());
+        }
+        case xsd::Type::AnyLiteralScalar: {
+            // [u32 dtIriLen][dtIriBytes][lexicalBytes]
+            const std::string_view raw = varLenView(payload);
+            uint32_t dtLen;
+            std::memcpy(&dtLen, raw.data(), sizeof(dtLen));
+            const std::string data = untaggedBlobKey(raw.substr(sizeof(dtLen) + dtLen));
+            return targetMeta.local_literal(raw.substr(sizeof(dtLen), dtLen), data.data(), data.size());
+        }
+        default: break;
+    }
+    // inline numeric family: the payload holds the value bytes, see CreateNodeRefOp lowering
+    const std::string datatype = std::string(kXsdNamespace) + xsd::to_string(*t);
+    const auto info = classifyStorage(*t);
+    if (info.shape == StorageShape::Inline32) {
+        uint32_t bits = 0;
+        std::memcpy(&bits, &payload, info.width);
+        return targetMeta.local_literal(datatype, reinterpret_cast<const char*>(&bits), sizeof(bits));
+    }
+    return targetMeta.local_literal(datatype, reinterpret_cast<const char*>(&payload), sizeof(payload));
 }
 
 VarLen32 VariantRuntime::langTag(int64_t payload, int32_t tag) {

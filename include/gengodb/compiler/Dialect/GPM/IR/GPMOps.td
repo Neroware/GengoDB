@@ -40,6 +40,30 @@ def TriplePatternOp : GPM_RelAlgOp<"triple_pattern", [Pure,GPMOperator,Operator,
   }];
 }
 
+// Graph expansion: R ⋈_SPARQL G(s,p,o), using G as an index. Variable terms of the pattern are
+// column references: a reference to one of the `expand` definitions binds a new variable, every
+// other reference is an anchor that has to be bound by `rel`.
+def GraphExpansionOp : GPM_RelAlgOp<"graph_expansion", [Pure,GPMOperator,Operator,UnaryOperator,DeclareOpInterfaceMethods<Parameterizable>]> {
+  let summary = "graph expansion";
+  let arguments = (ins TupleStream:$rel, ArrayAttr:$expand, ColumnRefAttr:$graphRef, AnyAttr:$s, AnyAttr:$p, AnyAttr:$o);
+  let results = (outs TupleStream:$res);
+  let assemblyFormat = [{  $rel `expand` `:` custom<CustDefArr>($expand) `pattern` `:` custom<CustRef>($graphRef) `(` custom<Term>($s) `,` custom<Term>($p) `,` custom<Term>($o) `)` attr-dict }];
+  let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    std::array<mlir::Attribute, 3> getTerms() { return {getS(), getP(), getO()}; }
+    bool isExpandColumn(const lingodb::compiler::dialect::tuples::Column* column);
+    lingodb::compiler::dialect::relalg::ColumnSet getAnchorColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getBoundVariables() { return getAnchorColumns(); }
+    lingodb::compiler::dialect::relalg::ColumnSet getCreatedVariables();
+    lingodb::compiler::dialect::relalg::ColumnSet getUsedVariables();
+    lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
+    bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
+    std::optional<size_t> getParamId(TripleSlot slot);
+  }];
+}
+
 def NamedGraphOp : GPM_RelAlgOp<"named_graph", [Pure,GPMOperator,Operator]> {
   let summary = "named graph";
   let arguments = (ins ColumnDefAttr:$def);

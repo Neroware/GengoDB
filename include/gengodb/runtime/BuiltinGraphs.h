@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <functional>
+#include <string_view>
 
 namespace gengodb::semantics {
     class RdfGraph;
@@ -193,12 +195,20 @@ public:
     
     struct Metadata {
         inline void set_name_mapping(std::function<std::string(int32_t)> names) { names_ = names; }
-        inline void set_id_mapping(std::function<uint64_t(int32_t)> uid, std::function<int32_t(uint64_t)> local) { uid_ = uid; local_ = local; }
+        inline void set_id_mapping(std::function<uint64_t(int32_t)> uid, std::function<int32_t(uint64_t)> local) { uid_ = uid; local_ = local; hasIdMapping_ = true; }
         inline void set_type_id_mapping(std::function<int32_t(int32_t)> type_id) { typeid_ = type_id; }
+        // Term lookups into this graph: local node id of an IRI / a literal (datatype IRI + storage
+        // bytes, see RdfGraph's LiteralKey), or -1 if the term does not occur in this graph.
+        inline void set_iri_mapping(std::function<int32_t(std::string_view)> iri) { iri_ = iri; }
+        inline void set_literal_mapping(std::function<int32_t(std::string_view, const char*, size_t)> literal) { literal_ = literal; }
         inline std::string get_node_name(int32_t id) const { return names_(id); }
         inline uint64_t uid(int32_t local_id) const { return uid_(local_id); }
+        // -1 if the uid has no node in this graph
         inline int32_t local_id(uint64_t uid) const { return local_(uid); }
+        inline bool has_id_mapping() const { return hasIdMapping_; }
         inline int32_t type_id(int32_t id) const { return typeid_(id); }
+        inline int32_t local_iri(std::string_view iri) const { return iri_(iri); }
+        inline int32_t local_literal(std::string_view datatypeIri, const char* data, size_t len) const { return literal_(datatypeIri, data, len); }
         inline const std::string& name() const { return name_; }
         inline void set_name(const std::string& n) { name_ = n; }
         private:
@@ -207,6 +217,9 @@ public:
         std::function<uint64_t(int32_t)> uid_ = [](int32_t i){ assert(false && "missing index"); return -1; };
         std::function<int32_t(uint64_t)> local_ = [](uint64_t i){ assert(false && "missing index"); return -1; };
         std::function<int32_t(int32_t)> typeid_ = [](int32_t){ return -1; };
+        std::function<int32_t(std::string_view)> iri_ = [](std::string_view){ return -1; };
+        std::function<int32_t(std::string_view, const char*, size_t)> literal_ = [](std::string_view, const char*, size_t){ return -1; };
+        bool hasIdMapping_ = false;
     };
 
     PropertyGraph(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);

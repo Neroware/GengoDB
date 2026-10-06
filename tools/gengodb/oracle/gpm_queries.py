@@ -7,6 +7,7 @@ entry that needed a non-obvious reading of the GPM semantics.
 """
 
 EX = "PREFIX ex: <http://example.org/>\n"
+XSD = "PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>\n"
 
 QUERIES = {
 "bgp/all.mlir": EX + "SELECT ?s ?p ?o WHERE { ?s ?p ?o }",
@@ -209,4 +210,49 @@ SELECT ?who ?what {
     UNION
     { ?who ex:age ?what }
 }""",
+
+# --- gpm.relalg.graph_expansion: R ⋈ G(s,p,o), R's columns used as anchors ---
+"expansion/subject_anchor.mlir": EX + "SELECT ?who ?what ?food WHERE { ?who ex:drinks ?what . ?who ex:eats ?food }",
+
+"expansion/object_anchor_iri.mlir": EX + "SELECT ?food ?other WHERE { ex:bob ex:eats ?food . ?other ex:eats ?food }",
+
+"expansion/object_anchor_any.mlir": EX + "SELECT ?p ?o ?other ?p2 WHERE { ex:bob ?p ?o . ?other ?p2 ?o }",
+
+"expansion/new_predicate.mlir": EX + "SELECT ?who ?p ?x WHERE { ?who ex:eats ex:sushi . ?who ?p ?x }",
+
+"expansion/predicate_anchor.mlir": EX + "SELECT ?p ?s ?o WHERE { ex:bob ?p ex:sushi . ?s ?p ?o }",
+
+"expansion/secondary_anchor.mlir": EX + "SELECT ?who ?what ?p WHERE { ?who ex:drinks ?what . ?who ?p ?what }",
+
+"expansion/self_loop_new.mlir": EX + "SELECT ?p ?z WHERE { ex:coffee ?p ex:coffee . ?z ?p ?z }",
+
+"expansion/self_loop_anchor.mlir": EX + "SELECT ?who ?what ?q WHERE { ?who ex:drinks ?what . ?what ?q ?what }",
+
+"expansion/chained.mlir": EX + "SELECT ?who ?what ?t WHERE { ?who ex:eats ex:sushi . ?who ex:drinks ?what . ?what ex:temp ?t }",
+
+# the anchors are computed scalars (variant.create_scalar), i.e. not graph-bound terms
+"expansion/computed_anchor.mlir": EX + XSD + """
+SELECT ?s1 ?s2 ?s3 ?s4 WHERE {
+  ex:bob ex:age ?age .
+  ?s1 ex:name "Bob"^^xsd:string .
+  ?s2 ex:favoriteRating "4.75"^^xsd:double .
+  ?s3 ex:age "30"^^xsd:int .
+  ?s4 ex:accountBalance "-987654321012345"^^xsd:long .
+}""",
+
+"expansion/computed_anchor_missing.mlir": EX + XSD + """
+SELECT ?s1 ?s2 ?s3 ?s4 WHERE {
+  ex:bob ex:age ?age .
+  ?s1 ex:name "Nobody"^^xsd:string .
+  ?s2 ex:favoriteRating "4.75"^^xsd:double .
+  ?s3 ex:age "30"^^xsd:int .
+  ?s4 ex:accountBalance "-987654321012345"^^xsd:long .
+}""",
+
+"expansion/join_input.mlir": EX + "SELECT ?who ?food ?age ?awake WHERE { ?who ex:eats ?food . ?who ex:drinks ex:coffee . ?who ex:age ?age . ?who ex:awake ?awake }",
+
+# R and the expansion read two different graphs that both hold coffee.ttl
+"expansion/cross_graph.mlir": EX + "SELECT ?who ?what WHERE { ?who ex:eats ex:sushi . ?who ex:drinks ?what }",
+
+"expansion/cross_graph_literal.mlir": EX + "SELECT ?rating ?other WHERE { ex:bob ex:favoriteRating ?rating . ?other ex:favoriteRating ?rating }",
 }

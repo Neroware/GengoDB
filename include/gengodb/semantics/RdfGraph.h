@@ -8,6 +8,7 @@
 #include <rdf4cpp/Timezone.hpp>
 
 #include <cstring>
+#include <deque>
 #include <iostream>
 #include <limits>
 #include <optional>
@@ -202,6 +203,13 @@ private:
     std::unique_ptr<runtime::GengoDBGraph> storage;
     std::unique_ptr<NodeIdDict> nodes;
     std::unordered_map<LiteralKey, int32_t, LiteralKeyHash> literalNodes;
+    // Owns the bytes the keys of literalNodes point to: the property storage they are read from
+    // (e.g. PropertyData's vectors) may reallocate while triples are added.
+    std::deque<std::string> literalKeyBytes;
+    void addLiteralNode(const LiteralKey& key, int32_t id) {
+        const std::string& bytes = literalKeyBytes.emplace_back(key.data, key.len);
+        literalNodes.emplace(LiteralKey{bytes.data(), bytes.size(), key.dataType}, id);
+    }
 public:
     RdfGraph(const IRI& iri, std::unique_ptr<runtime::GengoDBGraph> storage, std::string fileName, std::string sourceFileName = "")
         : iri(iri), storage(std::move(storage)), nodes(std::make_unique<NodeIdDict>()), persist(false), fileName(fileName), sourceFileName(sourceFileName.empty() ? fileName : std::move(sourceFileName)), loadedFromRdfFile(false), rdfParseFlags(parser::ParsingFlag::Turtle), nodeHelper(this) {}

@@ -169,10 +169,8 @@ static mlir::Value generateTupleStream(ConversionPatternRewriter& rewriter, mlir
 }
 
 template<typename ColumnAttrT>
-static mlir::Value scanNamedGraph(ConversionPatternRewriter& rewriter, mlir::Location loc, ColumnAttrT graphAttr, NamedGraphMapper& graphs, ExternalGraphMapper& externalGraphs, bool uniqueScope = false) {
+static ExternalGraphData& getOrCreateExternalGraph(ConversionPatternRewriter& rewriter, mlir::Location loc, ColumnAttrT graphAttr, ExternalGraphMapper& externalGraphs, mlir::Block* insertionBlock) {
    auto ctxt = rewriter.getContext();
-   auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-   auto graphRef = graphAttr.getName();
    auto [graphGroup, graphName] = splitGraphRef(graphAttr);
    auto graphRefType = mlir::cast<gpm::GraphReferenceType>(graphAttr.getColumn().type);
    auto graphNameAttr = graphRefType.getName();
@@ -185,24 +183,41 @@ static mlir::Value scanNamedGraph(ConversionPatternRewriter& rewriter, mlir::Loc
       auto edgeSetMember = createMember(ctxt, memberName(graphName, graphGroup, "ex"), edgeSetType);
       auto graphType = gsubop::GraphType::get(ctxt, createStateMembersAttr(ctxt, {nodeSetMember}), createStateMembersAttr(ctxt, {edgeSetMember}));
       mlir::OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(rewriter.getInsertionBlock());
+      rewriter.setInsertionPointToStart(insertionBlock);
       auto externalGraph = rewriter.create<gsubop::GetExternalGraphOp>(loc, graphType, graphNameAttr, graphRefType.getGlobalId());
       idIt = externalGraphs.insert({identity, ExternalGraphData{graphType, nodeSetType, edgeSetType, externalGraph}}).first;
    }
-   auto& data = idIt->second;
+   return idIt->second;
+}
+template<typename ColumnAttrT>
+static mlir::Value scanExternalGraph(ConversionPatternRewriter& rewriter, mlir::Location loc, ColumnAttrT graphAttr, ExternalGraphData& data, NamedGraphMapper& graphs, bool uniqueScope) {
+   auto& columnManager = rewriter.getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+   auto [graphGroup, graphName] = splitGraphRef(graphAttr);
    auto nodeSetDef = createDef(columnManager, graphGroup, graphName + "_vx", data.nodeSetType, uniqueScope);
    auto edgeSetDef = createDef(columnManager, graphGroup, graphName + "_ex", data.edgeSetType, uniqueScope);
-   graphs.insert({graphRef, NamedGraphData{data.graphType, &nodeSetDef.getColumn(), &edgeSetDef.getColumn(), data.externalGraph}});
+   graphs.insert({graphAttr.getName(), NamedGraphData{data.graphType, &nodeSetDef.getColumn(), &edgeSetDef.getColumn(), data.externalGraph}});
    return rewriter.create<gsubop::ScanGraphOp>(loc, data.externalGraph, nodeSetDef, edgeSetDef);
 }
+template<typename ColumnAttrT>
+static mlir::Value scanNamedGraph(ConversionPatternRewriter& rewriter, mlir::Location loc, ColumnAttrT graphAttr, NamedGraphMapper& graphs, ExternalGraphMapper& externalGraphs, bool uniqueScope = false) {
+   auto& data = getOrCreateExternalGraph(rewriter, loc, graphAttr, externalGraphs, rewriter.getInsertionBlock());
+   return scanExternalGraph(rewriter, loc, graphAttr, data, graphs, uniqueScope);
+}
+// Consumers that are still lowered by RelAlgToSubOp (and therefore need the available columns of
+// their lowered GPM input), i.e. relational operators and graph expansions.
 static bool isRelAlgOperator(mlir::Operation* op) {
-   return op && !mlir::isa<GPMOperator>(op) && mlir::isa<Operator>(op);
+   return op && mlir::isa<Operator>(op) && (!mlir::isa<GPMOperator>(op) || mlir::isa<gpm::GraphExpansionOp>(op));
 }
 
+// Emits the edge scan of a single triple pattern (s, p, o) over a lowered graph. Variable terms
+// either define their column (triple patterns) or reference it (graph expansions). The first
+// occurrence of a column binds it, every further occurrence -- and every column bound up front
+// via bindAnchor -- is checked for equality instead.
 class TripleEmitter {
    ConversionPatternRewriter& rewriter;
    MLIRContext* ctxt;
-   gpm::TriplePatternOp op;
+   mlir::Operation* op;
+   std::array<std::optional<size_t>, 3> paramIds;
    tuples::ColumnManager& columnManager;
    subop::MemberManager& memberManager;
    NamedGraphMapper& graphs;
@@ -214,14 +229,20 @@ class TripleEmitter {
    llvm::DenseMap<const tuples::Column*, tuples::ColumnRefAttr> localTerms;
 
    public:
-   TripleEmitter(ConversionPatternRewriter& rewriter, NamedGraphMapper& graphs, gpm::TriplePatternOp tripleOp)
-      : rewriter(rewriter), ctxt(rewriter.getContext()), op(tripleOp),
+   template<typename PatternOpT>
+   TripleEmitter(ConversionPatternRewriter& rewriter, NamedGraphMapper& graphs, PatternOpT patternOp)
+      : rewriter(rewriter), ctxt(rewriter.getContext()), op(patternOp.getOperation()),
+      paramIds{patternOp.getParamId(gpm::TripleSlot::subject), patternOp.getParamId(gpm::TripleSlot::predicate), patternOp.getParamId(gpm::TripleSlot::object)},
       columnManager(ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager()),
       memberManager(ctxt->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager()),
-      graphs(graphs), loc(tripleOp->getLoc()), graphRefAttr(tripleOp.getGraphRef()),
-      graphSym(graphRefAttr.getName()), sTerm(tripleOp.getS()), pTerm(tripleOp.getP()), oTerm(tripleOp.getO()) {
+      graphs(graphs), loc(patternOp->getLoc()), graphRefAttr(patternOp.getGraphRef()),
+      graphSym(graphRefAttr.getName()), sTerm(patternOp.getS()), pTerm(patternOp.getP()), oTerm(patternOp.getO()) {
       std::tie(group, graph) = splitGraphRef(graphRefAttr);
       assert(graphs.count(graphSym) && "graph must already be lowered");
+   }
+   // Columns already bound in the input stream: occurrences in the pattern only filter.
+   void bindAnchor(tuples::ColumnRefAttr anchorRef) {
+      localTerms[&anchorRef.getColumn()] = anchorRef;
    }
    mlir::Value lower(mlir::Value stream) {
       gsubop::EdgeRefType edgeRefType;
@@ -229,28 +250,53 @@ class TripleEmitter {
       bool anchorSubject = mlir::isa<gpm::IdentifierTermAttr>(sTerm);
       bool anchorObject = !anchorSubject && mlir::isa<gpm::IdentifierTermAttr>(oTerm);
       if (anchorSubject) {
-         stream = scanFromConstantAnchor(stream, mlir::cast<gpm::IdentifierTermAttr>(sTerm), EdgeDirection::Outgoing, edgeRefType, edgeRef, op.getParamId(gpm::TripleSlot::subject));
-         stream = emitPredicate(stream, edgeRef, op.getParamId(gpm::TripleSlot::predicate));
-         stream = emitTerm(stream, oTerm, edgeRefType.getToMembers().getMembers()[0], edgeRef, op.getParamId(gpm::TripleSlot::object));
+         stream = scanFromConstantAnchor(stream, mlir::cast<gpm::IdentifierTermAttr>(sTerm), EdgeDirection::Outgoing, edgeRefType, edgeRef, paramIds[0]);
+         stream = emitPredicate(stream, edgeRef, paramIds[1]);
+         stream = emitTerm(stream, oTerm, edgeRefType.getToMembers().getMembers()[0], edgeRef, paramIds[2]);
       }
       else if (anchorObject) {
-         stream = scanFromConstantAnchor(stream, mlir::cast<gpm::IdentifierTermAttr>(oTerm), EdgeDirection::Incoming, edgeRefType, edgeRef, op.getParamId(gpm::TripleSlot::object));
-         stream = emitTerm(stream, sTerm, edgeRefType.getFromMembers().getMembers()[0], edgeRef, op.getParamId(gpm::TripleSlot::subject));
-         stream = emitPredicate(stream, edgeRef, op.getParamId(gpm::TripleSlot::predicate));
+         stream = scanFromConstantAnchor(stream, mlir::cast<gpm::IdentifierTermAttr>(oTerm), EdgeDirection::Incoming, edgeRefType, edgeRef, paramIds[2]);
+         stream = emitTerm(stream, sTerm, edgeRefType.getFromMembers().getMembers()[0], edgeRef, paramIds[0]);
+         stream = emitPredicate(stream, edgeRef, paramIds[1]);
       }
       else {
          auto& graphData = graphs[graphSym];
          auto edgesRef = columnManager.createRef(graphData.edgeSetColumn);
          auto edgeSetType = graphData.edgeSetColumn->type;
          stream = scanEdges(stream, edgesRef, edgeSetType, edgeRefType, edgeRef);
-         stream = emitTerm(stream, sTerm, edgeRefType.getFromMembers().getMembers()[0], edgeRef, op.getParamId(gpm::TripleSlot::subject));
-         stream = emitPredicate(stream, edgeRef, op.getParamId(gpm::TripleSlot::predicate));
-         stream = emitTerm(stream, oTerm, edgeRefType.getToMembers().getMembers()[0], edgeRef, op.getParamId(gpm::TripleSlot::object));
+         stream = emitTerm(stream, sTerm, edgeRefType.getFromMembers().getMembers()[0], edgeRef, paramIds[0]);
+         stream = emitPredicate(stream, edgeRef, paramIds[1]);
+         stream = emitTerm(stream, oTerm, edgeRefType.getToMembers().getMembers()[0], edgeRef, paramIds[2]);
+      }
+      return stream;
+   }
+   // Traverses from the node bound to `anchorRef` (a variant column of the input stream) in the
+   // subject (outgoing edges) or object (incoming edges) slot.
+   mlir::Value lowerFromAnchor(mlir::Value stream, gpm::TripleSlot slot, tuples::ColumnRefAttr anchorRef) {
+      assert(slot != gpm::TripleSlot::predicate && "predicate anchors are checked on the scanned edges");
+      gsubop::EdgeRefType edgeRefType;
+      tuples::ColumnRefAttr edgeRef;
+      auto buildIdent = [&](mlir::OpBuilder& b, mlir::Value nodeSet, mlir::ValueRange args) -> mlir::Value {
+         return b.create<variant::ResolveLocalNodeOp>(loc, b.getI32Type(), nodeSet, args[0]);
+      };
+      if (slot == gpm::TripleSlot::subject) {
+         stream = scanFromAnchor(stream, {anchorRef}, rewriter.getI32Type(), buildIdent, EdgeDirection::Outgoing, edgeRefType, edgeRef);
+         stream = emitPredicate(stream, edgeRef, paramIds[1]);
+         stream = emitTerm(stream, oTerm, edgeRefType.getToMembers().getMembers()[0], edgeRef, paramIds[2]);
+      }
+      else {
+         stream = scanFromAnchor(stream, {anchorRef}, rewriter.getI32Type(), buildIdent, EdgeDirection::Incoming, edgeRefType, edgeRef);
+         stream = emitTerm(stream, sTerm, edgeRefType.getFromMembers().getMembers()[0], edgeRef, paramIds[0]);
+         stream = emitPredicate(stream, edgeRef, paramIds[1]);
       }
       return stream;
    }
    private:
    enum EdgeDirection { Incoming, Outgoing };
+   static tuples::Column* termColumn(mlir::Attribute term) {
+      auto varTerm = mlir::cast<gpm::VariableTermAttr>(term);
+      return varTerm.hasBinding() ? &varTerm.getBindingReference().getColumn() : &varTerm.getProducedBinding().getColumn();
+   }
    mlir::Value wrapVariant(mlir::Value stream, tuples::ColumnRefAttr rawRef, tuples::ColumnDefAttr variantDef) {
       subop::MapCreationHelper helper(ctxt);
       helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
@@ -278,7 +324,7 @@ class TripleEmitter {
       return rewriter.create<subop::FilterOp>(loc, mapOp.getResult(), subop::FilterSemantic::all_true, rewriter.getArrayAttr({eqRef}));
    }
    mlir::Value finish(mlir::Value stream, mlir::Attribute term, tuples::ColumnRefAttr rawRef) {
-      const auto* column = &mlir::cast<gpm::VariableTermAttr>(term).getProducedBinding().getColumn();
+      auto* column = termColumn(term);
       if (auto it = localTerms.find(column); it != localTerms.end()) {
          auto [tmpDef, tmpRef] = createColumn(variant::VariantType::get(ctxt), "nodes", "tmp");
          stream = wrapVariant(stream, rawRef, tmpDef);
@@ -295,7 +341,13 @@ class TripleEmitter {
       auto [validDef, validRef] = createColumn(rewriter.getI1Type(), "idents", "valid");
       helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
          mlir::Value identVal = helper.access(identRef, loc);
-         mlir::Value valid = b.create<gsubop::IdentifierValidOp>(loc, b.getI1Type(), identVal);
+         mlir::Value valid;
+         if (mlir::isa<gsubop::IdentifierType>(identVal.getType())) {
+            valid = b.create<gsubop::IdentifierValidOp>(loc, b.getI1Type(), identVal);
+         } else {
+            mlir::Value zero = b.create<mlir::arith::ConstantIntOp>(loc, 0, identVal.getType());
+            valid = b.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::sge, identVal, zero);
+         }
          b.create<tuples::ReturnOp>(loc, valid);
       });
       auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({validDef}), helper.getColRefs());
@@ -303,23 +355,37 @@ class TripleEmitter {
       return rewriter.create<subop::FilterOp>(loc, mapOp.getResult(), subop::FilterSemantic::all_true, rewriter.getArrayAttr({validRef}));
    }
    mlir::Value scanFromConstantAnchor(mlir::Value stream, gpm::IdentifierTermAttr ident, EdgeDirection direction, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef, std::optional<size_t> paramId = std::nullopt) {
+      auto buildIdent = [&](mlir::OpBuilder& bldr, mlir::Value, mlir::ValueRange) -> mlir::Value {
+         auto identOp = bldr.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, ident.getIdent());
+         if (paramId) relalg::forwardParameter(op, *paramId, identOp.getOperation());
+         return identOp;
+      };
+      return scanFromAnchor(stream, {}, gsubop::IdentifierType::get(ctxt), buildIdent, direction, edgeRefType, edgeRef);
+   }
+   // Resolves a single node per input tuple (buildIdent gets the node set and the values of
+   // `params`), drops tuples whose node does not exist and scans the node's edges.
+   template<typename BuildIdentFn>
+   mlir::Value scanFromAnchor(mlir::Value stream, llvm::ArrayRef<tuples::ColumnRefAttr> params, mlir::Type identType, BuildIdentFn buildIdent, EdgeDirection direction, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef) {
       auto& graphData = graphs[graphSym];
-      auto nodesRef = columnManager.createRef(graphData.nodeSetColumn);
-      auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({nodesRef}));
+      llvm::SmallVector<mlir::Attribute> nestedParams{columnManager.createRef(graphData.nodeSetColumn)};
+      nestedParams.append(params.begin(), params.end());
+      auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr(nestedParams));
       auto* b = new Block();
       b->addArgument(tuples::TupleType::get(ctxt), loc);
       auto nodeSetArg = b->addArgument(graphData.nodeSetColumn->type, loc);
+      llvm::SmallVector<mlir::Value> paramArgs;
+      for (auto param : params) {
+         paramArgs.push_back(b->addArgument(param.getColumn().type, loc));
+      }
       nestedMapOp.getRegion().push_back(b);
       gsubop::NodeRefType nodeRefType;
       tuples::ColumnRefAttr nodeRef;
       {
          mlir::OpBuilder::InsertionGuard guard(rewriter);
          rewriter.setInsertionPointToStart(b);
-         auto [identDef, identRef] = createColumn(gsubop::IdentifierType::get(ctxt), "idents", "lookup");
+         auto [identDef, identRef] = createColumn(identType, "idents", "lookup");
          auto scan = generateTupleStream(rewriter, loc, identDef, [&](mlir::OpBuilder& bldr) -> mlir::Value {
-            auto identOp = bldr.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, ident.getIdent());
-            if (paramId) relalg::forwardParameter(op, *paramId, identOp.getOperation());
-            return identOp;
+            return buildIdent(bldr, nodeSetArg, paramArgs);
          });
          scan = filterValidIdentifier(scan, identRef);
          nodeRefType = createNodeRefType(ctxt, group, graph);
@@ -377,10 +443,10 @@ class TripleEmitter {
             return identVal;
          });
          inner = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), inner, nodeSetArg, rewriter.getArrayAttr({scanIdentRef}), rawDef);
-         inner = finish(inner, pTerm, rawRef);
          rewriter.create<tuples::ReturnOp>(loc, inner);
       }
-      return nestedMapOp.getRes();
+      // outside of the nested map: an equality filter may need columns of the outer stream
+      return finish(nestedMapOp.getRes(), pTerm, rawRef);
    }
    mlir::Value emitTerm(mlir::Value stream, mlir::Attribute term, Member nodeMember, tuples::ColumnRefAttr edgeRef, std::optional<size_t> paramId = std::nullopt) {
       if (auto constTerm = mlir::dyn_cast<gpm::IdentifierTermAttr>(term)) {
@@ -441,6 +507,92 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       return success();
    }
 };
+
+// Reuses a gsubop.get_external_graph of the same graph that dominates `op` (e.g. created when the
+// named graphs were lowered), otherwise creates one at the start of op's block.
+static ExternalGraphData& findOrCreateExternalGraph(ConversionPatternRewriter& rewriter, gpm::GraphExpansionOp op, ExternalGraphMapper& externalGraphs) {
+   auto graphRefType = mlir::cast<gpm::GraphReferenceType>(op.getGraphRef().getColumn().type);
+   GraphIdentity identity{graphRefType.getName(), graphRefType.getGlobalId()};
+   auto& memberManager = rewriter.getContext()->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
+   for (mlir::Operation* ancestor = op; ancestor && !externalGraphs.count(identity); ancestor = ancestor->getParentOp()) {
+      mlir::Block* block = ancestor->getBlock();
+      if (!block) break;
+      for (auto extGraph : block->getOps<gsubop::GetExternalGraphOp>()) {
+         if (extGraph.getNameAttr() != identity.first || extGraph.getGraphIdAttr() != identity.second) continue;
+         if (!extGraph->isBeforeInBlock(ancestor)) continue;
+         auto graphType = mlir::cast<gsubop::GraphType>(extGraph.getType());
+         auto nodeSetType = mlir::cast<gsubop::NodeSetType>(memberManager.getType(graphType.getNodeMembers().getMembers()[0]));
+         auto edgeSetType = mlir::cast<gsubop::EdgeSetType>(memberManager.getType(graphType.getEdgeMembers().getMembers()[0]));
+         externalGraphs.insert({identity, ExternalGraphData{graphType, nodeSetType, edgeSetType, extGraph.getResult()}});
+         break;
+      }
+   }
+   return getOrCreateExternalGraph(rewriter, op->getLoc(), op.getGraphRef(), externalGraphs, op->getBlock());
+}
+// ひ_G,t(R): per tuple of R, resolve the primary anchor to a node of G and expand over its edges.
+// Runs as part of RelAlgToSubOp, as R is a relational stream until then.
+class GraphExpansionLowering : public OpConversionPattern<gpm::GraphExpansionOp> {
+   public:
+   using OpConversionPattern<gpm::GraphExpansionOp>::OpConversionPattern;
+   LogicalResult matchAndRewrite(gpm::GraphExpansionOp expansionOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      auto* ctxt = rewriter.getContext();
+      auto loc = expansionOp->getLoc();
+      auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      for (auto* anchor : expansionOp.getAnchorColumns()) {
+         if (mlir::isa<db::NullableType>(anchor->type)) {
+            // TODO: dispatch NULL anchors to an expansion over all matching edges of G
+            return expansionOp.emitOpError() << "nullable anchor " << columnManager.createRef(anchor).getName() << " is not yet supported by the graph_expansion lowering";
+         }
+      }
+      auto terms = expansionOp.getTerms();
+      auto anchorIn = [&](gpm::TripleSlot slot) -> tuples::ColumnRefAttr {
+         auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(terms[static_cast<size_t>(slot)]);
+         if (!varTerm || !varTerm.hasBinding()) return {};
+         auto ref = varTerm.getBindingReference();
+         return expansionOp.isExpandColumn(&ref.getColumn()) ? tuples::ColumnRefAttr() : ref;
+      };
+
+      ExternalGraphMapper externalGraphs;
+      NamedGraphMapper graphs;
+      auto& graphData = findOrCreateExternalGraph(rewriter, expansionOp, externalGraphs);
+      // R x {G}: makes the node/edge set of G available to every tuple of R
+      auto withGraph = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), adaptor.getRel(), rewriter.getArrayAttr({}));
+      {
+         auto* b = new Block;
+         b->addArgument(tuples::TupleType::get(ctxt), loc);
+         withGraph.getRegion().push_back(b);
+         mlir::OpBuilder::InsertionGuard guard(rewriter);
+         rewriter.setInsertionPointToStart(b);
+         mlir::Value scan = scanExternalGraph(rewriter, loc, expansionOp.getGraphRef(), graphData, graphs, true);
+         rewriter.create<tuples::ReturnOp>(loc, scan);
+      }
+
+      TripleEmitter emitter(rewriter, graphs, expansionOp);
+      for (auto* anchor : expansionOp.getAnchorColumns()) {
+         emitter.bindAnchor(columnManager.createRef(anchor));
+      }
+      mlir::Value lowered;
+      if (auto subjectAnchor = anchorIn(gpm::TripleSlot::subject)) {
+         lowered = emitter.lowerFromAnchor(withGraph.getRes(), gpm::TripleSlot::subject, subjectAnchor);
+      } else if (auto objectAnchor = anchorIn(gpm::TripleSlot::object)) {
+         lowered = emitter.lowerFromAnchor(withGraph.getRes(), gpm::TripleSlot::object, objectAnchor);
+      } else {
+         // only the predicate is anchored: constant subject/object or all edges, anchor filters
+         lowered = emitter.lower(withGraph.getRes());
+      }
+      rewriter.replaceOp(expansionOp, lowered);
+      return success();
+   }
+};
+// Expanded columns hold variants, like the columns defined by lowered triple patterns.
+static void retypeExpandedColumns(ModuleOp module) {
+   auto* ctxt = module.getContext();
+   module.walk([&](gpm::GraphExpansionOp expansionOp) {
+      for (auto attr : expansionOp.getExpand()) {
+         mlir::cast<tuples::ColumnDefAttr>(attr).getColumn().type = variant::VariantType::get(ctxt);
+      }
+   });
+}
 
 static mlir::Value refreshStaleRefOperand(mlir::Value operand, ConversionPatternRewriter& rewriter) {
    auto getColOp = mlir::dyn_cast_or_null<tuples::GetColumnOp>(operand.getDefiningOp());
@@ -591,6 +743,8 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs, externalGraphs);
    patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs);
 
+   retypeExpandedColumns(module);
+
    if (failed(applyFullConversion(module, target, std::move(patterns)))) {
       signalPassFailure();
       return;
@@ -660,6 +814,8 @@ void GPMScalarToSubOpLoweringPass::runOnOperation() {
    ConversionTarget target(getContext());
    addCommonLegalDialects(target);
    target.addIllegalDialect<gpm::GPMDialect>();
+   // lowered together with its relational input by RelAlgToSubOp
+   target.addLegalOp<gpm::GraphExpansionOp>();
 
    RewritePatternSet patterns(ctxt);
    patterns.insert<GpmBindingsCompatibleLowering>(typeConverter, ctxt);
@@ -680,6 +836,9 @@ gpm::createLowerToSubOpPass() {
 std::unique_ptr<mlir::Pass>
 gpm::createLowerGPMScalarsToSubOpPass() {
    return std::make_unique<GPMScalarToSubOpLoweringPass>();
+}
+void gpm::populateGraphExpansionToSubOpPatterns(mlir::RewritePatternSet& patterns, mlir::TypeConverter& typeConverter) {
+   patterns.insert<GraphExpansionLowering>(typeConverter, patterns.getContext());
 }
 void gpm::createLowerGPMToSubOpPipeline(mlir::OpPassManager& pm) {
    pm.addPass(gpm::createLowerToSubOpPass());

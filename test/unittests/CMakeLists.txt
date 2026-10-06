@@ -11,6 +11,7 @@ add_executable(tester
         runtime/TestUTF8.cpp
         runtime/StringRuntime.cpp
         runtime/DateRuntime.cpp
+        runtime/TestVariantResolve.cpp
         storage/TestStorage.cpp
         utility/TestSerialization.cpp
         utility/TestHyperLogLog.cpp

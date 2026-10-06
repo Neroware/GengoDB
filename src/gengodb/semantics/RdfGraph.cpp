@@ -86,8 +86,6 @@ inline int32_t NodeHelper::resolve(const Literal& l) {
 
     uint32_t xsdType = static_cast<uint32_t>(xsd::from_iri(datatype));
     uint32_t value = 0;
-    const char* persistedData = nullptr;
-    size_t persistedLen = 0;
     if (inlined) {
         value = inlineBits;
     } else if (fixedKind) {
@@ -95,41 +93,23 @@ inline int32_t NodeHelper::resolve(const Literal& l) {
         switch (*fixedKind) {
             case RdfDatatypeFixedHelper::Kind::Int64:
             case RdfDatatypeFixedHelper::Kind::Date:
-            case RdfDatatypeFixedHelper::Kind::DateTime: {
-                const int32_t idx = propData.add_i64(fixedI64);
-                value = static_cast<uint32_t>(idx);
-                persistedData = reinterpret_cast<const char*>(propData.get_i64_ptr(idx));
-                persistedLen = sizeof(int64_t);
+            case RdfDatatypeFixedHelper::Kind::DateTime:
+                value = static_cast<uint32_t>(propData.add_i64(fixedI64));
                 break;
-            }
-            case RdfDatatypeFixedHelper::Kind::UInt64: {
-                const int32_t idx = propData.add_ui64(fixedUI64);
-                value = static_cast<uint32_t>(idx);
-                persistedData = reinterpret_cast<const char*>(propData.get_ui64_ptr(idx));
-                persistedLen = sizeof(uint64_t);
+            case RdfDatatypeFixedHelper::Kind::UInt64:
+                value = static_cast<uint32_t>(propData.add_ui64(fixedUI64));
                 break;
-            }
-            case RdfDatatypeFixedHelper::Kind::Double: {
-                const int32_t idx = propData.add_double(fixedDouble);
-                value = static_cast<uint32_t>(idx);
-                persistedData = reinterpret_cast<const char*>(propData.get_double_ptr(idx));
-                persistedLen = sizeof(double);
+            case RdfDatatypeFixedHelper::Kind::Double:
+                value = static_cast<uint32_t>(propData.add_double(fixedDouble));
                 break;
-            }
         }
     } else {
         auto [ptr, idx] = g->storage->storage().getPropData().add_blob<xsd::Type::String>(data.size());
         std::memcpy(ptr, data.data(), data.size());
         value = static_cast<uint32_t>(idx);
-        persistedData = reinterpret_cast<const char*>(ptr);
-        persistedLen = data.size();
     }
-    const auto propId = g->storage->storage().addNodeProperty(id, static_cast<uint32_t>(datatypeNode), xsdType, value);
-    if (inlined) {
-        persistedData = reinterpret_cast<const char*>(&g->storage->storage().prop(propId).value);
-        persistedLen = sizeof(uint32_t);
-    }
-    g->literalNodes.emplace(LiteralKey{persistedData, persistedLen, datatypeNode}, id);
+    g->storage->storage().addNodeProperty(id, static_cast<uint32_t>(datatypeNode), xsdType, value);
+    g->addLiteralNode(lookupKey, id);
     return id;
 }
 LiteralKey NodeHelper::literalKeyFor(int32_t id) const {
@@ -229,6 +209,7 @@ void RdfGraph::ensureLoaded() {
                 storage->setDBDir(dbDir);
                 nodes = std::make_unique<NodeIdDict>();
                 literalNodes.clear();
+                literalKeyBytes.clear();
                 loadTriples();
             }
         }
@@ -249,6 +230,15 @@ void RdfGraph::ensureLoaded() {
         storage->storage().getMetadata().set_type_id_mapping([&](int32_t id) {
             return static_cast<int32_t>(getNodes().get(id).type);
         });
+        storage->storage().getMetadata().set_iri_mapping([this](std::string_view iri) {
+            return nodes->get_safe(IRI(iri));
+        });
+        storage->storage().getMetadata().set_literal_mapping([this](std::string_view datatypeIri, const char* data, size_t len) {
+            const int32_t datatypeNode = nodes->get_safe(IRI(datatypeIri));
+            if (datatypeNode < 0) return -1;
+            auto it = literalNodes.find(LiteralKey{data, len, datatypeNode});
+            return it == literalNodes.end() ? -1 : it->second;
+        });
     }
 }
 void RdfGraph::rebuildLiteralNodeCache() {
@@ -256,7 +246,7 @@ void RdfGraph::rebuildLiteralNodeCache() {
         if (nodes->get(id).type != RDFNodeType::Literal) continue;
         const auto& n = storage->storage().node(id);
         if (n.payload < 0) continue;
-        literalNodes.emplace(nodeHelper.literalKeyFor(id), id);
+        addLiteralNode(nodeHelper.literalKeyFor(id), id);
     }
 }
 Literal RdfGraph::getLiteral(int32_t id) const {

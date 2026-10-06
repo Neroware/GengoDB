@@ -66,6 +66,10 @@ struct VariantRuntime {
 
     // SPARQL LANG(): a literal's language tag as xsd:string, or the empty string if it has none
     static VarLen32 langTag(int64_t payload, int32_t tag);
+
+    // Local node id of the variant's RDF term in the graph that `graph` points into (any pointer
+    // into a registered graph storage), or -1 if the term does not occur in that graph.
+    static int32_t resolveLocalNode(uint8_t* graph, int32_t tag, int64_t payload);
 };
 
 } // namespace lingodb::runtime

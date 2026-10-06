@@ -1,0 +1,1 @@
+%res = gpm.relalg.graph_expansion %stream expand: [@column::@def(type = !gpm.variable_binding)] pattern: @graphs::@ref(?{@column::@def}, id{"http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/vocabulary/productPropertyNumeric1"}, ?{@bindings::@known})

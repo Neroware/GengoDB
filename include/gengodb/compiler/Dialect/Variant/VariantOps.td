@@ -75,6 +75,21 @@ def CreateNodeRefOp : Variant_Op<"create_node_ref", [Pure]> {
     let assemblyFormat = [{ $ref `:` type($ref) attr-dict }];
 }
 
+def ResolveLocalNodeOp : Variant_Op<"resolve_local_node", [Pure]> {
+    let summary = "resolve a variant to the local node id of the RDF term in a graph";
+    let description = [{
+        `graph` is any pointer into a registered graph storage (e.g. a node set, lowers to
+        `!util.ref<i8>`). Returns the local node id of the term held by `val` in that graph,
+        or -1 if the term does not occur in it (or `val` is unspecified). Node refs of the same
+        graph are resolved directly, node refs of other graphs through the global node index
+        (an error is raised if the index is missing), IRIs and literals through the graph's
+        term dictionaries.
+    }];
+    let arguments = (ins AnyType:$graph, Variant:$val);
+    let results = (outs I32:$result);
+    let assemblyFormat = [{ $graph `:` type($graph) `,` $val attr-dict }];
+}
+
 def UnspecifiedIfOp : Variant_Op<"unspecified_if", [Pure]> {
     let summary = "replace a variant with the `Unspecified` sentinel if a condition holds";
     let arguments = (ins I1:$cond, Variant:$val);

@@ -11,6 +11,7 @@
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpsTypes.h"
+#include "gengodb/compiler/Conversion/GPMToSubOp/GPMToSubOpPass.h"
 //#include "gengodb/compiler/Dialect/GraphSubOp/Transforms/Passes.h"
 #include "gengodb/compiler/Dialect/Variant/VariantDialect.h"
 #include "gengodb/compiler/Dialect/Variant/VariantOps.h"
@@ -57,7 +58,7 @@ struct RelalgToSubOpLoweringPass
 
    RelalgToSubOpLoweringPass() {}
    void getDependentDialects(DialectRegistry& registry) const override {
-      registry.insert<LLVM::LLVMDialect, db::DBDialect, scf::SCFDialect, mlir::cf::ControlFlowDialect, util::UtilDialect, memref::MemRefDialect, arith::ArithDialect, relalg::RelAlgDialect, subop::SubOperatorDialect>();
+      registry.insert<LLVM::LLVMDialect, db::DBDialect, scf::SCFDialect, mlir::cf::ControlFlowDialect, util::UtilDialect, memref::MemRefDialect, arith::ArithDialect, relalg::RelAlgDialect, subop::SubOperatorDialect, gsubop::GraphSubOpDialect, variant::VariantDialect>();
    }
    void runOnOperation() final;
 };
@@ -3482,6 +3483,7 @@ void RelalgToSubOpLoweringPass::runOnOperation() {
    patterns.insert<QueryOpLowering>(ctxt);
    patterns.insert<QueryReturnOpLowering>(ctxt);
    patterns.insert<InFlightOpLowering>(ctxt);
+   gengodb::compiler::dialect::gpm::populateGraphExpansionToSubOpPatterns(patterns, typeConverter);
 
    if (failed(applyFullConversion(module, target, std::move(patterns))))
       signalPassFailure();

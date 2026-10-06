@@ -104,6 +104,11 @@ class GpmLoweringStep : public LoweringStep {
          if (auto getExternalOp = mlir::dyn_cast_or_null<gsubop::GetExternalGraphOp>(*op)) {
             ensureNamedGraphLoaded(moduleOp->getContext(), getCatalog(), getExternalOp.getName());
          }
+         // graph expansions are lowered later (with RelAlg) and may access graphs no other operator scans
+         if (auto expansionOp = mlir::dyn_cast_or_null<gpm::GraphExpansionOp>(*op)) {
+            auto refType = mlir::cast<gpm::GraphReferenceType>(expansionOp.getGraphRef().getColumn().type);
+            ensureNamedGraphLoaded(moduleOp->getContext(), getCatalog(), refType.getName());
+         }
       });
    }
 };
@@ -429,6 +434,10 @@ class DefaultQueryExecuter : public QueryExecuter {
       if (relalg::isQueryCacheEnabled()) {
          moduleOp.walk([&](gpm::NamedGraphOp namedGraphOp) {
             auto refType = mlir::cast<gpm::GraphReferenceType>(namedGraphOp.getDef().getColumn().type);
+            ensureNamedGraphLoaded(moduleOp->getContext(), catalog, refType.getName());
+         });
+         moduleOp.walk([&](gpm::GraphExpansionOp expansionOp) {
+            auto refType = mlir::cast<gpm::GraphReferenceType>(expansionOp.getGraphRef().getColumn().type);
             ensureNamedGraphLoaded(moduleOp->getContext(), catalog, refType.getName());
          });
          cacheKey = execution::computeQueryCacheKey(moduleOp);

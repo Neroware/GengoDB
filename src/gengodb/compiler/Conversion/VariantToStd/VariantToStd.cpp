@@ -282,6 +282,19 @@ class CreateNodeRefOpLowering : public OpConversionPattern<variant::CreateNodeRe
     }
 };
 
+class ResolveLocalNodeOpLowering : public OpConversionPattern<variant::ResolveLocalNodeOp> {
+    public:
+    using OpConversionPattern<variant::ResolveLocalNodeOp>::OpConversionPattern;
+    LogicalResult matchAndRewrite(variant::ResolveLocalNodeOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+        auto loc = op->getLoc();
+        Value graph = getPointer(rewriter, loc, adaptor.getGraph());
+        auto [tag, ref] = unpackVariant(rewriter, loc, adaptor.getVal());
+        Value payload = rewriter.create<util::PtrToIntOp>(loc, rewriter.getI64Type(), ref);
+        rewriter.replaceOp(op, rt::VariantRuntime::resolveLocalNode(rewriter, loc)({graph, tag, payload})[0]);
+        return success();
+    }
+};
+
 class UnspecifiedIfOpLowering : public OpConversionPattern<variant::UnspecifiedIfOp> {
     public:
     using OpConversionPattern<variant::UnspecifiedIfOp>::OpConversionPattern;
@@ -822,6 +835,7 @@ struct VariantToStdLoweringPass
         RewritePatternSet patterns(ctxt);
         patterns.insert<CreateScalarOpLowering>(typeConverter, ctxt);
         patterns.insert<CreateNodeRefOpLowering>(typeConverter, ctxt);
+        patterns.insert<ResolveLocalNodeOpLowering>(typeConverter, ctxt);
         patterns.insert<UnspecifiedIfOpLowering>(typeConverter, ctxt);
         patterns.insert<VariantIsAOpLowering>(typeConverter, ctxt);
         patterns.insert<VariantGetValOpLowering>(typeConverter, ctxt);
