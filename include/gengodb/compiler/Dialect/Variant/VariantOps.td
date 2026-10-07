@@ -130,7 +130,7 @@ def CmpOp : Variant_Op<"cmp", [Pure]> {
         `result` is `!db.nullable<i1>`; null means "incomparable" (mismatched
         datatypes with no valid promotion). Same-tag fixed-width scalars
         compare as native loads and the string family via `util.varlen32_cmp`;
-        RDFNode refs resolve both sides' global UID (via the graph node index)
+        Node refs resolve both sides' global UID (via the graph node index)
         and compare those; only cross-tag numeric promotion and the rare
         non-fixed-width literal family need a full runtime value comparison.
     }];

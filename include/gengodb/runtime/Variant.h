@@ -7,10 +7,10 @@ namespace lingodb::runtime {
 using VarLen32 = lingodb::runtime::VarLen32;
 
 struct VariantRuntime {
-    // Tag of a literal or RDFNode ref.
+    // Tag of a literal or Node ref.
     static int32_t resolveRefTag(PropertyGraph::NodeEntry* ref);
 
-    // Global semantic-index UID for an RDFNode ref, via PropertyGraph::Metadata::uid().
+    // Global semantic-index UID for a Node ref, via PropertyGraph::Metadata::uid().
     static int64_t resolveNodeRef(PropertyGraph::NodeEntry* ref);
 
     // Fixed-width numeric/date literal -> raw bytes, read directly from

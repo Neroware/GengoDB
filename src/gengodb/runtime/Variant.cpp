@@ -300,7 +300,7 @@ inline std::optional<rdf4cpp::Literal> reconstructLiteral(int64_t payload, int32
 } // namespace
 
 int32_t VariantRuntime::resolveRefTag(PropertyGraph::NodeEntry* ref) {
-    if (ref->payload < 0) return xsd::to_int32(xsd::Type::RDFNode);
+    if (ref->payload < 0) return xsd::to_int32(xsd::Type::Node);
     PropertyGraph* pgraph = propertyGraphOf(ref);
     return static_cast<int32_t>(pgraph->prop(ref->payload).type);
 }
@@ -463,8 +463,8 @@ int32_t VariantRuntime::arithNumericCross(int64_t lhsPayload, int32_t lhsTag, in
 }
 
 int8_t VariantRuntime::compareOrder(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag) {
-    const bool lhsIsNode = lhsTag == xsd::to_int32(xsd::Type::RDFNode);
-    const bool rhsIsNode = rhsTag == xsd::to_int32(xsd::Type::RDFNode);
+    const bool lhsIsNode = lhsTag == xsd::to_int32(xsd::Type::Node);
+    const bool rhsIsNode = rhsTag == xsd::to_int32(xsd::Type::Node);
     // Rank: blank node (0) < IRI (1) < literal (2).
     auto rankOf = [](bool isNode, int64_t payload) -> std::pair<int, bool> {
         if (!isNode) return {2, false};
