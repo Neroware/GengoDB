@@ -202,6 +202,12 @@ private:
     std::unique_ptr<runtime::GengoDBGraph> storage;
     std::unique_ptr<NodeIdDict> nodes;
     std::unordered_map<LiteralKey, int32_t, LiteralKeyHash> literalNodes;
+    std::deque<std::string> literalKeyBytes;
+private:
+    void addLiteralNode(const LiteralKey& key, int32_t id) {
+        const std::string& bytes = literalKeyBytes.emplace_back(key.data, key.len);
+        literalNodes.emplace(LiteralKey{bytes.data(), bytes.size(), key.dataType}, id);
+    }
 public:
     RdfGraph(const IRI& iri, std::unique_ptr<runtime::GengoDBGraph> storage, std::string fileName, std::string sourceFileName = "")
         : iri(iri), storage(std::move(storage)), nodes(std::make_unique<NodeIdDict>()), persist(false), fileName(fileName), sourceFileName(sourceFileName.empty() ? fileName : std::move(sourceFileName)), loadedFromRdfFile(false), rdfParseFlags(parser::ParsingFlag::Turtle), nodeHelper(this) {}

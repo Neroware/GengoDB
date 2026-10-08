@@ -191,22 +191,41 @@ public:
         BlobTableT blobs_;
     };
     
+    // Additional mappings for fast node access
     struct Metadata {
-        inline void set_name_mapping(std::function<std::string(int32_t)> names) { names_ = names; }
-        inline void set_id_mapping(std::function<uint64_t(int32_t)> uid, std::function<int32_t(uint64_t)> local) { uid_ = uid; local_ = local; }
-        inline void set_type_id_mapping(std::function<int32_t(int32_t)> type_id) { typeid_ = type_id; }
+        using NameMappingT = std::function<std::string(int32_t)>;
+        using UidMappingT = std::function<uint64_t(int32_t)>;
+        using LocalIdMappingT = std::function<int32_t(uint64_t)>;
+        using TypeIdMappingT = std::function<int32_t(int32_t)>;
+        using IriMappingT = std::function<int32_t(const rdf4cpp::IRI& iri)>;
+        using RdfLiteralMappingT = std::function<int32_t(const rdf4cpp::IRI&, const char*, size_t)>;
+
+        inline void set_name(const std::string& n) { name_ = n; }
+        inline const std::string& name() const { return name_; }
+
+        inline void set_name_mapping(NameMappingT names) { names_ = names; }
         inline std::string get_node_name(int32_t id) const { return names_(id); }
+
+        inline void set_id_mapping(UidMappingT uid, LocalIdMappingT local) { uid_ = uid; local_ = local; }
         inline uint64_t uid(int32_t local_id) const { return uid_(local_id); }
         inline int32_t local_id(uint64_t uid) const { return local_(uid); }
+        
+        inline void set_type_id_mapping(TypeIdMappingT type_id) { typeid_ = type_id; }
         inline int32_t type_id(int32_t id) const { return typeid_(id); }
-        inline const std::string& name() const { return name_; }
-        inline void set_name(const std::string& n) { name_ = n; }
+
+        inline void set_iri_mapping(IriMappingT iris) { iris_ = iris; }
+        inline int32_t node_from_iri(const rdf4cpp::IRI& iri) { return iris_(iri); }
+        inline void set_rdf_literal_mapping(RdfLiteralMappingT literals) { literals_ = literals; }
+        inline int32_t node_from_rdf_literal(const rdf4cpp::IRI& iri, const char* data, size_t len) { return literals_(iri, data, len); }
+
         private:
         std::string name_ = "";
-        std::function<std::string(int32_t)> names_ = [](int32_t i){ return "v" + std::to_string(i); };
-        std::function<uint64_t(int32_t)> uid_ = [](int32_t i){ assert(false && "missing index"); return -1; };
-        std::function<int32_t(uint64_t)> local_ = [](uint64_t i){ assert(false && "missing index"); return -1; };
-        std::function<int32_t(int32_t)> typeid_ = [](int32_t){ return -1; };
+        NameMappingT names_ = [](int32_t i){ return "v" + std::to_string(i); };
+        UidMappingT uid_ = [](int32_t i){ assert(false && "missing index"); return -1; };
+        LocalIdMappingT local_ = [](uint64_t i){ assert(false && "missing index"); return -1; };
+        TypeIdMappingT typeid_ = [](int32_t){ return -1; };
+        IriMappingT iris_ = [](const rdf4cpp::IRI& iri){ return -1; };
+        RdfLiteralMappingT literals_ = [](const rdf4cpp::IRI&, const char*, size_t) { return -1; };
     };
 
     PropertyGraph(int32_t nodeCapacity, int32_t relCapacity, int32_t propCapacity);
