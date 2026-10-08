@@ -120,6 +120,13 @@ def ToStringOp : Variant_Op<"to_string", [Pure]> {
     let assemblyFormat = [{ $val `->` type($result) attr-dict }];
 }
 
+def ResolveNodeOp : Variant_Op<"resolve_node", [Pure]> {
+    let summary = "resolve a variant to a local graph node id";
+    let arguments = (ins AnyType:$graph, Variant:$val);
+    let results = (outs I32:$result);
+    let assemblyFormat = [{ $graph `:` type($graph) `,` $val attr-dict }];
+}
+
 //===----------------------------------------------------------------------===//
 // Comparison / arithmetic
 //===----------------------------------------------------------------------===//
