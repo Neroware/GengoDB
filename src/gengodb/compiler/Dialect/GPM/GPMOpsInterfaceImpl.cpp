@@ -11,6 +11,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/OpImplementation.h"
 
+#include <array>
 #include <optional>
 
 using operator_list = llvm::SmallVector<GPMOperator, 4>;
@@ -178,20 +179,19 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getAvailable
 bool gpm::TriplePatternOp::canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column) {
     return lingodb::compiler::dialect::relalg::detail::canColumnReach(getOperation(), source, target, column);
 }
-std::vector<relalg::QueryParamLiteral> gpm::TriplePatternOp::getParamLiterals() {
+namespace {
+std::vector<relalg::QueryParamLiteral> paramLiterals(std::array<mlir::Attribute, 3> terms) {
     std::vector<relalg::QueryParamLiteral> literals;
-    for (mlir::Attribute term : {getS(), getP(), getO()}) {
+    for (mlir::Attribute term : terms) {
         if (auto ident = mlir::dyn_cast<gpm::IdentifierTermAttr>(term)) {
             literals.push_back({ident.getIdent(), ident.getIdent().getType()});
         }
     }
     return literals;
 }
-namespace {
-std::optional<size_t> paramIdForSlot(gpm::TriplePatternOp op, unsigned slotIndex) {
+std::optional<size_t> paramIdForSlot(mlir::Operation* op, std::array<mlir::Attribute, 3> terms, unsigned slotIndex) {
     auto paramsAttr = op->getAttrOfType<mlir::ArrayAttr>(relalg::kQueryParamsAttrName);
     if (!paramsAttr) return std::nullopt;
-    mlir::Attribute terms[3] = {op.getS(), op.getP(), op.getO()};
     if (!mlir::isa<gpm::IdentifierTermAttr>(terms[slotIndex])) return std::nullopt;
     size_t entryIdx = 0;
     for (unsigned i = 0; i < slotIndex; ++i) {
@@ -201,15 +201,49 @@ std::optional<size_t> paramIdForSlot(gpm::TriplePatternOp op, unsigned slotIndex
     auto dict = mlir::cast<mlir::DictionaryAttr>(paramsAttr[entryIdx]);
     return static_cast<size_t>(mlir::cast<mlir::IntegerAttr>(dict.get(relalg::kQueryParamIdKey)).getInt());
 }
+template <class OpTy>
+void maskIdentifierTerms(OpTy op) {
+    auto placeholder = gpm::IdentifierTermAttr::get(op.getContext(), mlir::StringAttr::get(op.getContext(), ""));
+    if (mlir::isa<gpm::IdentifierTermAttr>(op.getS())) op.setSAttr(placeholder);
+    if (mlir::isa<gpm::IdentifierTermAttr>(op.getP())) op.setPAttr(placeholder);
+    if (mlir::isa<gpm::IdentifierTermAttr>(op.getO())) op.setOAttr(placeholder);
+}
 } // namespace
+std::vector<relalg::QueryParamLiteral> gpm::TriplePatternOp::getParamLiterals() {
+    return paramLiterals({getS(), getP(), getO()});
+}
 std::optional<size_t> gpm::TriplePatternOp::getParamId(TripleSlot slot) {
-    return paramIdForSlot(*this, static_cast<unsigned>(slot));
+    return paramIdForSlot(getOperation(), {getS(), getP(), getO()}, static_cast<unsigned>(slot));
 }
 void gpm::TriplePatternOp::maskParameters() {
-    auto placeholder = gpm::IdentifierTermAttr::get(getContext(), mlir::StringAttr::get(getContext(), ""));
-    if (mlir::isa<gpm::IdentifierTermAttr>(getS())) setSAttr(placeholder);
-    if (mlir::isa<gpm::IdentifierTermAttr>(getP())) setPAttr(placeholder);
-    if (mlir::isa<gpm::IdentifierTermAttr>(getO())) setOAttr(placeholder);
+    maskIdentifierTerms(*this);
+}
+
+lingodb::compiler::dialect::relalg::ColumnSet gpm::GraphExpansionOp::getCreatedColumns() {
+    return getCreatedVariables();
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::GraphExpansionOp::getUsedColumns() {
+    return getBoundVariables();
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::GraphExpansionOp::getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache) {
+    lingodb::compiler::dialect::relalg::ColumnSet columns;
+    if (auto child = mlir::dyn_cast_or_null<Operator>(getRel().getDefiningOp())) {
+        columns.insert(cache.getAvailableColumnsFor(child));
+    }
+    columns.insert(getCreatedColumns());
+    return columns;
+}
+bool gpm::GraphExpansionOp::canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column) {
+    return lingodb::compiler::dialect::relalg::detail::canColumnReach(getOperation(), source, target, column);
+}
+std::vector<relalg::QueryParamLiteral> gpm::GraphExpansionOp::getParamLiterals() {
+    return paramLiterals({getS(), getP(), getO()});
+}
+std::optional<size_t> gpm::GraphExpansionOp::getParamId(TripleSlot slot) {
+    return paramIdForSlot(getOperation(), {getS(), getP(), getO()}, static_cast<unsigned>(slot));
+}
+void gpm::GraphExpansionOp::maskParameters() {
+    maskIdentifierTerms(*this);
 }
 
 bool gpm::BindingsCompatibleOp::isEqualityPred(bool nullsAreEqual) {
