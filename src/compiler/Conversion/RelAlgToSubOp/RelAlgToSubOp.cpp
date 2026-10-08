@@ -96,6 +96,9 @@ static relalg::ColumnSet getRequired(Operator op, llvm::DenseMap<Operator, relal
       if (auto consumingOp = mlir::dyn_cast_or_null<Operator>(user)) {
          required.insert(getRequired(consumingOp, requiredCols, cache));
          required.insert(consumingOp.getUsedColumns());
+      } 
+      else if (mlir::isa<subop::SubOperator>(user)) {
+         required.insert(available);
       }
       if (auto materializeOp = mlir::dyn_cast_or_null<relalg::MaterializeOp>(user)) {
          required.insert(relalg::ColumnSet::fromArrayAttr(materializeOp.getCols()));
