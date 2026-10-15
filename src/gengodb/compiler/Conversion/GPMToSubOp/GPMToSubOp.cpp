@@ -310,7 +310,14 @@ class TripleEmitter {
       auto [validDef, validRef] = createColumn(rewriter.getI1Type(), "idents", "valid");
       helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
          mlir::Value identVal = helper.access(identRef, loc);
-         mlir::Value valid = b.create<gsubop::IdentifierValidOp>(loc, b.getI1Type(), identVal);
+         mlir::Value valid;
+         if (mlir::isa<gsubop::IdentifierType>(identVal.getType())) {
+            valid = b.create<gsubop::IdentifierValidOp>(loc, b.getI1Type(), identVal);
+         }
+         else {
+            mlir::Value zero = b.create<mlir::arith::ConstantIntOp>(loc, 0, identVal.getType());
+            valid = b.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::sge, identVal, zero);
+         }
          b.create<tuples::ReturnOp>(loc, valid);
       });
       auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({validDef}), helper.getColRefs());
@@ -342,17 +349,15 @@ class TripleEmitter {
       {
          mlir::OpBuilder::InsertionGuard guard(rewriter);
          rewriter.setInsertionPointToStart(block);
-         auto [identDef, identRef] = createColumn(gsubop::IdentifierType::get(ctxt), "idents", "lookup");
+         mlir::Type identType = identAttr ? mlir::Type(gsubop::IdentifierType::get(ctxt)) : mlir::Type(rewriter.getI32Type());
+         auto [identDef, identRef] = createColumn(identType, "idents", "lookup");
          auto scan = generateTupleStream(rewriter, loc, identDef, [&](mlir::OpBuilder& b) -> mlir::Value {
             if (identAttr) {
                auto identOp = b.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, identAttr.getIdent());
                if (paramId) relalg::forwardParameter(op, *paramId, identOp.getOperation());
                return identOp;
             }
-            else {
-               mlir::Value identI32 = b.create<variant::ResolveNodeOp>(loc, b.getI32Type(), nodeSetArg, anchorArg);
-               return b.create<mlir::UnrealizedConversionCastOp>(loc, gsubop::IdentifierType::get(ctxt), identI32).getResult(0);
-            }
+            return b.create<variant::ResolveNodeOp>(loc, b.getI32Type(), nodeSetArg, anchorArg);
          });
          scan = filterValidIdentifier(scan, identRef);
          nodeRefType = createNodeRefType(ctxt, group, graph);
