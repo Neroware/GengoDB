@@ -32,17 +32,10 @@ For LingoDB's documentation, please visit [the documentation website](https://ww
 ## Disclaimer
 This project is an extension of LingoDB for scientific purposes. Its goal is to test how the sub-operator middleware can be applied to graph workflows.
 
-## Work in progress
-As of now, we currently run tests with the [Berlin SPARQL Benchmark (BSBM)](http://wbsg.informatik.uni-mannheim.de/bizer/berlinsparqlbenchmark/) to finally get proper numbers out!
-The following is currently in our pipeline:
-- **Hot query cache:** Since the BSBM specification forces us to run the benchmark via its test driver, compile times are quite significant for small(er) scale factors when reporting legitimate BSBM numbers, especially when compared to iterator-based engines like Jena's ARQ processor. From a scientific perspective, reporting and evaluating our measurements to support our claim of sub-operators for graph workflows is already sufficient at this point. However, for later applications and since the measurements of LingoDB always separate runtime measurements from compiler overhead, we decided that a query codegen cache would be a good compromise even though it is against LingoDB's design philosophy of gradually increasing compiler speed (see this [issue](https://github.com/lingo-db/lingo-db/issues/57)).
-- **Triple pattern optimizations:** GengoDB treats (only) the triple pattern as a *true* relational operator within the GPM dialect. However, no optimization on the relational algebra layer is deployed at this point in time. Triple pattern variable bindings are solved through expensive join operations, which is essentially a *correct* but unoptimized query plan. In some basic cases, the triple pattern operator is replaceable just by simple selection operators, so an optimization pass would have to replace these by a simpler, faster query plan.
+## Work In Progress
+- **Graph Indexing:** Enable fast index lookups through graph sub-operators.
 - **Aggregates:** GengoDB still lacks aggregates for SPARQL queries.
+- **Fuzzy RDF:** A fuzzy SPARQL frontend for GengoDB.
 
-
-## Future work
-The following future work is currently considered/planned:
-- **Sub-Operator caching:** Since compiler overhead for small(er) queries is significant, an interesting idea would be to cache sub-operator codegen instead of the entire query (i.e. the operators). The compiler would decide at JIT time whether to just insert pre-compiled assembly or whether it needs to compile the sub-operator anew. Most of the time in query compilation is lost when lowering the many operations on the CF/Util layer to the STD/LLVM layer. This has become even worse due to the intense type-dependent branching caused by the `Variant` dialect, which steps in as the wrapper around XSD datatypes (RDF has no schema). Comparing compile times and runtimes of cached operators and sub-operators to execution plans without caching would be an interesting experiment to conduct.
-- **FuzzyRDF:** There are mainly [theoretical works](https://ieeexplore.ieee.org/abstract/document/4630561/) on this concept extending RDFS/OWL semantics with fuzziness concepts. Generally, implementing and developing a formal model of fuzziness would be an interesting idea, especially if one can validate it in cases where one grounds Large-Language-Models with a Fuzzy-semantic database.
-- **Deployment in social robot applications:** This revolves around the idea that social knowledge is imprecise, highly heterogeneous, and subjective. The hypothesis states that modern social robots equipped with LLMs grounded on social knowledge made accessible through fuzzy semantic databases might perform more natural interactions than in cases where either is not present.
-- **Just-in-time SPARQL query expansion:** Backwards chaining suffices for basic RDFS reasoning. (Some) rules are directly applicable to SPARQL queries, meaning the LingoDB/GengoDB compiler would act as a reasoner, which mitigates overhead. For large datasets where computing the inference hull is infeasible, our hypothesis states that, compared to modern RDFS JIT reasoners, this approach could prove beneficial.
+## Future Work In Social Robotics
+This revolves around the idea that social knowledge is imprecise, highly heterogeneous, and subjective. The hypothesis states that social-cognitive robot systems can produce more natural interactions, if they are equipped with imprecise semantic knowledge on their social context.
