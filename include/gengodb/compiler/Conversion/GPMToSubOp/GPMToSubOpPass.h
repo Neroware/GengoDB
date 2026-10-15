@@ -6,6 +6,7 @@
 namespace gengodb::compiler::dialect {
 namespace gpm {
 std::unique_ptr<mlir::Pass> createLowerToSubOpPass();
+std::unique_ptr<mlir::Pass> createLowerGPMScalarsToSubOpPass();
 void registerGPMToSubOpConversionPasses();
 void createLowerGPMToSubOpPipeline(mlir::OpPassManager& pm);
 } // end namespace relalg

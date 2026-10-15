@@ -87,11 +87,11 @@ enum class Type : std::int32_t {
     PositiveInteger    = 212,
 
     // ---- GengoDB-specific: (1000 - 1099) ----
-    RDFNode            = 1000,
+    Node               = 1000,
     LangString         = 1001,
     AnyIRI             = 1002,
-    AnyLiteralNode      = 1003, // A literal whose datatype IRI falls outside the XSD namespace backed by a graph node
-    AnyLiteralScalar    = 1004  // A scalar literal whose datatype IRI falls outside the XSD namespace
+    AnyLiteralNode     = 1003, // A literal whose datatype IRI falls outside the XSD namespace backed by a graph node
+    AnyLiteralScalar   = 1004  // A scalar literal whose datatype IRI falls outside the XSD namespace
 };
 
 inline constexpr std::int32_t to_int32(Type t) {

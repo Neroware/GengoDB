@@ -7,10 +7,10 @@ namespace lingodb::runtime {
 using VarLen32 = lingodb::runtime::VarLen32;
 
 struct VariantRuntime {
-    // Tag of a literal or RDFNode ref.
+    // Tag of a literal or Node ref.
     static int32_t resolveRefTag(PropertyGraph::NodeEntry* ref);
 
-    // Global semantic-index UID for an RDFNode ref, via PropertyGraph::Metadata::uid().
+    // Global semantic-index UID for a Node ref, via PropertyGraph::Metadata::uid().
     static int64_t resolveNodeRef(PropertyGraph::NodeEntry* ref);
 
     // Fixed-width numeric/date literal -> raw bytes, read directly from
@@ -63,6 +63,9 @@ struct VariantRuntime {
 
     // xsd:string language tag filter
     static int8_t langMatches(int64_t payload, int32_t tag, VarLen32 langRange);
+
+    // resolve a node's graph-local id
+    static int32_t resolveNode(uint8_t* graph, int32_t tag, int64_t payload);
 
     // SPARQL LANG(): a literal's language tag as xsd:string, or the empty string if it has none
     static VarLen32 langTag(int64_t payload, int32_t tag);

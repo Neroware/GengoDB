@@ -1117,8 +1117,8 @@ class HashLowering : public ConversionPattern {
                      b2.create<mlir::scf::YieldOp>(l2, hashImpl(b2, l2, str, totalHash, varLen32Type));
                   },
                   [&](OpBuilder& b2, Location l2) {
-                     auto ifRDFNode = b2.create<mlir::scf::IfOp>(
-                        l2, tp.isRDFNode,
+                     auto ifNode = b2.create<mlir::scf::IfOp>(
+                        l2, tp.isNode,
                         [&](OpBuilder& b3, Location l3) {
                            Value uid = rt::VariantRuntime::resolveNodeRef(b3, l3)({ref})[0];
                            b3.create<mlir::scf::YieldOp>(l3, combineHashes(b3, l3, hashInteger(b3, l3, uid), totalHash));
@@ -1136,7 +1136,7 @@ class HashLowering : public ConversionPattern {
                               });
                            b3.create<mlir::scf::YieldOp>(l3, ifUnspecified.getResult(0));
                         });
-                     b2.create<mlir::scf::YieldOp>(l2, ifRDFNode.getResult(0));
+                     b2.create<mlir::scf::YieldOp>(l2, ifNode.getResult(0));
                   });
                b.create<mlir::scf::YieldOp>(l, ifString.getResult(0));
             });

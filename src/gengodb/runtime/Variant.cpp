@@ -213,8 +213,6 @@ inline bool extractNumericByTag(const rdf4cpp::Literal& lit, int32_t tag, uint8_
     }
 }
 
-// ---- Direct PGraph storage access. No RdfGraph, no rdf4cpp. ----
-
 inline PropertyGraph* propertyGraphOf(PropertyGraph::NodeEntry* ref) {
     return reinterpret_cast<PropertyGraph*>(
         GraphStorage::graphPtr(reinterpret_cast<uint8_t*>(ref)));
@@ -300,7 +298,7 @@ inline std::optional<rdf4cpp::Literal> reconstructLiteral(int64_t payload, int32
 } // namespace
 
 int32_t VariantRuntime::resolveRefTag(PropertyGraph::NodeEntry* ref) {
-    if (ref->payload < 0) return xsd::to_int32(xsd::Type::RDFNode);
+    if (ref->payload < 0) return xsd::to_int32(xsd::Type::Node);
     PropertyGraph* pgraph = propertyGraphOf(ref);
     return static_cast<int32_t>(pgraph->prop(ref->payload).type);
 }
@@ -463,8 +461,8 @@ int32_t VariantRuntime::arithNumericCross(int64_t lhsPayload, int32_t lhsTag, in
 }
 
 int8_t VariantRuntime::compareOrder(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag) {
-    const bool lhsIsNode = lhsTag == xsd::to_int32(xsd::Type::RDFNode);
-    const bool rhsIsNode = rhsTag == xsd::to_int32(xsd::Type::RDFNode);
+    const bool lhsIsNode = lhsTag == xsd::to_int32(xsd::Type::Node);
+    const bool rhsIsNode = rhsTag == xsd::to_int32(xsd::Type::Node);
     // Rank: blank node (0) < IRI (1) < literal (2).
     auto rankOf = [](bool isNode, int64_t payload) -> std::pair<int, bool> {
         if (!isNode) return {2, false};
@@ -514,6 +512,66 @@ int8_t VariantRuntime::langMatches(int64_t payload, int32_t tag, VarLen32 langRa
     const std::string_view langTagStr = lit->lexical_form().view();
     const std::string_view range(langRange.data(), langRange.getLen());
     return rdf4cpp::lang_matches(langTagStr, range) ? 1 : 0;
+}
+
+int32_t VariantRuntime::resolveNode(uint8_t* graph, int32_t tag, int64_t payload) {
+    auto* pgraph = reinterpret_cast<PropertyGraph*>(GraphStorage::graphPtr(graph));
+    auto resolve = [&]() {
+        auto* ref = reinterpret_cast<PropertyGraph::NodeEntry*>(payload);
+        PropertyGraph* other = propertyGraphOf(ref);
+        const int32_t localId = GraphStorage::nodeId(reinterpret_cast<uint8_t*>(ref));
+        if (other == pgraph) return localId;
+        throw std::runtime_error("unsupported: cross graph node resolving from variant");
+    };
+    // literal tags whose variant payload is still the graph node
+    auto hasNodePayload = [](xsd::Type t) -> bool {
+        switch (t) {
+            case xsd::Type::Unspecified:
+            case xsd::Type::String:
+            case xsd::Type::Integer:
+            case xsd::Type::Decimal:
+            case xsd::Type::AnyLiteralScalar:
+                return false;
+            default:
+                return classifyStorage(t).shape == StorageShape::Blob;
+        }
+    };
+    if (tag == xsd::to_int32(xsd::Type::Node)) return resolve();
+    if (tag == xsd::to_int32(xsd::Type::AnyIRI)) {
+        auto* sv = reinterpret_cast<VarLen32*>(payload);
+        return pgraph->getMetadata().node_from_iri(IRI(std::string_view(sv->data(), sv->getLen())));
+    }
+    auto t = xsd::from_int32(tag);
+    if (!t.has_value() || *t == xsd::Type::Unspecified)
+        return -1;
+    if (hasNodePayload(*t)) return resolve();
+    switch(*t) {
+        case xsd::Type::String:
+        case xsd::Type::Integer:
+        case xsd::Type::Decimal: {
+            auto* sv = reinterpret_cast<VarLen32*>(payload);
+            std::string data(1, '\0');
+            data.append(std::string_view(sv->data(), sv->getLen()));
+            return pgraph->getMetadata().node_from_rdf_literal(toDatatypeIri(*t), data.data(), data.size());
+        }
+        case xsd::Type::AnyLiteralScalar: {
+            auto* sv = reinterpret_cast<VarLen32*>(payload);
+            const std::string_view raw(sv->data(), sv->getLen());
+            uint32_t dtLen;
+            std::memcpy(&dtLen, raw.data(), sizeof(dtLen));
+            std::string data(1, '\0');
+            data.append(std::string_view(raw.substr(sizeof(dtLen) + dtLen)));
+            return pgraph->getMetadata().node_from_rdf_literal(IRI(raw.substr(sizeof(dtLen), dtLen)), data.data(), data.size());
+        }
+        default: break;
+    }
+    const auto info = classifyStorage(*t);
+    if (info.shape == StorageShape::Inline32) {
+        uint32_t bits = 0;
+        std::memcpy(&bits, &payload, info.width);
+        return pgraph->getMetadata().node_from_rdf_literal(toDatatypeIri(*t), reinterpret_cast<const char*>(&bits), sizeof(bits));
+    }
+    return pgraph->getMetadata().node_from_rdf_literal(toDatatypeIri(*t), reinterpret_cast<const char*>(&payload), sizeof(payload));
 }
 
 VarLen32 VariantRuntime::langTag(int64_t payload, int32_t tag) {

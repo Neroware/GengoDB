@@ -26,6 +26,9 @@ class OptimizeJoinOrder : public mlir::PassWrapper<OptimizeJoinOrder, mlir::Oper
             })
          .Case<BinaryOperator>([&](mlir::Operation* op) {
             if (relalg::detail::isJoin(op)) {
+               if (relalg::detail::isNonDecomposableJoin(op)) {
+                  return true;
+               }
                Operator asOperator = mlir::cast<Operator>(op);
                auto subOps = asOperator.getAllSubOperators();
                auto used = asOperator.getUsedColumns();

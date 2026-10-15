@@ -4,8 +4,8 @@
 #include <memory>
 namespace gengodb::compiler::dialect {
 namespace gpm {
+constexpr const char* kMergedColumnsAttr = "gpm.merge";
 std::unique_ptr<mlir::Pass> createUnnestGraphPatternsPass();
-std::unique_ptr<mlir::Pass> createCreateRelAlgInFlightsPass();
 void registerGpmTransformations();
 } // end namespace subop
 } // end namespace lingodb::compiler::dialect

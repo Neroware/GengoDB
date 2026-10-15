@@ -22,7 +22,10 @@ class GPM_Op<string mnemonic, list<Trait> traits = []> : Op<GPM_Dialect, mnemoni
   let hasCustomAssemblyFormat = 1;
 }
 
-def TriplePatternOp : GPM_Op<"triple_pattern", [Pure,GPMOperator,Operator,UnaryOperator,DeclareOpInterfaceMethods<Parameterizable>]> {
+// True relational operators that can appear in a RelAlg syntax tree.
+class GPM_RelAlgOp<string mnemonic, list<Trait> traits = []> : GPM_Op<"relalg." # mnemonic, traits>;
+
+def TriplePatternOp : GPM_RelAlgOp<"triple_pattern", [Pure,GPMOperator,Operator,UnaryOperator,DeclareOpInterfaceMethods<Parameterizable>]> {
   let summary = "triple pattern";
   let arguments = (ins TupleStream:$rel, ColumnRefAttr:$graphRef, AnyAttr:$s, AnyAttr:$p, AnyAttr:$o);
   let results = (outs TupleStream:$res);
@@ -32,13 +35,27 @@ def TriplePatternOp : GPM_Op<"triple_pattern", [Pure,GPMOperator,Operator,UnaryO
     lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
     lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
     lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
-    lingodb::compiler::dialect::relalg::ColumnSet getBindingColumns();
     bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
     std::optional<size_t> getParamId(TripleSlot slot);
   }];
 }
 
-def NamedGraphOp : GPM_Op<"named_graph", [Pure,GPMOperator,Operator]> {
+def GraphExpansionOp : GPM_RelAlgOp<"graph_expansion", [Pure,GPMOperator,Operator,UnaryOperator,DeclareOpInterfaceMethods<Parameterizable>]> {
+  let summary = "graph expansion from pre-computed anchor";
+  let arguments = (ins TupleStream:$rel, ColumnRefAttr:$graphRef, AnyAttr:$s, AnyAttr:$p, AnyAttr:$o, GPM_TripleSlot:$anchor);
+  let results = (outs TupleStream:$res);
+  let assemblyFormat = [{  $rel custom<CustRef>($graphRef) `(` custom<Term>($s) `,` custom<PredicateTerm>($p) `,` custom<Term>($o) `)` `anchor` `:` $anchor attr-dict }];
+  let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
+    bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
+    std::optional<size_t> getParamId(TripleSlot slot);
+  }];
+}
+
+def NamedGraphOp : GPM_RelAlgOp<"named_graph", [Pure,GPMOperator,Operator]> {
   let summary = "named graph";
   let arguments = (ins ColumnDefAttr:$def);
   let results = (outs TupleStream:$res);
@@ -89,7 +106,7 @@ def OptionalGraphPatternOp : GPM_Op<"optional_graph_pattern", [Pure,GPMOperator,
   let hasVerifier = 1;
 }
 
-def BagOp : GPM_Op<"bag", [Pure,GPMOperator,Operator,BinaryOperator]> {
+def BagOp : GPM_Op<"bag", [Pure,GPMOperator]> {
   let summary = "graph pattern binding union bag";
   let arguments = (ins TupleStream:$left, TupleStream:$right, ArrayAttr:$mapping);
   let results = (outs TupleStream:$res);
@@ -98,16 +115,20 @@ def BagOp : GPM_Op<"bag", [Pure,GPMOperator,Operator,BinaryOperator]> {
     lingodb::compiler::dialect::relalg::ColumnSet getBoundVariables() { return getUsedVariables(); }
     lingodb::compiler::dialect::relalg::ColumnSet getCreatedVariables();
     lingodb::compiler::dialect::relalg::ColumnSet getUsedVariables();
-    lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
-    lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
-    lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
-    bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
   }];
   let hasVerifier = 1;
 }
 
-def IdentifiersEqualOp : GPM_Op<"identifiers_equal", [Pure]> {
-  let summary = "global identifier equality check";
+def FilterOp : GPM_Op<"filter", [Pure,GPMOperator]> {
+  let summary = "graph pattern filter";
+  let arguments = (ins TupleStream:$rel);
+  let results = (outs TupleStream:$res);
+  let regions = (region SizedRegion<1>:$predicate);
+  let assemblyFormat = [{  $rel custom<CustRegion>($predicate) attr-dict-with-keyword }];
+}
+
+def BindingsCompatibleOp : GPM_Op<"bindings_compatible", [Pure,DeclareOpInterfaceMethods<Relalg_CmpOpInterface, ["isBindingCompatiblePred"]>]> {
+  let summary = "variable binding compatbility check";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);
   let results = (outs I1:$result);
   let assemblyFormat = [{ $lhs `:` type($lhs) `,` $rhs `:` type($rhs) attr-dict }];

@@ -1,11 +1,11 @@
 module  {
     func.func @main() {
         %res = subop.execution_group (){
-            %0 = gpm.named_graph column : @graphs::@ref({type = !gpm.graph_ref<"coffee", "file://resources/ttl/coffee/coffee.ttl#rdf">})
+            %0 = gpm.relalg.named_graph column : @graphs::@ref({type = !gpm.graph_ref<"coffee", "file://resources/ttl/coffee/coffee.ttl#rdf">})
             %bgp = gpm.basic_graph_pattern %0 (%arg : !tuples.tuplestream){
-                %1 = gpm.triple_pattern %arg @graphs::@ref(?{@vars::@who({type = !gpm.variable_binding})}, id{"http://example.org/eats"}, ?{@vars::@what({type = !gpm.variable_binding})})
+                %1 = gpm.relalg.triple_pattern %arg @graphs::@ref(?{@vars::@who({type = !gpm.variable_binding})}, id{"http://example.org/eats"}, ?{@vars::@what({type = !gpm.variable_binding})})
                 %opt = gpm.optional_graph_pattern %1 (%arg1 : !tuples.tuplestream){
-                    %2 = gpm.triple_pattern %arg1 @graphs::@ref(?{@vars::@who}, id{"http://example.org/age"}, ?{@vars::@age({type = !gpm.variable_binding})})
+                    %2 = gpm.relalg.triple_pattern %arg1 @graphs::@ref(?{@vars::@who}, id{"http://example.org/age"}, ?{@vars::@age({type = !gpm.variable_binding})})
                     tuples.return %2 : !tuples.tuplestream
                 }
                 tuples.return %opt : !tuples.tuplestream

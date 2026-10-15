@@ -3,13 +3,12 @@ module {
     	%subop_result = subop.execution_group (){
             %g = gsubop.create_builtin_graph { builtin = standard } : !gsubop.graph<[vx : !gsubop.node_set<[vx_it : !gsubop.graph_set_iterator<["all"]>]>],[ex : !gsubop.edge_set<[ex_it : !gsubop.graph_set_iterator<["all"]>]>]>
             %g_scan = gsubop.scan_graph %g : !gsubop.graph<[vx : !gsubop.node_set<[vx_it : !gsubop.graph_set_iterator<["all"]>]>],[ex : !gsubop.edge_set<[ex_it : !gsubop.graph_set_iterator<["all"]>]>]> @nodes::@set({type = !gsubop.node_set<[vx_it : !gsubop.graph_set_iterator<["all"]>]>}), @edges::@set({type = !gsubop.edge_set<[ex_it : !gsubop.graph_set_iterator<["all"]>]>})
-            // %lookup_index = subop.create_simple_state !subop.simple_state<[lookupIdxI32: i32]> initial: {
-            //     %c2_i32 = arith.constant 1 : i32
-            //     tuples.return %c2_i32 : i32
-            // }
-            %lookup_index = gsubop.create_identifier_state "foo:bar" : !subop.simple_state<[lookupIdxI32: !gsubop.identifier]>
             %vx = subop.nested_map %g_scan [@nodes::@set] (%arg0, %arg1){
-                %lookup_stream0 = subop.scan %lookup_index : !subop.simple_state<[lookupIdxI32: !gsubop.identifier]> {lookupIdxI32 => @nodes::@lookupIdxI32({type = !gsubop.identifier})}
+                %lookup_stream0, %lookup_streams = subop.generate [@nodes::@lookupIdxI32({type = !gsubop.identifier})] {
+                    %ident = gsubop.create_identifier {name = "vx", id = "foo:bar"} : !gsubop.identifier
+                    subop.generate_emit %ident : !gsubop.identifier
+                    tuples.return
+                }
                 %lookup_stream1 = subop.lookup %lookup_stream0 %arg1[@nodes::@lookupIdxI32] : !gsubop.node_set<[vx_it : !gsubop.graph_set_iterator<["all"]>]> @nodes::@ref({type = !gsubop.node_ref<[node_id : i32],[incoming : !gsubop.edge_set<[incoming_it : !gsubop.graph_set_iterator<["incoming"]>]>],[outgoing : !gsubop.edge_set<[outgoing_it : !gsubop.graph_set_iterator<["outgoing"]>]>],[property : i64]>})
                 tuples.return %lookup_stream1 : !tuples.tuplestream
             }

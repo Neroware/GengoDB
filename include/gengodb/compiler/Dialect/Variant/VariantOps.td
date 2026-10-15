@@ -120,6 +120,13 @@ def ToStringOp : Variant_Op<"to_string", [Pure]> {
     let assemblyFormat = [{ $val `->` type($result) attr-dict }];
 }
 
+def ResolveNodeOp : Variant_Op<"resolve_node", [Pure]> {
+    let summary = "resolve a variant to a local graph node id";
+    let arguments = (ins AnyType:$graph, Variant:$val);
+    let results = (outs I32:$result);
+    let assemblyFormat = [{ $graph `:` type($graph) `,` $val attr-dict }];
+}
+
 //===----------------------------------------------------------------------===//
 // Comparison / arithmetic
 //===----------------------------------------------------------------------===//
@@ -130,7 +137,7 @@ def CmpOp : Variant_Op<"cmp", [Pure]> {
         `result` is `!db.nullable<i1>`; null means "incomparable" (mismatched
         datatypes with no valid promotion). Same-tag fixed-width scalars
         compare as native loads and the string family via `util.varlen32_cmp`;
-        RDFNode refs resolve both sides' global UID (via the graph node index)
+        Node refs resolve both sides' global UID (via the graph node index)
         and compare those; only cross-tag numeric promotion and the rare
         non-fixed-width literal family need a full runtime value comparison.
     }];

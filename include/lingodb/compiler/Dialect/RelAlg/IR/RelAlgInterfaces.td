@@ -38,6 +38,12 @@ def Relalg_CmpOpInterface : OpInterface<"CmpOpInterface"> {
       /*retTy=*/"mlir::Value",
       /*methodName=*/"getRight"
     >,
+    InterfaceMethod<
+      /*description=*/"Returns true if it is a (GPM) variable Binding Compatibility Predicate",
+      /*retTy=*/"bool",
+      /*methodName=*/"isBindingCompatiblePred",
+      (ins), "", /*defaultImplementation=*/[{ return false; }]
+    >,
   ];
 }
 

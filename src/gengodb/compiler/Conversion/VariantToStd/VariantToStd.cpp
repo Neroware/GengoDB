@@ -256,7 +256,7 @@ class CreateNodeRefOpLowering : public OpConversionPattern<variant::CreateNodeRe
             },
             [&](OpBuilder& b, Location l) {
                 auto innerIf = b.create<scf::IfOp>(
-                    l, tagPred.isRDFNode,
+                    l, tagPred.isNode,
                     [&](OpBuilder& b2, Location l2) {
                         b2.create<scf::YieldOp>(l2, opaqueRef);
                     },
@@ -295,6 +295,19 @@ class UnspecifiedIfOpLowering : public OpConversionPattern<variant::UnspecifiedI
         Value resTag = rewriter.create<arith::SelectOp>(loc, cond, unspecifiedTag, tag);
         Value resRef = rewriter.create<arith::SelectOp>(loc, cond, noPayload, ref);
         rewriter.replaceOp(op, packVariant(rewriter, loc, resTag, resRef));
+        return success();
+    }
+};
+
+class ResolveNodeOpLowering : public OpConversionPattern<variant::ResolveNodeOp> {
+    public:
+    using OpConversionPattern<variant::ResolveNodeOp>::OpConversionPattern;
+    LogicalResult matchAndRewrite(variant::ResolveNodeOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+        auto loc = op->getLoc();
+        Value graph = getPointer(rewriter, loc, adaptor.getGraph());
+        auto [tag, ref] = unpackVariant(rewriter, loc, adaptor.getVal());
+        Value payload = rewriter.create<util::PtrToIntOp>(loc, rewriter.getI64Type(), ref);
+        rewriter.replaceOp(op, rt::VariantRuntime::resolveNode(rewriter, loc)({graph, tag, payload})[0]);
         return success();
     }
 };
@@ -349,8 +362,8 @@ Value computeLexicalForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value ta
                     b2.create<scf::YieldOp>(l2, rt::VariantRuntime::toStringNumeric(b2, l2)({payload, tag})[0]);
                 },
                 [&](OpBuilder& b2, Location l2) {
-                    auto ifRDFNode = b2.create<scf::IfOp>(
-                        l2, tp.isRDFNode,
+                    auto ifNode = b2.create<scf::IfOp>(
+                        l2, tp.isNode,
                         [&](OpBuilder& b3, Location l3) {
                             b3.create<scf::YieldOp>(l3, rt::VariantRuntime::toStringNodeRef(b3, l3)({ref})[0]);
                         },
@@ -382,7 +395,7 @@ Value computeLexicalForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value ta
                                 });
                             b3.create<scf::YieldOp>(l3, ifString.getResult(0));
                         });
-                    b2.create<scf::YieldOp>(l2, ifRDFNode.getResult(0));
+                    b2.create<scf::YieldOp>(l2, ifNode.getResult(0));
                 });
             b1.create<scf::YieldOp>(l1, result.getResult(0));
         });
@@ -400,7 +413,7 @@ Value computeFullForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value tag, 
         },
         [&](OpBuilder& b1, Location l1) {
             auto result = b1.create<scf::IfOp>(
-                l1, tp.isRDFNode,
+                l1, tp.isNode,
                 [&](OpBuilder& b2, Location l2) {
                     b2.create<scf::YieldOp>(l2, rt::VariantRuntime::toStringNodeRef(b2, l2)({ref})[0]);
                 },
@@ -570,7 +583,7 @@ class CmpOpLowering : public OpConversionPattern<variant::CmpOp> {
                     Value cmp = applyStringCmp(b2, l2, predicate, lv, rv);
                     return asNullable(b2, l2, resultType, cmp, constBool(b2, l2, false));
                 }},
-                {lp.isRDFNode, [&](OpBuilder& b2, Location l2) -> Value {
+                {lp.isNode, [&](OpBuilder& b2, Location l2) -> Value {
                     Value raw = rt::VariantRuntime::compareNodeRefRef(b2, l2)({lhsRef, rhsRef, predConst})[0];
                     return packFromTriBool(b2, l2, resultType, raw);
                 }},
@@ -593,8 +606,8 @@ class CmpOpLowering : public OpConversionPattern<variant::CmpOp> {
             [&](OpBuilder& b, Location l) {
                 Value anyInteger = b.create<arith::OrIOp>(l, lp.isInteger, rp.isInteger);
                 Value bothNumeric = b.create<arith::AndIOp>(l, lp.isNumericFamily, rp.isNumericFamily);
-                Value iriVsNode = b.create<arith::AndIOp>(l, lp.isIri, rp.isRDFNode);
-                Value nodeVsIri = b.create<arith::AndIOp>(l, lp.isRDFNode, rp.isIri);
+                Value iriVsNode = b.create<arith::AndIOp>(l, lp.isIri, rp.isNode);
+                Value nodeVsIri = b.create<arith::AndIOp>(l, lp.isNode, rp.isIri);
                 std::vector<TagCase> crossTagCases = {
                     {bothNumeric, numericCrossCmp},
                     {anyInteger, blobLiteralCmp},
@@ -822,6 +835,7 @@ struct VariantToStdLoweringPass
         RewritePatternSet patterns(ctxt);
         patterns.insert<CreateScalarOpLowering>(typeConverter, ctxt);
         patterns.insert<CreateNodeRefOpLowering>(typeConverter, ctxt);
+        patterns.insert<ResolveNodeOpLowering>(typeConverter, ctxt);
         patterns.insert<UnspecifiedIfOpLowering>(typeConverter, ctxt);
         patterns.insert<VariantIsAOpLowering>(typeConverter, ctxt);
         patterns.insert<VariantGetValOpLowering>(typeConverter, ctxt);

@@ -38,6 +38,8 @@ ex:coffee ex:batchId "987654321098765"^^xsd:long .
 ex:coffee ex:brewRatio "3.14159265358979311600"^^xsd:double .
 
 ex:bob ex:cup _:cup1 .
+ex:anna ex:cup _:cup2 .
+_:cup2 ex:drinks ex:coffee .
 
 _:cup1 ex:contains ex:coffee .
 _:cup1 ex:size "1"^^xsd:int .
@@ -51,6 +53,10 @@ _:sip1 ex:count "3"^^xsd:int .
 ex:bob ex:drinks ex:tea .
 ex:bob ex:drinks ex:soda .
 ex:bob ex:drinks ex:beer .
+
+# --- single relation triples ---
+ex:daria ex:drinks ex:coffee .
+ex:anna ex:eats ex:chocolate .
 
 # --- food, including an IRI-object shared across subjects (ex:sushi) ---
 ex:bob ex:eats ex:steak .
