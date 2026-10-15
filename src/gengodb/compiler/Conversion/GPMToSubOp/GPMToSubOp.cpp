@@ -474,6 +474,35 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       return success();
    }
 };
+class GraphExpansionLowering : public OpConversionPattern<gpm::GraphExpansionOp> {
+   NamedGraphMapper& graphs;
+   public:
+   GraphExpansionLowering(TypeConverter& typeConverter, MLIRContext* context, NamedGraphMapper& graphs)
+      : OpConversionPattern<gpm::GraphExpansionOp>(typeConverter, context), graphs(graphs) {}
+   LogicalResult matchAndRewrite(gpm::GraphExpansionOp expansionOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      auto ctxt = expansionOp.getContext();
+      auto loc = expansionOp.getLoc();
+      auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      if (mlir::isa<mlir::ArrayAttr>(expansionOp.getP()))
+         return expansionOp.emitOpError("predicate lists not yet supported");
+      if (expansionOp.getAnchor() == gpm::TripleSlot::predicate) 
+         return expansionOp.emitOpError("predicate anchors for graph expansion not yet supported");
+      auto boundCols = expansionOp.getUsedColumns();
+      boundCols.remove(expansionOp.getCreatedColumns());
+      for (auto* column : boundCols) {
+         if (mlir::isa<db::NullableType>(column->type)) {
+            return expansionOp.emitOpError() << "nullable bindings not yet supported";
+         }
+      }
+      TripleEmitter emitter(rewriter, graphs, expansionOp);
+      for (auto* column : boundCols) {
+         emitter.bind(columnManager.createRef(column));
+      }
+      mlir::Value lowered = emitter.lower(adaptor.getRel(), expansionOp.getAnchor());
+      rewriter.replaceOp(expansionOp, lowered);
+      return success();
+   }
+};
 
 static mlir::Value refreshStaleRefOperand(mlir::Value operand, ConversionPatternRewriter& rewriter) {
    auto getColOp = mlir::dyn_cast_or_null<tuples::GetColumnOp>(operand.getDefiningOp());
@@ -618,11 +647,12 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    ConversionTarget target(getContext());
    addCommonLegalDialects(target);
    target.addLegalDialect<gpm::GPMDialect>();
-   target.addIllegalOp<gpm::NamedGraphOp, gpm::TriplePatternOp>();
+   target.addIllegalOp<gpm::NamedGraphOp, gpm::TriplePatternOp, gpm::GraphExpansionOp>();
 
    RewritePatternSet patterns(ctxt);
    patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs, externalGraphs);
    patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs);
+   patterns.insert<GraphExpansionLowering>(typeConverter, ctxt, graphs);
 
    if (failed(applyFullConversion(module, target, std::move(patterns)))) {
       signalPassFailure();

@@ -213,8 +213,6 @@ inline bool extractNumericByTag(const rdf4cpp::Literal& lit, int32_t tag, uint8_
     }
 }
 
-// ---- Direct PGraph storage access. No RdfGraph, no rdf4cpp. ----
-
 inline PropertyGraph* propertyGraphOf(PropertyGraph::NodeEntry* ref) {
     return reinterpret_cast<PropertyGraph*>(
         GraphStorage::graphPtr(reinterpret_cast<uint8_t*>(ref)));
@@ -538,16 +536,16 @@ int32_t VariantRuntime::resolveNode(uint8_t* graph, int32_t tag, int64_t payload
                 return classifyStorage(t).shape == StorageShape::Blob;
         }
     };
+    if (tag == xsd::to_int32(xsd::Type::Node)) return resolve();
+    if (tag == xsd::to_int32(xsd::Type::AnyIRI)) {
+        auto* sv = reinterpret_cast<VarLen32*>(payload);
+        return pgraph->getMetadata().node_from_iri(IRI(std::string_view(sv->data(), sv->getLen())));
+    }
     auto t = xsd::from_int32(tag);
-    if (!t.has_value() || *t == xsd::Type::Unspecified) 
+    if (!t.has_value() || *t == xsd::Type::Unspecified)
         return -1;
     if (hasNodePayload(*t)) return resolve();
     switch(*t) {
-        case xsd::Type::Node: return resolve();
-        case xsd::Type::AnyIRI: {
-            auto* sv = reinterpret_cast<VarLen32*>(payload);
-            return pgraph->getMetadata().node_from_iri(IRI(std::string_view(sv->data(), sv->getLen())));
-        }
         case xsd::Type::String:
         case xsd::Type::Integer:
         case xsd::Type::Decimal: {
