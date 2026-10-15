@@ -486,7 +486,6 @@ class GraphExpansionLowering : public OpConversionPattern<gpm::GraphExpansionOp>
       : OpConversionPattern<gpm::GraphExpansionOp>(typeConverter, context), graphs(graphs) {}
    LogicalResult matchAndRewrite(gpm::GraphExpansionOp expansionOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
       auto ctxt = expansionOp.getContext();
-      auto loc = expansionOp.getLoc();
       auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
       if (mlir::isa<mlir::ArrayAttr>(expansionOp.getP()))
          return expansionOp.emitOpError("predicate lists not yet supported");

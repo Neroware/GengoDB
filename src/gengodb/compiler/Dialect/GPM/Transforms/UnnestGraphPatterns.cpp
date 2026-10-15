@@ -585,6 +585,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
 
       llvm::SmallVector<BindingPair> result;
       for (auto triple : rightTriples) {
+         llvm::DenseMap<const tuples::Column*, tuples::ColumnRefAttr> freshInTriple;
          for (auto slot : kTripleSlots) {
             auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(getSlot(triple, slot));
             if (!varTerm) continue;
@@ -598,6 +599,10 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
             if (existingSource) {
                newRef = columnManager.createRef(varTerm.getProducedBinding().getColumnPtr().get());
             }
+            else if (auto it = freshInTriple.find(column); it != freshInTriple.end()) {
+               setSlot(triple, slot, gpm::VariableTermAttr::get(ctxt, it->second));
+               continue;
+            }
             else {
                auto fromExisting = mlir::ArrayAttr::get(ctxt, {outerRef});
                auto newDef = columnManager.createDef(columnManager.getUniqueScope("bindings"), slotName(slot), fromExisting);
@@ -606,6 +611,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
                setSlot(triple, slot, gpm::VariableTermAttr::get(ctxt, newDef));
                llvm::SmallPtrSet<mlir::Operation*, 16> visitedStale;
                fixStaleTripleColumnReferences(right, column, newRef, visitedStale);
+               freshInTriple[column] = newRef;
             }
             result.push_back({outerRef, newRef});
          }
