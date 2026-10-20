@@ -178,8 +178,8 @@ std::string lingodb::execution::computeQueryCacheKey(mlir::ModuleOp markedModule
 }
 
 lingodb::execution::QueryCache& lingodb::execution::QueryCache::instance() {
-   static QueryCache cache;
-   return cache;
+   static QueryCache* cache = new QueryCache();
+   return *cache;
 }
 
 std::optional<lingodb::execution::CachedCompiledQuery> lingodb::execution::QueryCache::lookup(const std::string& key) {
