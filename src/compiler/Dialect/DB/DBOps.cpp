@@ -7,6 +7,8 @@
 
 #include "lingodb/compiler/mlir-support/parsing.h"
 
+#include <llvm/ADT/MapVector.h>
+#include <llvm/ADT/SetVector.h>
 #include <llvm/ADT/SmallPtrSet.h>
 #include <llvm/Support/Debug.h>
 #include <queue>
@@ -419,8 +421,8 @@ OpFoldResult db::NullableGetVal::fold(FoldAdaptor adaptor) {
    return {};
 }
 LogicalResult db::AndOp::canonicalize(db::AndOp andOp, mlir::PatternRewriter& rewriter) {
-   llvm::DenseSet<mlir::Value> rawValues;
-   llvm::DenseMap<mlir::Value, std::vector<db::CmpOp>> cmps;
+   llvm::SetVector<mlir::Value> rawValues;
+   llvm::MapVector<mlir::Value, std::vector<db::CmpOp>> cmps;
    std::queue<mlir::Value> queue;
    queue.push(andOp);
    while (!queue.empty()) {
@@ -445,7 +447,7 @@ LogicalResult db::AndOp::canonicalize(db::AndOp andOp, mlir::PatternRewriter& re
    for (auto m : cmps) {
       mlir::Value lower, upper;
       db::CmpOp lowerCmp, upperCmp;
-      mlir::Value current = m.getFirst();
+      mlir::Value current = m.first;
       if (auto* definingOp = current.getDefiningOp()) {
          if (mlir::isa<db::ConstantOp>(definingOp)) {
             continue;
@@ -481,13 +483,13 @@ LogicalResult db::AndOp::canonicalize(db::AndOp andOp, mlir::PatternRewriter& re
          auto lowerInclusive = lowerCmp.getPredicate() == DBCmpPredicate::gte || lowerCmp.getPredicate() == DBCmpPredicate::lte;
          auto upperInclusive = upperCmp.getPredicate() == DBCmpPredicate::gte || upperCmp.getPredicate() == DBCmpPredicate::lte;
          mlir::Value between = rewriter.create<db::BetweenOp>(lowerCmp->getLoc(), current, lower, upper, lowerInclusive, upperInclusive);
-         rawValues.erase(lowerCmp);
-         rawValues.erase(upperCmp);
+         rawValues.remove(lowerCmp);
+         rawValues.remove(upperCmp);
          rawValues.insert(between);
       }
    }
    if (rawValues.size() == 1) {
-      rewriter.replaceOp(andOp, *rawValues.begin());
+      rewriter.replaceOp(andOp, rawValues.front());
       return success();
    }
    if (rawValues.size() != andOp.getVals().size()) {

@@ -708,9 +708,9 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       };
       append("leftHash", leftKeys);
       append("rightHash", rightKeys);
-      // TODO: Select join strategy withing the RelAlg query optimizer!
-      // join->setAttr("impl", mlir::StringAttr::get(ctxt, "hash"));
-      // join->setAttr("useHashJoin", mlir::UnitAttr::get(ctxt));
+      // TODO: Select join strategy within the RelAlg query optimizer!
+      join->setAttr("impl", mlir::StringAttr::get(ctxt, "hash"));
+      join->setAttr("useHashJoin", mlir::UnitAttr::get(ctxt));
       append("nullsEqual", llvm::SmallVector<mlir::Attribute>(leftKeys.size(), mlir::IntegerAttr::get(mlir::IntegerType::get(ctxt, 8), 0)));
       // variable binding compatibility semantics for join operators
       append("bindingCompatible", llvm::SmallVector<mlir::Attribute>(leftKeys.size(), mlir::IntegerAttr::get(mlir::IntegerType::get(ctxt, 8), 1)));
