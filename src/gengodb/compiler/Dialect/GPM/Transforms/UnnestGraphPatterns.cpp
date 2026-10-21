@@ -2,6 +2,7 @@
 
 #include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOps.h"
+#include "gengodb/compiler/Dialect/GPM/Transforms/BindingColumnTransformer.h"
 #include "lingodb/compiler/Dialect/DB/IR/DBOps.h"
 #include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgOps.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
@@ -234,7 +235,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       if (!splits.empty()) {
          llvm::SmallPtrSet<mlir::Operation*, 32> elementOps;
          collectSubtreeOps(elementStream, elementOps);
-         remapColumnsIn(elementOps, splits);
+         gpm::BindingColumnTransformer(ctxt).remapColumnsIn(elementOps, splits);
       }
       return true;
    }
@@ -435,7 +436,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       llvm::SmallPtrSet<mlir::Operation*, 32> preMergeOps;
       collectSubtreeOps(leftStream, preMergeOps);
       collectSubtreeOps(rightStream, preMergeOps);
-      remapColumnsEverywhere(relUnion.getOperation(), passthroughColMap, &preMergeOps);
+      gpm::BindingColumnTransformer(ctxt).remapColumnsEverywhere(getOperation(), relUnion.getOperation(), passthroughColMap, &preMergeOps);
       return relUnion.getResult();
    }
    void isolateTriple(gpm::TriplePatternOp triple, mlir::Operation* insertBefore) {
@@ -498,7 +499,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
                nameMerges[paddedRight] = merged;
             }
          }
-         remapColumnsEverywhere(join.getOperation(), colMap, &preMergeOps);
+         gpm::BindingColumnTransformer(&getContext()).remapColumnsEverywhere(getOperation(), join.getOperation(), colMap, &preMergeOps);
          return join.getResult();
       }
       if (elementKind == gpm::PatternKind::minus) {
@@ -775,89 +776,11 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       }
       return mlir::ArrayAttr::get(ctxt, mergedCols);
    }
-   mlir::Attribute remapColumnAttr(mlir::Attribute attr, const llvm::DenseMap<const tuples::Column*, const tuples::Column*>& colMap, tuples::ColumnManager& columnManager) {
-      if (!attr) return attr;
-      if (auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(attr)) {
-         auto binding = varTerm.getBinding();
-         auto newBinding = remapColumnAttr(binding, colMap, columnManager);
-         if (newBinding == binding) return attr;
-         return gpm::VariableTermAttr::get(attr.getContext(), newBinding);
-      }
-      if (auto colRef = mlir::dyn_cast<tuples::ColumnRefAttr>(attr)) {
-         auto it = colMap.find(&colRef.getColumn());
-         if (it != colMap.end()) return columnManager.createRef(it->second);
-         return attr;
-      }
-      if (auto colDef = mlir::dyn_cast<tuples::ColumnDefAttr>(attr)) {
-         auto fromExisting = colDef.getFromExisting();
-         if (!fromExisting) return attr;
-         auto newFromExisting = remapColumnAttr(fromExisting, colMap, columnManager);
-         if (newFromExisting == fromExisting) return attr;
-         return columnManager.createDef(&colDef.getColumn(), newFromExisting);
-      }
-      if (auto sortSpec = mlir::dyn_cast<relalg::SortSpecificationAttr>(attr)) {
-         auto newRef = remapColumnAttr(sortSpec.getAttr(), colMap, columnManager);
-         if (newRef == sortSpec.getAttr()) return attr;
-         return relalg::SortSpecificationAttr::get(attr.getContext(), mlir::cast<tuples::ColumnRefAttr>(newRef), sortSpec.getSortSpec());
-      }
-      if (auto arr = mlir::dyn_cast<mlir::ArrayAttr>(attr)) {
-         bool changed = false;
-         llvm::SmallVector<mlir::Attribute> newElems;
-         newElems.reserve(arr.size());
-         for (auto e : arr) {
-            auto ne = remapColumnAttr(e, colMap, columnManager);
-            changed |= ne != e;
-            newElems.push_back(ne);
-         }
-         return changed ? mlir::ArrayAttr::get(arr.getContext(), newElems) : attr;
-      }
-      if (auto dict = mlir::dyn_cast<mlir::DictionaryAttr>(attr)) {
-         bool changed = false;
-         llvm::SmallVector<mlir::NamedAttribute> newElems;
-         for (auto na : dict) {
-            auto ne = remapColumnAttr(na.getValue(), colMap, columnManager);
-            changed |= ne != na.getValue();
-            newElems.emplace_back(na.getName(), ne);
-         }
-         return changed ? mlir::DictionaryAttr::get(dict.getContext(), newElems) : attr;
-      }
-      return attr;
-   }
    void collectSubtreeOps(mlir::Value v, llvm::SmallPtrSetImpl<mlir::Operation*>& ops) {
       auto* op = v.getDefiningOp();
       if (!op || ops.contains(op)) return;
       op->walk([&](mlir::Operation* nested) { ops.insert(nested); });
       for (auto operand : op->getOperands()) collectSubtreeOps(operand, ops);
-   }
-   void remapColumnsIn(const llvm::SmallPtrSetImpl<mlir::Operation*>& ops, const ColumnMapper& colMap) {
-      if (colMap.empty()) return;
-      auto& columnManager = getOperation()->getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-      for (auto* op : ops) {
-         bool changed = false;
-         llvm::SmallVector<mlir::NamedAttribute> newAttrs;
-         for (auto namedAttr : op->getAttrDictionary()) {
-            auto remapped = remapColumnAttr(namedAttr.getValue(), colMap, columnManager);
-            changed |= remapped != namedAttr.getValue();
-            newAttrs.emplace_back(namedAttr.getName(), remapped);
-         }
-         if (changed) op->setAttrs(mlir::DictionaryAttr::get(op->getContext(), newAttrs));
-      }
-   }
-   void remapColumnsEverywhere(mlir::Operation* skip, const ColumnMapper& colMap, const llvm::SmallPtrSetImpl<mlir::Operation*>* exclude = nullptr) {
-      if (colMap.empty()) return;
-      auto& columnManager = skip->getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-      getOperation()->walk([&](mlir::Operation* op) {
-         if (op == skip) return;
-         if (exclude && exclude->contains(op)) return;
-         bool changed = false;
-         llvm::SmallVector<mlir::NamedAttribute> newAttrs;
-         for (auto namedAttr : op->getAttrDictionary()) {
-            auto remapped = remapColumnAttr(namedAttr.getValue(), colMap, columnManager);
-            changed |= remapped != namedAttr.getValue();
-            newAttrs.emplace_back(namedAttr.getName(), remapped);
-         }
-         if (changed) op->setAttrs(mlir::DictionaryAttr::get(op->getContext(), newAttrs));
-      });
    }
    void bnodesToVariables(gpm::TriplePatternOp triple, llvm::StringMap<tuples::ColumnRefAttr>& scope) {
       auto* ctxt = triple.getContext();
