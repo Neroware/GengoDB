@@ -1,7 +1,5 @@
 #include "gengodb/compiler/Conversion/GPMToSubOp/TripleEmitter.h"
 
-#include "gengodb/compiler/Conversion/GPMToSubOp/helpers.h"
-
 #include "lingodb/compiler/Dialect/DB/IR/DBOps.h"
 #include "lingodb/compiler/Dialect/SubOperator/Utils.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
@@ -12,6 +10,22 @@
 namespace gengodb::compiler::dialect::gpm::lowering {
 using namespace lingodb::compiler::dialect;
 using namespace helpers;
+
+template <typename BuildIdentFn>
+mlir::Value generateTupleStream(mlir::ConversionPatternRewriter& rewriter, mlir::Location loc, tuples::ColumnDefAttr def, BuildIdentFn buildIdent) {
+    auto ctxt = rewriter.getContext();
+    auto generateOp = rewriter.create<subop::GenerateOp>(loc, std::vector<mlir::Type>{
+        tuples::TupleStreamType::get(ctxt), tuples::TupleStreamType::get(ctxt)}, rewriter.getArrayAttr({def}));
+    auto* generateBlock = new mlir::Block;
+    mlir::OpBuilder::InsertionGuard guard(rewriter);
+    generateOp.getRegion().push_back(generateBlock);
+    rewriter.setInsertionPointToStart(generateBlock);
+    mlir::Value identValue = buildIdent(rewriter);
+    rewriter.create<subop::GenerateEmitOp>(loc, mlir::ValueRange{identValue});
+    rewriter.create<tuples::ReturnOp>(loc);
+    return generateOp.getRes();
+}
+
 mlir::Value TripleEmitter::lower(mlir::Value stream, std::optional<gpm::TripleSlot> anchor) {
     gsubop::EdgeRefType edgeRefType;
     tuples::ColumnRefAttr edgeRef;
