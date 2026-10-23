@@ -1,4 +1,5 @@
 add_mlir_conversion_library(MLIRGPMToSubOp
+        TripleEmitter.cpp
         GPMToSubOp.cpp
 
         ADDITIONAL_HEADER_DIRS
