@@ -56,6 +56,10 @@ TripleEmitter::TripleAnchorT TripleEmitter::anchorAttr(mlir::Attribute term) {
     if (auto identTerm = mlir::dyn_cast<gpm::IdentifierTermAttr>(term))
         return identTerm;
     auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term);
+    if (varTerm && varTerm.getProducedBinding()) {
+        if (auto it = localTerms.find(&varTerm.getProducedBinding().getColumn()); it != localTerms.end())
+            return it->second;
+    }
     if (!varTerm || !varTerm.hasBinding())
         assert(false && "anchor lacks binding");
     return varTerm.getBindingReference();

@@ -1476,12 +1476,17 @@ static mlir::Value translateINLJ(mlir::Value left, mlir::Value right, mlir::Arra
    }
    return nestedMapOp.getRes();
 }
-static mlir::Value translateGINLJBindingCompatible(mlir::Value left, mlir::Value right, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, mlir::ConversionPatternRewriter& rewriter, mlir::Operation* op, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn, mlir::ArrayAttr bindingCompatible) {
+static mlir::Value translateGINLJBindingCompatible(mlir::Value left, mlir::Value right, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, mlir::ConversionPatternRewriter& rewriter, mlir::Operation* op, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn, int graphIndexPosition, mlir::ArrayAttr bindingCompatible) {
    auto loc = op->getLoc();
    auto* ctxt = rewriter.getContext();
    auto& colManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-   gpm::TriplePatternOp tripleOp = mlir::dyn_cast<gpm::TriplePatternOp>(mlir::cast<BinaryOperator>(op).rightChild());
+   gpm::TriplePatternOp tripleOp = op->getOperand(graphIndexPosition).getDefiningOp<gpm::TriplePatternOp>();
    if (!tripleOp || !tripleOp->hasAttr("virtual")) assert(false && "expected virtual triple pattern operator");
+   // Weird parameter flip. Wtf?
+   if (left.getDefiningOp() == tripleOp.getOperation()) {
+      std::swap(left, right);
+      std::swap(hashLeft, hashRight);
+   }
    auto scanGraph = mlir::dyn_cast<gsubop::ScanGraphOp>(tripleOp.getRel().getDefiningOp());
    if (!scanGraph) assert(false && "GINLJ only supports triple operators consuming graph scans");
    mlir::Value graph = scanGraph.getGraph();
@@ -1497,7 +1502,7 @@ static mlir::Value translateGINLJBindingCompatible(mlir::Value left, mlir::Value
       }
       return std::nullopt;
    };
-   auto anchor = findAnchor(tripleOp, hashLeft);
+   auto anchor = findAnchor(tripleOp, hashRight);
    if (!anchor) assert(false && "GINLJ needs an anchor");
    auto [anchorIdx, anchorSlot] = *anchor;
    auto anchorRef = mlir::cast<tuples::ColumnRefAttr>(hashLeft[anchorIdx]);
@@ -1567,7 +1572,7 @@ static mlir::Value translateGINLJBindingCompatible(mlir::Value left, mlir::Value
    rewriter.eraseOp(scanGraph);
    return result;
 }
-static mlir::Value translateNL(mlir::Value left, mlir::Value right, bool useHash, bool useIndexNestedLoop, bool useGraphIndexNestedLoop, bool useBindingCompatible, mlir::ArrayAttr nullsEqual, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, relalg::ColumnSet columns, mlir::ConversionPatternRewriter& rewriter, mlir::Operation* op, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn, mlir::ArrayAttr bindingCompatible = mlir::ArrayAttr()) {
+static mlir::Value translateNL(mlir::Value left, mlir::Value right, bool useHash, bool useIndexNestedLoop, bool useGraphIndexNestedLoop, bool useBindingCompatible, mlir::ArrayAttr nullsEqual, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, relalg::ColumnSet columns, mlir::ConversionPatternRewriter& rewriter, mlir::Operation* op, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn, int graphIndexPosition = -1, mlir::ArrayAttr bindingCompatible = mlir::ArrayAttr()) {
    if (useHash) {
       if (useBindingCompatible) {
          return translateHJBindingCompatible(left, right, nullsEqual, hashLeft, hashRight, columns, rewriter, op->getLoc(), fn, bindingCompatible);
@@ -1578,7 +1583,7 @@ static mlir::Value translateNL(mlir::Value left, mlir::Value right, bool useHash
       return translateINLJ(left, right, nullsEqual, hashLeft, hashRight, columns, rewriter, op, fn);
    } else if (useGraphIndexNestedLoop) {
       if (useBindingCompatible) {
-         return translateGINLJBindingCompatible(left, right, hashLeft, hashRight, rewriter, op, fn, bindingCompatible);
+         return translateGINLJBindingCompatible(left, right, hashLeft, hashRight, rewriter, op, fn, graphIndexPosition, bindingCompatible);
       } else {
          assert (false && "only binding compatible GINLJ implemented.");
       }
@@ -1714,7 +1719,7 @@ class InnerJoinNLLowering : public OpConversionPattern<relalg::InnerJoinOp> {
       rewriter.replaceOp(innerJoinOp, translateNL(adaptor.getRight(), adaptor.getLeft(), useHash, useIndexNestedLoop, useGraphIndex, useBindingCompatible, nullsEqual, rightHash, leftHash, requiredColumns.lookup(mlir::cast<Operator>(innerJoinOp.getLeft().getDefiningOp())), rewriter, innerJoinOp, [loc, &innerJoinOp](mlir::Value v, mlir::ConversionPatternRewriter& rewriter) -> mlir::Value {
                             return translateSelection(v, innerJoinOp.getPredicate(), rewriter, loc);
                          }, 
-                         bindingCompatible));
+                         1, bindingCompatible));
       return success();
    }
 };
@@ -1892,7 +1897,7 @@ class OuterJoinLowering : public OpConversionPattern<relalg::OuterJoinOp> {
                                auto mappedNullable = mapColsToNullable(filtered, rewriter, loc, outerJoinOp.getMapping());
                                return rewriter.create<subop::UnionOp>(loc, mlir::ValueRange{mappedNullable, mappedNull});
                             },
-                            bindingCompatible));
+                            1, bindingCompatible));
       } else {
          auto [flagAttrDef, flagAttrRef] = createColumn(rewriter.getI1Type(), "materialized", "marker");
          auto [stream, scan] = translateNLWithMarker(adaptor.getLeft(), adaptor.getRight(), useHash, nullsEqual, leftHash, rightHash, requiredColumns.lookup(mlir::cast<Operator>(outerJoinOp.getLeft().getDefiningOp())), rewriter, loc, flagAttrDef, [loc, &outerJoinOp](mlir::Value v, mlir::Value, mlir::ConversionPatternRewriter& rewriter, tuples::ColumnRefAttr ref, Member flagMember) -> mlir::Value {
