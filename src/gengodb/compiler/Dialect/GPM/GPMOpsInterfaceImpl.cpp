@@ -14,22 +14,23 @@
 #include <array>
 #include <optional>
 
-using operator_list = llvm::SmallVector<GPMOperator, 4>;
+using operator_list = llvm::SmallVector<gengodb::compiler::dialect::gpm::GPMOperator, 4>;
 namespace {
 using namespace lingodb::compiler::dialect;
+using namespace gengodb::compiler::dialect;
 using namespace relalg;
 using namespace tuples;
 
 operator_list getChildOperators(mlir::Operation* parent) {
     operator_list children;
     for (auto operand : parent->getOperands()) {
-        if (auto childOperator = mlir::dyn_cast_or_null<GPMOperator>(operand.getDefiningOp())) {
+        if (auto childOperator = mlir::dyn_cast_or_null<gpm::GPMOperator>(operand.getDefiningOp())) {
             children.push_back(childOperator);
         }
     }
     return children;
 }
-ColumnSet collectColumns(operator_list operators, std::function<relalg::ColumnSet(GPMOperator)> fn) {
+ColumnSet collectColumns(operator_list operators, std::function<relalg::ColumnSet(gpm::GPMOperator)> fn) {
     ColumnSet collected;
     for (auto op : operators) {
         auto res = fn(op);
@@ -70,8 +71,8 @@ ColumnSet getUsedVariables(mlir::Operation* op) {
         .insert(getCreatedVariables(op));
 }
 ColumnSet getAvailableVariables(mlir::Operation* op) {
-   GPMOperator asOperator = mlir::dyn_cast_or_null<GPMOperator>(op);
-   auto collected = collectColumns(getChildOperators(op), [](GPMOperator op) { return op.getAvailableVariables(); });
+   gpm::GPMOperator asOperator = mlir::dyn_cast_or_null<gpm::GPMOperator>(op);
+   auto collected = collectColumns(getChildOperators(op), [](gpm::GPMOperator op) { return op.getAvailableVariables(); });
    auto selfCreated = asOperator.getCreatedVariables();
    collected.insert(selfCreated);
    return collected;
@@ -89,7 +90,7 @@ void moveSubTreeBefore(mlir::Operation* op, mlir::Operation* before) {
 
 llvm::SmallVector<std::tuple<mlir::Attribute, mlir::Attribute, mlir::Attribute>, 16> getPatternTriples(mlir::Operation* op) {
     llvm::SmallVector<std::tuple<mlir::Attribute, mlir::Attribute, mlir::Attribute>, 16> result;
-    auto patternOp = mlir::cast<GraphPatternOp>(op);
+    auto patternOp = mlir::cast<gpm::GraphPatternOp>(op);
     patternOp.getPattern().walk([&](gengodb::compiler::dialect::gpm::TriplePatternOp triple) {
         result.push_back(std::make_tuple(triple.getS(), triple.getP(), triple.getO()));
     });
@@ -106,7 +107,7 @@ inline bool isAllowedGraphPatternBodyOp(const mlir::Operation& nested) {
 }
 
 mlir::LogicalResult verifyGraphPatternBody(mlir::Operation* op) {
-    auto patternOp = mlir::cast<GraphPatternOp>(op);
+    auto patternOp = mlir::cast<gpm::GraphPatternOp>(op);
     bool valid = std::all_of(patternOp.getPattern().getOps().begin(), patternOp.getPattern().getOps().end(), isAllowedGraphPatternBodyOp);
     if (!valid) {
         return op->emitOpError("A graph pattern must only contain triples, nested graph patterns, or FILTER expressions.");

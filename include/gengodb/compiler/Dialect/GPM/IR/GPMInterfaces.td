@@ -3,6 +3,7 @@
 include "mlir/IR/OpBase.td"
 
 def GPMOperator : OpInterface<"GPMOperator"> {
+let cppNamespace = "::gengodb::compiler::dialect::gpm";
 let methods = [
 InterfaceMethod<
     "get all variable bindings created by this operator",
@@ -32,6 +33,7 @@ InterfaceMethod<
 }
 
 def GraphPatternOp : OpInterface<"GraphPatternOp"> {
+let cppNamespace = "::gengodb::compiler::dialect::gpm";
 let methods = [
 InterfaceMethod<
     "get the incoming tuple stream this pattern is applied to",

@@ -55,11 +55,11 @@ const tuples::Column* resolveThroughRemaps(const ColumnMapper& remaps, const tup
    return column;
 }
 bool isGpmStreamOp(mlir::Operation* op) {
-   return op && (mlir::isa<GraphPatternOp>(op) || mlir::isa<gpm::BagOp, gpm::TriplePatternOp, gpm::NamedGraphOp, gpm::FilterOp>(op));
+   return op && (mlir::isa<gpm::GraphPatternOp>(op) || mlir::isa<gpm::BagOp, gpm::TriplePatternOp, gpm::NamedGraphOp, gpm::FilterOp>(op));
 }
 bool isNestedInGraphPattern(mlir::Operation* op) {
    for (auto* parent = op->getParentOp(); parent; parent = parent->getParentOp()) {
-      if (mlir::isa<GraphPatternOp>(parent)) return true;
+      if (mlir::isa<gpm::GraphPatternOp>(parent)) return true;
    }
    return false;
 }
@@ -117,7 +117,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          return result;
       }
       mlir::Value result;
-      if (auto patternOp = mlir::dyn_cast<GraphPatternOp>(op)) {
+      if (auto patternOp = mlir::dyn_cast<gpm::GraphPatternOp>(op)) {
          result = rewritePattern(patternOp);
       } 
       else if (auto unionOp = mlir::dyn_cast<gpm::BagOp>(op)) {
@@ -172,8 +172,8 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       selOp.getPredicate().takeBody(filterOp.getPredicate());
       return selOp.getResult();
    }
-   mlir::Value rewritePattern(GraphPatternOp patternOp) {
-      auto createdVars = mlir::cast<GPMOperator>(patternOp.getOperation()).getCreatedVariables();
+   mlir::Value rewritePattern(gpm::GraphPatternOp patternOp) {
+      auto createdVars = mlir::cast<gpm::GPMOperator>(patternOp.getOperation()).getCreatedVariables();
       auto kind = patternOp.getPatternKind();
       auto loc = patternOp.getLoc();
       mlir::Value accumulator = rewrite(patternOp.getRel());
@@ -198,7 +198,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       }
       return fold(accumulator, elementStream, kind, liveCreatedVars, loc, splitPairs);
    }
-   bool splitDanglingReferences(GraphPatternOp patternOp, mlir::Value accumulator, mlir::Value elementStream, relalg::ColumnSet& createdVars) {
+   bool splitDanglingReferences(gpm::GraphPatternOp patternOp, mlir::Value accumulator, mlir::Value elementStream, relalg::ColumnSet& createdVars) {
       auto* ctxt = patternOp->getContext();
       auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
       relalg::ColumnSet leftVars;

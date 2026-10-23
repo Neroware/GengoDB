@@ -103,7 +103,7 @@ mlir::Value scanNamedGraph(ConversionPatternRewriter& rewriter, mlir::Location l
    return rewriter.create<gsubop::ScanGraphOp>(loc, data.externalGraph, nodeSetDef, edgeSetDef);
 }
 static bool isRelAlgOperator(mlir::Operation* op) {
-   return op && !mlir::isa<GPMOperator>(op) && mlir::isa<Operator>(op);
+   return op && !mlir::isa<gpm::GPMOperator>(op) && mlir::isa<Operator>(op);
 }
 
 class NamedGraphLowering : public OpConversionPattern<gpm::NamedGraphOp> {
@@ -284,6 +284,15 @@ static void refreshNullableTypes(ModuleOp module) {
       }
    });
 }
+static void refreshVirtualTypes(ModuleOp module) {
+   auto& columnManager = module.getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+   module.walk([&](gpm::TriplePatternOp tripleOp) {
+      if (!tripleOp->hasAttr("virtual")) return;
+      for (const auto* column : tripleOp.getCreatedColumns()) {
+         columnManager.createDef(column).getColumn().type = variant::VariantType::get(module.getContext());
+      }
+   });
+}
 
 
 static void addCommonLegalDialects(ConversionTarget& target) {
@@ -324,6 +333,7 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    addCommonLegalDialects(target);
    target.addLegalDialect<gpm::GPMDialect>();
    target.addIllegalOp<gpm::NamedGraphOp, gpm::TriplePatternOp, gpm::GraphExpansionOp>();
+   target.addDynamicallyLegalOp<gpm::TriplePatternOp>([](gpm::TriplePatternOp op) { return op->hasAttr("virtual"); });
 
    RewritePatternSet patterns(ctxt);
    patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs, externalGraphs);
@@ -336,6 +346,7 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    }
 
    refreshNullableTypes(module);
+   refreshVirtualTypes(module);
 }
 static void expandMergedColumns(ModuleOp module) {
    auto* ctxt = module.getContext();
@@ -399,6 +410,7 @@ void GPMScalarToSubOpLoweringPass::runOnOperation() {
    ConversionTarget target(getContext());
    addCommonLegalDialects(target);
    target.addIllegalDialect<gpm::GPMDialect>();
+   target.addDynamicallyLegalOp<gpm::TriplePatternOp>([](gpm::TriplePatternOp op) { return op->hasAttr("virtual"); });
 
    RewritePatternSet patterns(ctxt);
    patterns.insert<GpmBindingsCompatibleLowering>(typeConverter, ctxt);
