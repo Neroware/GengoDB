@@ -151,30 +151,58 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       return success();
    }
 };
-class GraphExpansionLowering : public OpConversionPattern<gpm::GraphExpansionOp> {
+class NodeExpansionLowering : public OpConversionPattern<gpm::NodeExpansionOp> {
    NamedGraphMapper& graphs;
    public:
-   GraphExpansionLowering(TypeConverter& typeConverter, MLIRContext* context, NamedGraphMapper& graphs)
-      : OpConversionPattern<gpm::GraphExpansionOp>(typeConverter, context), graphs(graphs) {}
-   LogicalResult matchAndRewrite(gpm::GraphExpansionOp expansionOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
-      auto ctxt = expansionOp.getContext();
-      auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-      if (mlir::isa<mlir::ArrayAttr>(expansionOp.getP()))
-         return expansionOp.emitOpError("predicate lists not yet supported");
-      if (expansionOp.getAnchor() == gpm::TripleSlot::predicate) 
-         return expansionOp.emitOpError("predicate anchors for graph expansion not yet supported");
-      auto boundCols = expansionOp.getUsedColumns();
-      boundCols.remove(expansionOp.getCreatedColumns());
-      for (auto* column : boundCols) {
-         if (mlir::isa<db::NullableType>(column->type)) {
-            return expansionOp.emitOpError() << "nullable bindings not yet supported";
-         }
+   NodeExpansionLowering(TypeConverter& typeConverter, MLIRContext* context, NamedGraphMapper& graphs)
+      : OpConversionPattern<gpm::NodeExpansionOp>(typeConverter, context), graphs(graphs) {}
+   LogicalResult matchAndRewrite(gpm::NodeExpansionOp expansionOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      GraphEmitter::AnchorT anchor;
+      if (auto ident = mlir::dyn_cast<gpm::IdentifierTermAttr>(expansionOp.getAnchorTerm())) {
+         anchor = ident;
+      } else {
+         auto anchorRef = mlir::cast<gpm::VariableTermAttr>(expansionOp.getAnchorTerm()).getBindingReference();
+         if (mlir::isa<db::NullableType>(anchorRef.getColumn().type))
+            return expansionOp.emitOpError() << "nullable anchors not yet supported";
+         anchor = anchorRef;
       }
-      TripleEmitter emitter(rewriter, graphs, expansionOp);
-      for (auto* column : boundCols) {
-         emitter.bind(columnManager.createRef(column));
+      auto direction = expansionOp.getAnchor() == gpm::ExpansionDirection::outgoing ? GraphEmitter::Outgoing : GraphEmitter::Incoming;
+      auto targetDef = mlir::cast<gpm::VariableTermAttr>(expansionOp.getTarget()).getProducedBinding();
+      targetDef.getColumn().type = variant::VariantType::get(getContext());
+      GraphEmitter emitter(rewriter, graphs, expansionOp, expansionOp.getGraphRef());
+      gsubop::EdgeRefType edgeRefType;
+      tuples::ColumnRefAttr edgeRef;
+      mlir::Value lowered = emitter.emitNodeToEdge(adaptor.getRel(), anchor, direction, edgeRefType, edgeRef, expansionOp.getParamId());
+      lowered = emitter.wrapEdge(lowered, edgeRef, targetDef);
+      rewriter.replaceOp(expansionOp, lowered);
+      return success();
+   }
+};
+class EdgeExpansionLowering : public OpConversionPattern<gpm::EdgeExpansionOp> {
+   NamedGraphMapper& graphs;
+   public:
+   EdgeExpansionLowering(TypeConverter& typeConverter, MLIRContext* context, NamedGraphMapper& graphs)
+      : OpConversionPattern<gpm::EdgeExpansionOp>(typeConverter, context), graphs(graphs) {}
+   LogicalResult matchAndRewrite(gpm::EdgeExpansionOp expansionOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      auto targetDef = mlir::cast<gpm::VariableTermAttr>(expansionOp.getTarget()).getProducedBinding();
+      targetDef.getColumn().type = variant::VariantType::get(getContext());
+      GraphEmitter emitter(rewriter, graphs, expansionOp, expansionOp.getGraphRef());
+      gsubop::EdgeRefType edgeRefType;
+      tuples::ColumnRefAttr edgeRef;
+      mlir::Value lowered;
+      if (auto predicate = mlir::dyn_cast<gpm::IdentifierTermAttr>(expansionOp.getAnchorTerm())) {
+         lowered = emitter.scanEdges(adaptor.getRel(), edgeRefType, edgeRef);
+         lowered = emitter.filterByIdentifier(lowered, edgeRef, predicate, expansionOp.getParamId());
+      } else {
+         auto anchorRef = mlir::cast<gpm::VariableTermAttr>(expansionOp.getAnchorTerm()).getBindingReference();
+         if (mlir::isa<db::NullableType>(anchorRef.getColumn().type))
+            return expansionOp.emitOpError() << "nullable anchors not yet supported";
+         lowered = emitter.resolveEdge(adaptor.getRel(), anchorRef, edgeRefType, edgeRef);
       }
-      mlir::Value lowered = emitter.lower(adaptor.getRel(), expansionOp.getAnchor());
+      auto endpointMembers = expansionOp.getAnchor() == gpm::EdgeEndpoint::from_node ? edgeRefType.getFromMembers() : edgeRefType.getToMembers();
+      tuples::ColumnRefAttr rawRef;
+      lowered = emitter.emitEdgeToNode(lowered, edgeRef, endpointMembers.getMembers()[0], rawRef);
+      lowered = emitter.wrapNode(lowered, rawRef, targetDef);
       rewriter.replaceOp(expansionOp, lowered);
       return success();
    }
@@ -332,13 +360,14 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    ConversionTarget target(getContext());
    addCommonLegalDialects(target);
    target.addLegalDialect<gpm::GPMDialect>();
-   target.addIllegalOp<gpm::NamedGraphOp, gpm::TriplePatternOp, gpm::GraphExpansionOp>();
+   target.addIllegalOp<gpm::NamedGraphOp, gpm::TriplePatternOp, gpm::NodeExpansionOp, gpm::EdgeExpansionOp>();
    target.addDynamicallyLegalOp<gpm::TriplePatternOp>([](gpm::TriplePatternOp op) { return op->hasAttr("virtual"); });
 
    RewritePatternSet patterns(ctxt);
    patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs, externalGraphs);
    patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs);
-   patterns.insert<GraphExpansionLowering>(typeConverter, ctxt, graphs);
+   patterns.insert<NodeExpansionLowering>(typeConverter, ctxt, graphs);
+   patterns.insert<EdgeExpansionLowering>(typeConverter, ctxt, graphs);
 
    if (failed(applyFullConversion(module, target, std::move(patterns)))) {
       signalPassFailure();
