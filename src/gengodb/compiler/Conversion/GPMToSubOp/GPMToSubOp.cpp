@@ -105,14 +105,6 @@ mlir::Value scanNamedGraph(ConversionPatternRewriter& rewriter, mlir::Location l
 static bool isRelAlgOperator(mlir::Operation* op) {
    return op && !mlir::isa<gpm::GPMOperator>(op) && mlir::isa<Operator>(op);
 }
-// TODO this needs to go!
-static tuples::ColumnRefAttr findGraphRef(mlir::Value rel, tuples::ColumnRefAttr graphRef) {
-   mlir::Operation* op = rel.getDefiningOp();
-   if (auto triple = mlir::dyn_cast_or_null<gpm::TriplePatternOp>(op)) return triple.getGraphRef();
-   if (auto expansion = mlir::dyn_cast_or_null<gpm::NodeExpansionOp>(op)) return findGraphRef(expansion.getRel(), graphRef);
-   if (auto expansion = mlir::dyn_cast_or_null<gpm::EdgeExpansionOp>(op)) return findGraphRef(expansion.getRel(), graphRef);
-   return graphRef;
-}
 
 class NamedGraphLowering : public OpConversionPattern<gpm::NamedGraphOp> {
    NamedGraphMapper& graphs;
@@ -177,7 +169,7 @@ class NodeExpansionLowering : public OpConversionPattern<gpm::NodeExpansionOp> {
       auto direction = expansionOp.getAnchor() == gpm::ExpansionDirection::outgoing ? GraphEmitter::Outgoing : GraphEmitter::Incoming;
       auto targetDef = mlir::cast<gpm::VariableTermAttr>(expansionOp.getTarget()).getProducedBinding();
       targetDef.getColumn().type = variant::VariantType::get(getContext());
-      GraphEmitter emitter(rewriter, graphs, expansionOp, findGraphRef(expansionOp.getRel(), expansionOp.getGraphRef()));
+      GraphEmitter emitter(rewriter, graphs, expansionOp, expansionOp.getGraphRef());
       gsubop::EdgeRefType edgeRefType;
       tuples::ColumnRefAttr edgeRef;
       mlir::Value lowered = emitter.emitNodeToEdge(adaptor.getRel(), anchor, direction, edgeRefType, edgeRef, expansionOp.getParamId());
@@ -194,7 +186,7 @@ class EdgeExpansionLowering : public OpConversionPattern<gpm::EdgeExpansionOp> {
    LogicalResult matchAndRewrite(gpm::EdgeExpansionOp expansionOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
       auto targetDef = mlir::cast<gpm::VariableTermAttr>(expansionOp.getTarget()).getProducedBinding();
       targetDef.getColumn().type = variant::VariantType::get(getContext());
-      GraphEmitter emitter(rewriter, graphs, expansionOp, findGraphRef(expansionOp.getRel(), expansionOp.getGraphRef()));
+      GraphEmitter emitter(rewriter, graphs, expansionOp, expansionOp.getGraphRef());
       gsubop::EdgeRefType edgeRefType;
       tuples::ColumnRefAttr edgeRef;
       mlir::Value lowered;

@@ -86,6 +86,10 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
             consumer->setOperand(operandIdx, rewrittenOperand);
          }
       }
+      getOperation()->walk([&](mlir::Operation* op) {
+         if (auto expansion = mlir::dyn_cast<gpm::NodeExpansionOp>(op)) rescopeGraph(expansion);
+         if (auto expansion = mlir::dyn_cast<gpm::EdgeExpansionOp>(op)) rescopeGraph(expansion);
+      });
       for (bool erasedAny = true; erasedAny;) {
          erasedAny = false;
          llvm::SmallVector<mlir::Operation*> dead;
@@ -106,6 +110,11 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
    llvm::StringMap<tuples::ColumnRefAttr>* bnodeScope = nullptr;
    llvm::MapVector<const tuples::Column*, const tuples::Column*> splitOrigin;
    ColumnMapper nameMerges;
+   llvm::DenseMap<const tuples::Column*, tuples::ColumnRefAttr> isolatedGraphs;
+   template <typename OpTy>
+   void rescopeGraph(OpTy expansion) {
+      if (auto it = isolatedGraphs.find(&expansion.getGraphRef().getColumn()); it != isolatedGraphs.end()) expansion.setGraphRefAttr(it->second);
+   }
    mlir::Value rewrite(mlir::Value v) {
       if (!v) return v;
       if (auto it = rewritten.find(v); it != rewritten.end()) return it->second;
@@ -448,7 +457,9 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       mlir::OpBuilder builder(ctxt);
       builder.setInsertionPoint(insertBefore);
       auto namedGraph = builder.create<gpm::NamedGraphOp>(triple.getLoc(), freshDef);
-      triple.setGraphRefAttr(columnManager.createRef(freshDef.getColumnPtr().get()));
+      auto freshRef = columnManager.createRef(freshDef.getColumnPtr().get());
+      isolatedGraphs[&triple.getGraphRef().getColumn()] = freshRef;
+      triple.setGraphRefAttr(freshRef);
       triple.getRelMutable().set(namedGraph.getRes());
       triple->moveBefore(insertBefore);
    }
