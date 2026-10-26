@@ -26,6 +26,162 @@ mlir::Value generateTupleStream(mlir::ConversionPatternRewriter& rewriter, mlir:
     return generateOp.getRes();
 }
 
+mlir::Value GraphEmitter::emitNodeToEdge(mlir::Value stream, TripleAnchorT anchor, EdgeDirection direction, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef, std::optional<size_t> paramId) {
+    auto& graphData = graphs[graphName];
+    llvm::SmallVector<mlir::Attribute> nestedParams{columnManager.createRef(graphData.nodeSetColumn)};
+    tuples::ColumnRefAttr anchorAttr;
+    IdentifierTermAttr identAttr;
+    if (std::holds_alternative<IdentifierTermAttr>(anchor)) {
+        identAttr = std::get<IdentifierTermAttr>(anchor);
+    }
+    else {
+        anchorAttr = std::get<tuples::ColumnRefAttr>(anchor);
+        nestedParams.push_back(anchorAttr);
+    }
+
+    auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr(nestedParams));
+    auto* block = new mlir::Block();
+    block->addArgument(tuples::TupleType::get(ctxt), loc);
+    auto nodeSetArg = block->addArgument(graphData.nodeSetColumn->type, loc);
+    mlir::BlockArgument anchorArg = anchorAttr ? block->addArgument(anchorAttr.getColumn().type, loc) : mlir::BlockArgument();
+
+    nestedMapOp.getRegion().push_back(block);
+    gsubop::NodeRefType nodeRefType;
+    tuples::ColumnRefAttr nodeRef;
+    {
+        mlir::OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(block);
+        mlir::Type identType = identAttr ? mlir::Type(gsubop::IdentifierType::get(ctxt)) : mlir::Type(rewriter.getI32Type());
+        auto [identDef, identRef] = createColumn(identType, "idents", "lookup");
+        auto scan = generateTupleStream(rewriter, loc, identDef, [&](mlir::OpBuilder& b) -> mlir::Value {
+            if (identAttr) {
+                auto identOp = b.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, identAttr.getIdent());
+                if (paramId) relalg::forwardParameter(op, *paramId, identOp.getOperation());
+                return identOp;
+            }
+            return b.create<variant::ResolveNodeOp>(loc, b.getI32Type(), nodeSetArg, anchorArg);
+        });
+        scan = filterByIdentifier(scan, identRef);
+        nodeRefType = createNodeRefType(ctxt, group, graph);
+        auto [nodeDef, resolvedRef] = createColumn(nodeRefType, "nodes", "ref");
+        mlir::Value lookup = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), scan, nodeSetArg, rewriter.getArrayAttr({identRef}), nodeDef);
+        rewriter.create<tuples::ReturnOp>(loc, lookup);
+        nodeRef = resolvedRef;
+    }
+    stream = nestedMapOp.getRes();
+
+    auto edgeMember = direction == EdgeDirection::Outgoing ? nodeRefType.getOutgoingMembers().getMembers()[0] : nodeRefType.getIncomingMembers().getMembers()[0];
+    auto edgeSetType = memberManager.getType(edgeMember);
+    auto [edgesDef, edgesRef] = createColumn(edgeSetType, "edges", direction == EdgeDirection::Outgoing ? "outgoing" : "incoming");
+    stream = rewriter.create<subop::GatherOp>(loc, stream, nodeRef, createColumnDefMemberMappingAttr(ctxt, {{edgeMember, edgesDef}}));
+    return scanEdges(stream, edgesRef, edgeSetType, edgeRefType, edgeRef);
+}
+mlir::Value GraphEmitter::emitEdgeToNode(mlir::Value stream, tuples::ColumnRefAttr edgeRef, Member nodeMember, tuples::ColumnRefAttr& rawRef) {
+    auto [rawDef, ref] = createColumn(memberManager.getType(nodeMember), "nodes", "raw");
+    rawRef = ref;
+    return rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(ctxt, {{nodeMember, rawDef}}));
+}
+mlir::Value GraphEmitter::scanEdges(mlir::Value stream, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef) {
+    auto& graphData = graphs[graphName];
+    auto edgesRef = columnManager.createRef(graphData.edgeSetColumn);
+    return scanEdges(stream, edgesRef, graphData.edgeSetColumn->type, edgeRefType, edgeRef);
+}
+mlir::Value GraphEmitter::scanEdges(mlir::Value stream, tuples::ColumnRefAttr edgesRef, mlir::Type edgeSetType, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRefColumnRef) {
+    auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({edgesRef}));
+    auto* b = new mlir::Block();
+    b->addArgument(tuples::TupleType::get(ctxt), loc);
+    auto edgeSetArg = b->addArgument(edgeSetType, loc);
+    edgeRefType = createEdgeRefType(ctxt, group, graph);
+    auto [edgeRefColumnDef, resolvedRef] = createColumn(edgeRefType, "edges", "ref");
+    nestedMapOp.getRegion().push_back(b);
+    {
+        mlir::OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(b);
+        mlir::Value inner = rewriter.create<gsubop::ScanEdgeSetOp>(loc, edgeSetArg, edgeRefColumnDef);
+        rewriter.create<tuples::ReturnOp>(loc, inner);
+    }
+    edgeRefColumnRef = resolvedRef;
+    return nestedMapOp.getRes();
+}
+mlir::Value GraphEmitter::filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr ref, IdentifierTermAttr ident, std::optional<size_t> paramId) {
+    auto identOp = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, ident.getIdent());
+    if (paramId) relalg::forwardParameter(op, *paramId, identOp.getOperation());
+    return rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, ref, identOp);
+}
+mlir::Value GraphEmitter::filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr identRef) {
+    subop::MapCreationHelper helper(ctxt);
+    auto [validDef, validRef] = createColumn(rewriter.getI1Type(), "idents", "valid");
+    helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
+        mlir::Value identVal = helper.access(identRef, loc);
+        mlir::Value valid;
+        if (mlir::isa<gsubop::IdentifierType>(identVal.getType())) {
+            valid = b.create<gsubop::IdentifierValidOp>(loc, b.getI1Type(), identVal);
+        }
+        else {
+            mlir::Value zero = b.create<mlir::arith::ConstantIntOp>(loc, 0, identVal.getType());
+            valid = b.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::sge, identVal, zero);
+        }
+        b.create<tuples::ReturnOp>(loc, valid);
+    });
+    auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({validDef}), helper.getColRefs());
+    mapOp.getFn().push_back(helper.getMapBlock());
+    return rewriter.create<subop::FilterOp>(loc, mapOp.getResult(), subop::FilterSemantic::all_true, rewriter.getArrayAttr({validRef}));
+}
+mlir::Value GraphEmitter::wrapNode(mlir::Value stream, tuples::ColumnRefAttr rawRef, tuples::ColumnDefAttr variantDef) {
+    subop::MapCreationHelper helper(ctxt);
+    helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
+        mlir::Value rawVal = helper.access(rawRef, loc);
+        mlir::Value variantVal = b.create<variant::CreateNodeRefOp>(loc, variant::VariantType::get(ctxt), rawVal);
+        b.create<tuples::ReturnOp>(loc, variantVal);
+    });
+    auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({variantDef}), helper.getColRefs());
+    mapOp.getFn().push_back(helper.getMapBlock());
+    return mapOp.getResult();
+}
+mlir::Value GraphEmitter::wrapEdge(mlir::Value stream, tuples::ColumnRefAttr edgeRef, tuples::ColumnDefAttr variantDef) {
+    // TODO
+    // subop::MapCreationHelper helper(ctxt);
+    // helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
+    //     mlir::Value edgeVal = helper.access(edgeRef, loc);
+    //     mlir::Value variantVal = b.create<variant::CreateEdgeRefOp>(loc, variant::VariantType::get(ctxt), edgeVal);
+    //     b.create<tuples::ReturnOp>(loc, variantVal);
+    // });
+    // auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({variantDef}), helper.getColRefs());
+    // mapOp.getFn().push_back(helper.getMapBlock());
+    // return mapOp.getResult();
+    return mlir::Value();
+}
+mlir::Value GraphEmitter::resolveEdge(mlir::Value stream, tuples::ColumnRefAttr edgeVariantRef, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef) {
+    // TODO
+    // auto& graphData = graphs[graphName];
+    // auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({columnManager.createRef(graphData.edgeSetColumn), edgeVariantRef}));
+    // auto* block = new mlir::Block();
+    // block->addArgument(tuples::TupleType::get(ctxt), loc);
+    // auto edgeSetArg = block->addArgument(graphData.edgeSetColumn->type, loc);
+    // auto variantArg = block->addArgument(edgeVariantRef.getColumn().type, loc);
+    // nestedMapOp.getRegion().push_back(block);
+    // edgeRefType = createEdgeRefType(ctxt, group, graph);
+    // {
+    //     mlir::OpBuilder::InsertionGuard guard(rewriter);
+    //     rewriter.setInsertionPointToStart(block);
+    //     auto [idDef, idRef] = createColumn(rewriter.getI32Type(), "edges", "lookup");
+    //     auto scan = generateTupleStream(rewriter, loc, idDef, [&](mlir::OpBuilder& b) -> mlir::Value {
+    //         return b.create<variant::ResolveEdgeOp>(loc, b.getI32Type(), edgeSetArg, variantArg);
+    //     });
+    //     scan = filterByIdentifier(scan, idRef);
+    //     auto [edgeDef, resolvedRef] = createColumn(edgeRefType, "edges", "ref");
+    //     mlir::Value lookup = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), scan, edgeSetArg, rewriter.getArrayAttr({idRef}), edgeDef);
+    //     rewriter.create<tuples::ReturnOp>(loc, lookup);
+    //     edgeRef = resolvedRef;
+    // }
+    // return nestedMapOp.getRes();
+    return mlir::Value();
+}
+mlir::Value GraphEmitter::resolveNode(mlir::Value stream, tuples::ColumnRefAttr nodeVariantRef, gsubop::NodeRefType& nodeRefType, tuples::ColumnRefAttr& nodeRef) {
+    // TODO
+    return mlir::Value();
+}
+
 mlir::Value TripleEmitter::lower(mlir::Value stream, std::optional<gpm::TripleSlot> anchor) {
     gsubop::EdgeRefType edgeRefType;
     tuples::ColumnRefAttr edgeRef;
