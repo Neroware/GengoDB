@@ -26,7 +26,7 @@ mlir::Value generateTupleStream(mlir::ConversionPatternRewriter& rewriter, mlir:
     return generateOp.getRes();
 }
 
-mlir::Value GraphEmitter::emitNodeToEdge(mlir::Value stream, TripleAnchorT anchor, EdgeDirection direction, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef, std::optional<size_t> paramId) {
+mlir::Value GraphEmitter::emitNodeToEdge(mlir::Value stream, AnchorT anchor, EdgeDirection direction, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef, std::optional<size_t> paramId) {
     auto& graphData = graphs[graphName];
     llvm::SmallVector<mlir::Attribute> nestedParams{columnManager.createRef(graphData.nodeSetColumn)};
     tuples::ColumnRefAttr anchorAttr;
@@ -180,6 +180,104 @@ mlir::Value GraphEmitter::resolveEdge(mlir::Value stream, tuples::ColumnRefAttr 
 mlir::Value GraphEmitter::resolveNode(mlir::Value stream, tuples::ColumnRefAttr nodeVariantRef, gsubop::NodeRefType& nodeRefType, tuples::ColumnRefAttr& nodeRef) {
     // TODO
     return mlir::Value();
+}
+mlir::Value TripleEmitterV2::lower(mlir::Value stream, std::optional<gpm::TripleSlot> anchor) {
+    gsubop::EdgeRefType edgeRefType;
+    tuples::ColumnRefAttr edgeRef;
+    bool anchorSubject = anchor.has_value() ? *anchor == gpm::TripleSlot::subject : mlir::isa<gpm::IdentifierTermAttr>(sTerm);
+    bool anchorObject = anchor.has_value() ? *anchor == gpm::TripleSlot::object : !anchorSubject && mlir::isa<gpm::IdentifierTermAttr>(sTerm);
+    if (anchorSubject) {
+        stream = emitNodeToEdge(stream, anchorAttr(sTerm), EdgeDirection::Outgoing, edgeRefType, edgeRef, paramIds[0]);
+        stream = emitPredicate(stream, edgeRef, paramIds[1]);
+        stream = emitTerm(stream, oTerm, edgeRefType.getToMembers().getMembers()[0], edgeRef, paramIds[2]);
+    }
+    else if (anchorObject) {
+        stream = emitNodeToEdge(stream, anchorAttr(oTerm), EdgeDirection::Incoming, edgeRefType, edgeRef, paramIds[2]);
+        stream = emitTerm(stream, sTerm, edgeRefType.getFromMembers().getMembers()[0], edgeRef, paramIds[0]);
+        stream = emitPredicate(stream, edgeRef, paramIds[1]);
+    }
+    else {
+        stream = scanEdges(stream, edgeRefType, edgeRef);
+        stream = emitTerm(stream, sTerm, edgeRefType.getFromMembers().getMembers()[0], edgeRef, paramIds[0]);
+        stream = emitPredicate(stream, edgeRef, paramIds[1]);
+        stream = emitTerm(stream, oTerm, edgeRefType.getToMembers().getMembers()[0], edgeRef, paramIds[2]);
+    }
+    return stream;
+}
+GraphEmitter::AnchorT TripleEmitterV2::anchorAttr(mlir::Attribute term) {
+    if (auto identTerm = mlir::dyn_cast<gpm::IdentifierTermAttr>(term))
+        return identTerm;
+    auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term);
+    if (varTerm && varTerm.getProducedBinding()) {
+        if (auto it = localTerms.find(&varTerm.getProducedBinding().getColumn()); it != localTerms.end())
+            return it->second;
+    }
+    if (!varTerm || !varTerm.hasBinding())
+        assert(false && "anchor lacks binding");
+    return varTerm.getBindingReference();
+}
+mlir::Value TripleEmitterV2::filterVariantsEqual(mlir::Value stream, tuples::ColumnRefAttr left, tuples::ColumnRefAttr right) {
+    subop::MapCreationHelper helper(ctxt);
+    auto [eqDef, eqRef] = createColumn(rewriter.getI1Type(), "map", "selfeq");
+    helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
+        mlir::Value lhs = helper.access(left, loc);
+        mlir::Value rhs = helper.access(right, loc);
+        auto cmpType = db::NullableType::get(ctxt, b.getI1Type());
+        mlir::Value cmp = b.create<variant::CmpOp>(loc, cmpType, variant::VariantCmpPredicate::eq, lhs, rhs);
+        mlir::Value truth = b.create<db::DeriveTruth>(loc, b.getI1Type(), cmp);
+        b.create<tuples::ReturnOp>(loc, truth);
+    });
+    auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({eqDef}), helper.getColRefs());
+    mapOp.getFn().push_back(helper.getMapBlock());
+    return rewriter.create<subop::FilterOp>(loc, mapOp.getResult(), subop::FilterSemantic::all_true, rewriter.getArrayAttr({eqRef}));
+}
+mlir::Value TripleEmitterV2::finish(mlir::Value stream, mlir::Attribute term, tuples::ColumnRefAttr rawRef) {
+    const auto* column = &mlir::cast<VariableTermAttr>(term).getProducedBinding().getColumn();
+    if (auto it = localTerms.find(column); it != localTerms.end()) {
+        auto [tmpDef, tmpRef] = createColumn(variant::VariantType::get(ctxt), "nodes", "tmp");
+        stream = wrapNode(stream, rawRef, tmpDef);
+        return filterVariantsEqual(stream, tmpRef, it->second);
+    }
+    auto variantDef = columnManager.createDef(column);
+    variantDef.getColumn().type = variant::VariantType::get(ctxt);
+    stream = wrapNode(stream, rawRef, variantDef);
+    localTerms[column] = columnManager.createRef(column);
+    return stream;
+}
+mlir::Value TripleEmitterV2::emitPredicate(mlir::Value stream, tuples::ColumnRefAttr edgeRef, std::optional<size_t> paramId) {
+    if (auto constPred = mlir::dyn_cast<IdentifierTermAttr>(pTerm)) {
+        return filterByIdentifier(stream, edgeRef, constPred, paramId);
+    }
+    auto nodeRefType = createNodeRefType(ctxt, group, graph);
+    auto& graphData = graphs[graphName];
+    auto nodesRef = columnManager.createRef(graphData.nodeSetColumn);
+    auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({nodesRef, edgeRef}));
+    auto* b = new mlir::Block();
+    b->addArgument(tuples::TupleType::get(ctxt), loc);
+    auto nodeSetArg = b->addArgument(graphData.nodeSetColumn->type, loc);
+    auto edgeArg = b->addArgument(edgeRef.getColumn().type, loc);
+    nestedMapOp.getRegion().push_back(b);
+    auto [rawDef, rawRef] = createColumn(nodeRefType, "nodes", "raw");
+    {
+        mlir::OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(b);
+        auto identVal = rewriter.create<gsubop::GetIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), edgeArg);
+        auto [scanIdentDef, scanIdentRef] = createColumn(gsubop::IdentifierType::get(ctxt), "ident", "scan");
+        mlir::Value inner = generateTupleStream(rewriter, loc, scanIdentDef, [&](mlir::OpBuilder&) -> mlir::Value {
+            return identVal;
+        });
+        inner = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), inner, nodeSetArg, rewriter.getArrayAttr({scanIdentRef}), rawDef);
+        rewriter.create<tuples::ReturnOp>(loc, inner);
+    }
+    return finish(nestedMapOp.getRes(), pTerm, rawRef);
+}
+mlir::Value TripleEmitterV2::emitTerm(mlir::Value stream, mlir::Attribute term, Member nodeMember, tuples::ColumnRefAttr edgeRef, std::optional<size_t> paramId) {
+    tuples::ColumnRefAttr rawRef;
+    stream = emitEdgeToNode(stream, edgeRef, nodeMember, rawRef);
+    if (auto constTerm = mlir::dyn_cast<IdentifierTermAttr>(term)) {
+        return filterByIdentifier(stream, rawRef, constTerm, paramId);
+    }
+    return finish(stream, term, rawRef);
 }
 
 mlir::Value TripleEmitter::lower(mlir::Value stream, std::optional<gpm::TripleSlot> anchor) {

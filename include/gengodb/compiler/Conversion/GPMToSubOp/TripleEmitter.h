@@ -14,7 +14,7 @@ struct NamedGraph {
 using NamedGraphMapper = llvm::DenseMap<mlir::SymbolRefAttr, NamedGraph>;
 
 struct GraphEmitter {
-    using TripleAnchorT = std::variant<IdentifierTermAttr, tuples::ColumnRefAttr>;
+    using AnchorT = std::variant<IdentifierTermAttr, tuples::ColumnRefAttr>;
     enum EdgeDirection { Incoming, Outgoing };
 
     GraphEmitter(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& graphs, mlir::Operation* op, tuples::ColumnRefAttr graphRefAttr)
@@ -25,7 +25,7 @@ struct GraphEmitter {
             std::tie(group, graph) = helpers::splitGraphRef(graphRefAttr);
             assert(graphs.count(graphName) && "graph must already be lowered");
     }
-    mlir::Value emitNodeToEdge(mlir::Value stream, TripleAnchorT anchor, EdgeDirection direction, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef, std::optional<size_t> paramId = std::nullopt);
+    mlir::Value emitNodeToEdge(mlir::Value stream, AnchorT anchor, EdgeDirection direction, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef, std::optional<size_t> paramId = std::nullopt);
     mlir::Value emitEdgeToNode(mlir::Value stream, tuples::ColumnRefAttr edgeRef, subop::Member nodeMember, tuples::ColumnRefAttr& rawRef);
     mlir::Value scanEdges(mlir::Value stream, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef);
     mlir::Value scanEdges(mlir::Value stream, tuples::ColumnRefAttr edgesRef, mlir::Type edgeSetType, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRefColumnRef);
@@ -48,6 +48,33 @@ struct GraphEmitter {
     mlir::SymbolRefAttr graphName;
     std::string group, graph;
 }; // GraphEmitter
+
+class TripleEmitterV2 : public GraphEmitter {
+    mlir::Attribute sTerm, pTerm, oTerm;
+    llvm::DenseMap<const tuples::Column*, tuples::ColumnRefAttr> localTerms;
+    std::array<std::optional<size_t>, 3> paramIds;
+
+    public:
+    template<typename OpTy>
+    TripleEmitterV2(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& graphs, OpTy op)
+        : GraphEmitter(rewriter, graphs, op.getOperation(), op.getGraphRef()),
+        sTerm(op.getS()), pTerm(op.getP()), oTerm(op.getO()),
+        paramIds{op.getParamId(TripleSlot::subject), op.getParamId(TripleSlot::predicate), op.getParamId(TripleSlot::object)} {}
+    void bind(tuples::ColumnRefAttr anchorRef) {
+        bind(&anchorRef.getColumn(), anchorRef);
+    }
+    void bind(const tuples::Column* tripleColumn, tuples::ColumnRefAttr boundRef) {
+        localTerms[tripleColumn] = boundRef;
+    }
+    mlir::Value lower(mlir::Value stream, std::optional<TripleSlot> anchor = std::nullopt);
+
+    private:
+    AnchorT anchorAttr(mlir::Attribute term);
+    mlir::Value filterVariantsEqual(mlir::Value stream, tuples::ColumnRefAttr left, tuples::ColumnRefAttr right);
+    mlir::Value finish(mlir::Value stream, mlir::Attribute term, tuples::ColumnRefAttr rawRef);
+    mlir::Value emitPredicate(mlir::Value stream, tuples::ColumnRefAttr edgeRef, std::optional<size_t> paramId = std::nullopt);
+    mlir::Value emitTerm(mlir::Value stream, mlir::Attribute term, subop::Member nodeMember, tuples::ColumnRefAttr edgeRef, std::optional<size_t> paramId = std::nullopt);
+}; // TripleEmitter
 
 // Lowers a triple over a tuplestream that carries a graph's node/edge set columns (see NamedGraphMapper).
 class TripleEmitter {
