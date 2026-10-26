@@ -131,6 +131,7 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       if (!normalized) {
          return tripleOp.emitOpError("triple pattern is not normalized (expected only identifiers and column defs); run gpm-unnest-patterns first");
       }
+      if (tripleOp->hasAttr("virtual")) return lowerVirtual(tripleOp, adaptor, rewriter);
       bool needsInFlight = llvm::any_of(tripleOp.getRes().getUses(), [](mlir::OpOperand& use) {
          return isRelAlgOperator(use.getOwner());
       });
@@ -148,6 +149,42 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
          });
       }
       rewriter.replaceOp(tripleOp, lowered);
+      return success();
+   }
+
+   private:
+   // A virtual triple is the index side of a graph index join: it is lowered as an expansion anchored on its join key,
+   // which the join binds per probe tuple. The resulting stream is never executed on its own.
+   LogicalResult lowerVirtual(gpm::TriplePatternOp tripleOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const {
+      if (!tripleOp->hasOneUse()) return tripleOp.emitOpError("virtual triple pattern must have exactly one user");
+      auto* joinOp = *tripleOp->getUsers().begin();
+      if (!joinOp->hasAttr("useGraphIndex")) return tripleOp.emitOpError("virtual triple pattern must feed a graph index join");
+      llvm::SmallVector<mlir::Attribute> keys;
+      for (auto hashName : {"leftHash", "rightHash"}) {
+         if (auto hash = joinOp->getAttrOfType<mlir::ArrayAttr>(hashName)) keys.append(hash.begin(), hash.end());
+      }
+      std::optional<gpm::TripleSlot> anchorSlot;
+      tuples::ColumnRefAttr anchorRef;
+      std::array<std::pair<gpm::TripleSlot, mlir::Attribute>, 2> slots{{{gpm::TripleSlot::subject, tripleOp.getS()}, {gpm::TripleSlot::object, tripleOp.getO()}}};
+      for (auto [slot, term] : slots) {
+         auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term);
+         if (!varTerm || !varTerm.getProducedBinding() || anchorSlot) continue;
+         const auto* column = &varTerm.getProducedBinding().getColumn();
+         if (llvm::any_of(keys, [&](mlir::Attribute key) { return &mlir::cast<tuples::ColumnRefAttr>(key).getColumn() == column; })) {
+            anchorSlot = slot;
+            anchorRef = getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager().createRef(column);
+         }
+      }
+      if (!anchorSlot) return tripleOp.emitOpError("virtual triple pattern has no anchor among the join keys");
+      anchorRef.getColumn().type = variant::VariantType::get(getContext());
+      relalg::AvailabilityCache availabilityCache;
+      auto availableColumns = mlir::cast<Operator>(tripleOp.getOperation()).getAvailableColumns(availabilityCache).asRefArrayAttr(rewriter.getContext());
+      TripleEmitter emitter(rewriter, graphs, tripleOp);
+      emitter.bind(anchorRef);
+      mlir::Value lowered = emitter.lower(adaptor.getRel(), anchorSlot);
+      auto inFlight = rewriter.create<relalg::InFlightOp>(tripleOp.getLoc(), lowered, availableColumns);
+      inFlight->setAttr("virtual", rewriter.getUnitAttr());
+      rewriter.replaceOp(tripleOp, inFlight.getRes());
       return success();
    }
 };
@@ -312,15 +349,6 @@ static void refreshNullableTypes(ModuleOp module) {
       }
    });
 }
-static void refreshVirtualTypes(ModuleOp module) {
-   auto& columnManager = module.getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-   module.walk([&](gpm::TriplePatternOp tripleOp) {
-      if (!tripleOp->hasAttr("virtual")) return;
-      for (const auto* column : tripleOp.getCreatedColumns()) {
-         columnManager.createDef(column).getColumn().type = variant::VariantType::get(module.getContext());
-      }
-   });
-}
 
 
 static void addCommonLegalDialects(ConversionTarget& target) {
@@ -361,7 +389,6 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    addCommonLegalDialects(target);
    target.addLegalDialect<gpm::GPMDialect>();
    target.addIllegalOp<gpm::NamedGraphOp, gpm::TriplePatternOp, gpm::NodeExpansionOp, gpm::EdgeExpansionOp>();
-   target.addDynamicallyLegalOp<gpm::TriplePatternOp>([](gpm::TriplePatternOp op) { return op->hasAttr("virtual"); });
 
    RewritePatternSet patterns(ctxt);
    patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs, externalGraphs);
@@ -375,7 +402,6 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    }
 
    refreshNullableTypes(module);
-   refreshVirtualTypes(module);
 }
 static void expandMergedColumns(ModuleOp module) {
    auto* ctxt = module.getContext();
@@ -439,7 +465,6 @@ void GPMScalarToSubOpLoweringPass::runOnOperation() {
    ConversionTarget target(getContext());
    addCommonLegalDialects(target);
    target.addIllegalDialect<gpm::GPMDialect>();
-   target.addDynamicallyLegalOp<gpm::TriplePatternOp>([](gpm::TriplePatternOp op) { return op->hasAttr("virtual"); });
 
    RewritePatternSet patterns(ctxt);
    patterns.insert<GpmBindingsCompatibleLowering>(typeConverter, ctxt);
