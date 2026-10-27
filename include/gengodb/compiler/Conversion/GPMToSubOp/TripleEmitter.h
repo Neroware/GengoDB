@@ -12,6 +12,7 @@ struct NamedGraph {
     mlir::Value externalGraph;
 };
 using NamedGraphMapper = llvm::DenseMap<mlir::SymbolRefAttr, NamedGraph>;
+constexpr llvm::StringLiteral kGraphIndexTripleAttr = "graphIndexTriple";
 
 struct GraphEmitter {
     using AnchorT = std::variant<IdentifierTermAttr, tuples::ColumnRefAttr>;
@@ -61,6 +62,7 @@ class TripleEmitter : public GraphEmitter {
         : GraphEmitter(rewriter, graphs, op.getOperation(), op.getGraphRef()),
         sTerm(op.getS()), pTerm(op.getP()), oTerm(op.getO()),
         paramIds{op.getParamId(TripleSlot::subject), op.getParamId(TripleSlot::predicate), op.getParamId(TripleSlot::object)} {}
+    TripleEmitter(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& graphs, mlir::Operation* op, mlir::DictionaryAttr triple);
     void bind(tuples::ColumnRefAttr anchorRef) {
         bind(&anchorRef.getColumn(), anchorRef);
     }

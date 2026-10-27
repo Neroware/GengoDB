@@ -1480,19 +1480,29 @@ static mlir::Value translateGINLJBindingCompatible(mlir::Value left, mlir::Value
    auto loc = op->getLoc();
    auto* ctxt = rewriter.getContext();
    auto& colManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-   gpm::TriplePatternOp tripleOp = op->getOperand(graphIndexPosition).getDefiningOp<gpm::TriplePatternOp>();
-   if (!tripleOp || !tripleOp->hasAttr("virtual")) assert(false && "expected virtual triple pattern operator");
+   auto triple = op->getAttrOfType<mlir::DictionaryAttr>(gpm::lowering::kGraphIndexTripleAttr);
+   if (!triple) assert(false && "expected virtual graph index triple description");
+   auto inFlight = op->getOperand(graphIndexPosition).getDefiningOp<relalg::InFlightOp>();
+   if (!inFlight) assert(false && "should not happen");
+   gsubop::ScanGraphOp scanGraph;
+   for (mlir::Value stream = inFlight.getStream();;) {
+      auto* streamOp = stream.getDefiningOp();
+      if (!streamOp) assert(false && "GINLJ consumed stream must begin with a graph scan");
+      scanGraph = mlir::dyn_cast<gsubop::ScanGraphOp>(streamOp);
+      if (scanGraph) break;
+      auto streamOperands = llvm::make_filter_range(streamOp->getOperands(), [](mlir::Value v) { return mlir::isa<tuples::TupleStreamType>(v.getType()); });
+      if (!llvm::hasSingleElement(streamOperands)) assert(false && "GINLJ only supports triple operators consuming linear streams");
+      stream = *streamOperands.begin();
+   }
    // Weird parameter flip. Wtf?
-   if (left.getDefiningOp() == tripleOp.getOperation()) {
+   if (left == inFlight.getStream()) {
       std::swap(left, right);
       std::swap(hashLeft, hashRight);
    }
-   auto scanGraph = mlir::dyn_cast<gsubop::ScanGraphOp>(tripleOp.getRel().getDefiningOp());
-   if (!scanGraph) assert(false && "GINLJ only supports triple operators consuming graph scans");
    mlir::Value graph = scanGraph.getGraph();
 
-   static auto findAnchor = [](gpm::TriplePatternOp tripleOp, mlir::ArrayAttr hashRight) -> std::optional<std::pair<size_t, gpm::TripleSlot>> {
-      std::array<std::pair<gpm::TripleSlot, mlir::Attribute>, 2> slots{{{gpm::TripleSlot::subject, tripleOp.getS()}, {gpm::TripleSlot::object, tripleOp.getO()}}};
+   static auto findAnchor = [](mlir::DictionaryAttr triple, mlir::ArrayAttr hashRight) -> std::optional<std::pair<size_t, gpm::TripleSlot>> {
+      std::array<std::pair<gpm::TripleSlot, mlir::Attribute>, 2> slots{{{gpm::TripleSlot::subject, triple.get("s")}, {gpm::TripleSlot::object, triple.get("o")}}};
       for (auto [slot, term] : slots) {
          auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term);
          if (!varTerm || !varTerm.getProducedBinding()) continue;
@@ -1502,7 +1512,7 @@ static mlir::Value translateGINLJBindingCompatible(mlir::Value left, mlir::Value
       }
       return std::nullopt;
    };
-   auto anchor = findAnchor(tripleOp, hashRight);
+   auto anchor = findAnchor(triple, hashRight);
    if (!anchor) assert(false && "GINLJ needs an anchor");
    auto [anchorIdx, anchorSlot] = *anchor;
    auto anchorRef = mlir::cast<tuples::ColumnRefAttr>(hashLeft[anchorIdx]);
@@ -1537,8 +1547,8 @@ static mlir::Value translateGINLJBindingCompatible(mlir::Value left, mlir::Value
       }
       mlir::Value expanded = nestedMapOp.getRes();
       gpm::lowering::NamedGraphMapper graphs;
-      graphs.insert({tripleOp.getGraphRef().getName(), {mlir::cast<gsubop::GraphType>(graph.getType()), &nodeSetDef.getColumn(), &edgeSetDef.getColumn(), graph}});
-      gpm::lowering::TripleEmitter emitter(rewriter, graphs, tripleOp);
+      graphs.insert({mlir::cast<tuples::ColumnRefAttr>(triple.get("graphRef")).getName(), {mlir::cast<gsubop::GraphType>(graph.getType()), &nodeSetDef.getColumn(), &edgeSetDef.getColumn(), graph}});
+      gpm::lowering::TripleEmitter emitter(rewriter, graphs, op, triple);
       if (bound) {
          tuples::ColumnRefAttr anchorValueRef = anchorRef;
          if (auto nullableType = mlir::dyn_cast<db::NullableType>(anchorRef.getColumn().type)) {
@@ -1568,8 +1578,6 @@ static mlir::Value translateGINLJBindingCompatible(mlir::Value left, mlir::Value
    if (unboundStream) {
       result = rewriter.create<subop::UnionOp>(loc, mlir::ValueRange{result, expand(unboundStream, false)});
    }
-   rewriter.eraseOp(tripleOp);
-   rewriter.eraseOp(scanGraph);
    return result;
 }
 static mlir::Value translateNL(mlir::Value left, mlir::Value right, bool useHash, bool useIndexNestedLoop, bool useGraphIndexNestedLoop, bool useBindingCompatible, mlir::ArrayAttr nullsEqual, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, relalg::ColumnSet columns, mlir::ConversionPatternRewriter& rewriter, mlir::Operation* op, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn, int graphIndexPosition = -1, mlir::ArrayAttr bindingCompatible = mlir::ArrayAttr()) {
@@ -3544,7 +3552,6 @@ void RelalgToSubOpLoweringPass::runOnOperation() {
    target.addLegalDialect<variant::VariantDialect>();
    target.addLegalDialect<db::DBDialect>();
    target.addLegalDialect<lingodb::compiler::dialect::arrow::ArrowDialect>();
-   target.addDynamicallyLegalOp<gpm::TriplePatternOp>([](gpm::TriplePatternOp op) { return op->hasAttr("virtual"); });
 
    target.addLegalDialect<tuples::TupleStreamDialect>();
    target.addLegalDialect<func::FuncDialect>();

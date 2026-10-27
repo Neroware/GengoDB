@@ -25,7 +25,14 @@ mlir::Value generateTupleStream(mlir::ConversionPatternRewriter& rewriter, mlir:
     rewriter.create<tuples::ReturnOp>(loc);
     return generateOp.getRes();
 }
-
+TripleEmitter::TripleEmitter(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& graphs, mlir::Operation* op, mlir::DictionaryAttr triple)
+    : GraphEmitter(rewriter, graphs, op, mlir::cast<tuples::ColumnRefAttr>(triple.get("graphRef"))),
+    sTerm(triple.get("s")), pTerm(triple.get("p")), oTerm(triple.get("o")) {
+    for (auto [i, attr] : llvm::enumerate(mlir::cast<mlir::ArrayAttr>(triple.get("paramIds")))) {
+        int64_t id = mlir::cast<mlir::IntegerAttr>(attr).getInt();
+        if (id >= 0) paramIds[i] = static_cast<size_t>(id);
+    }
+}
 mlir::Value GraphEmitter::emitNodeToEdge(mlir::Value stream, AnchorT anchor, EdgeDirection direction, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef, std::optional<size_t> paramId) {
     gsubop::NodeRefType nodeRefType;
     tuples::ColumnRefAttr nodeRef;

@@ -105,6 +105,31 @@ mlir::Value scanNamedGraph(ConversionPatternRewriter& rewriter, mlir::Location l
 static bool isRelAlgOperator(mlir::Operation* op) {
    return op && !mlir::isa<gpm::GPMOperator>(op) && mlir::isa<Operator>(op);
 }
+static LogicalResult normalized(gpm::TriplePatternOp tripleOp) {
+   bool normalized = llvm::all_of(mlir::ArrayRef<mlir::Attribute>{tripleOp.getS(), tripleOp.getP(), tripleOp.getO()}, [](mlir::Attribute term) {
+      if (mlir::isa<gpm::IdentifierTermAttr>(term)) return true;
+      auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term);
+      return varTerm && varTerm.getProducedBinding();
+   });
+   if (!normalized) {
+      return tripleOp.emitOpError("triple pattern is not normalized (expected only identifiers and column defs); run gpm-unnest-patterns first");
+   }
+   return success();
+}
+static void replaceTripleOp(gpm::TriplePatternOp tripleOp, mlir::Value lowered, ConversionPatternRewriter& rewriter) {
+   bool needsInFlight = llvm::any_of(tripleOp.getRes().getUses(), [](mlir::OpOperand& use) {
+      return isRelAlgOperator(use.getOwner());
+   });
+   if (needsInFlight) {
+      relalg::AvailabilityCache availabilityCache;
+      auto availableColumns = mlir::cast<Operator>(tripleOp.getOperation()).getAvailableColumns(availabilityCache).asRefArrayAttr(rewriter.getContext());
+      auto inFlight = rewriter.create<relalg::InFlightOp>(tripleOp.getLoc(), lowered, availableColumns);
+      rewriter.replaceUsesWithIf(tripleOp.getRes(), inFlight.getRes(), [](mlir::OpOperand& use) {
+         return isRelAlgOperator(use.getOwner());
+      });
+   }
+   rewriter.replaceOp(tripleOp, lowered);
+}
 
 class NamedGraphLowering : public OpConversionPattern<gpm::NamedGraphOp> {
    NamedGraphMapper& graphs;
@@ -123,32 +148,43 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
    TriplePatternLowering(TypeConverter& typeConverter, MLIRContext* context, NamedGraphMapper& graphs)
       : OpConversionPattern<gpm::TriplePatternOp>(typeConverter, context), graphs(graphs) {}
    LogicalResult matchAndRewrite(gpm::TriplePatternOp tripleOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
-      bool normalized = llvm::all_of(mlir::ArrayRef<mlir::Attribute>{tripleOp.getS(), tripleOp.getP(), tripleOp.getO()}, [](mlir::Attribute term) {
-         if (mlir::isa<gpm::IdentifierTermAttr>(term)) return true;
-         auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term);
-         return varTerm && varTerm.getProducedBinding();
-      });
-      if (!normalized) {
-         return tripleOp.emitOpError("triple pattern is not normalized (expected only identifiers and column defs); run gpm-unnest-patterns first");
-      }
-      bool needsInFlight = llvm::any_of(tripleOp.getRes().getUses(), [](mlir::OpOperand& use) {
-         return isRelAlgOperator(use.getOwner());
-      });
-      mlir::ArrayAttr availableColumns;
-      if (needsInFlight) {
-         relalg::AvailabilityCache availabilityCache;
-         availableColumns = mlir::cast<Operator>(tripleOp.getOperation()).getAvailableColumns(availabilityCache).asRefArrayAttr(rewriter.getContext());
-      }
+      if (tripleOp->hasAttr("virtual")) 
+         return failure();
+      if (failed(normalized(tripleOp))) 
+         return failure();
       TripleEmitter emitter(rewriter, graphs, tripleOp);
-      mlir::Value lowered = emitter.lower(adaptor.getRel());
-      if (needsInFlight) {
-         auto inFlight = rewriter.create<relalg::InFlightOp>(tripleOp.getLoc(), lowered, availableColumns);
-         rewriter.replaceUsesWithIf(tripleOp.getRes(), inFlight.getRes(), [](mlir::OpOperand& use) {
-            return isRelAlgOperator(use.getOwner());
-         });
-      }
-      rewriter.replaceOp(tripleOp, lowered);
+      replaceTripleOp(tripleOp, emitter.lower(adaptor.getRel()), rewriter);
       return success();
+   }
+};
+class VirtualTriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
+   public:
+   using OpConversionPattern<gpm::TriplePatternOp>::OpConversionPattern;
+   LogicalResult matchAndRewrite(gpm::TriplePatternOp tripleOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      if (!tripleOp->hasAttr("virtual")) 
+         return failure();
+      if (failed(normalized(tripleOp))) 
+         return failure();
+      auto triple = asDictAttr(tripleOp);
+      for (auto* user : tripleOp.getRes().getUsers()) {
+         if (isRelAlgOperator(user)) user->setAttr(kGraphIndexTripleAttr, triple);
+      }
+      for (const auto* column : tripleOp.getCreatedColumns()) {
+         const_cast<tuples::Column*>(column)->type = variant::VariantType::get(rewriter.getContext());
+      }
+      replaceTripleOp(tripleOp, adaptor.getRel(), rewriter);
+      return success();
+   }
+   private:
+   static mlir::DictionaryAttr asDictAttr(gpm::TriplePatternOp tripleOp) {
+      mlir::Builder b(tripleOp.getContext());
+      llvm::SmallVector<mlir::Attribute> paramIds;
+      for (auto slot : {gpm::TripleSlot::subject, gpm::TripleSlot::predicate, gpm::TripleSlot::object}) {
+         auto id = tripleOp.getParamId(slot);
+         paramIds.push_back(b.getI64IntegerAttr(id ? static_cast<int64_t>(*id) : -1));
+      }
+      return b.getDictionaryAttr({b.getNamedAttr("graphRef", tripleOp.getGraphRef()), b.getNamedAttr("s", tripleOp.getS()), 
+         b.getNamedAttr("p", tripleOp.getP()), b.getNamedAttr("o", tripleOp.getO()), b.getNamedAttr("paramIds", b.getArrayAttr(paramIds))});
    }
 };
 class NodeExpansionLowering : public OpConversionPattern<gpm::NodeExpansionOp> {
@@ -312,15 +348,6 @@ static void refreshNullableTypes(ModuleOp module) {
       }
    });
 }
-static void refreshVirtualTypes(ModuleOp module) {
-   auto& columnManager = module.getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-   module.walk([&](gpm::TriplePatternOp tripleOp) {
-      if (!tripleOp->hasAttr("virtual")) return;
-      for (const auto* column : tripleOp.getCreatedColumns()) {
-         columnManager.createDef(column).getColumn().type = variant::VariantType::get(module.getContext());
-      }
-   });
-}
 
 
 static void addCommonLegalDialects(ConversionTarget& target) {
@@ -361,11 +388,11 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    addCommonLegalDialects(target);
    target.addLegalDialect<gpm::GPMDialect>();
    target.addIllegalOp<gpm::NamedGraphOp, gpm::TriplePatternOp, gpm::NodeExpansionOp, gpm::EdgeExpansionOp>();
-   target.addDynamicallyLegalOp<gpm::TriplePatternOp>([](gpm::TriplePatternOp op) { return op->hasAttr("virtual"); });
 
    RewritePatternSet patterns(ctxt);
    patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs, externalGraphs);
    patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs);
+   patterns.insert<VirtualTriplePatternLowering>(typeConverter, ctxt);
    patterns.insert<NodeExpansionLowering>(typeConverter, ctxt, graphs);
    patterns.insert<EdgeExpansionLowering>(typeConverter, ctxt, graphs);
 
@@ -375,7 +402,6 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    }
 
    refreshNullableTypes(module);
-   refreshVirtualTypes(module);
 }
 static void expandMergedColumns(ModuleOp module) {
    auto* ctxt = module.getContext();
@@ -439,7 +465,6 @@ void GPMScalarToSubOpLoweringPass::runOnOperation() {
    ConversionTarget target(getContext());
    addCommonLegalDialects(target);
    target.addIllegalDialect<gpm::GPMDialect>();
-   target.addDynamicallyLegalOp<gpm::TriplePatternOp>([](gpm::TriplePatternOp op) { return op->hasAttr("virtual"); });
 
    RewritePatternSet patterns(ctxt);
    patterns.insert<GpmBindingsCompatibleLowering>(typeConverter, ctxt);
