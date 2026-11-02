@@ -155,23 +155,23 @@ LiteralKey NodeHelper::literalKeyFor(int32_t id) const {
     }
     return LiteralKey{data, len, datatypeNode};
 }
-void RdfGraph::addTriple(const IRI& s, const IRI& p, const IRI& o) {
-    storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
+runtime::rel_id_t RdfGraph::addTriple(const IRI& s, const IRI& p, const IRI& o) {
+    return storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
-void RdfGraph::addTriple(const IRI& s, const IRI& p, const BlankNode& o) {
-    storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
+runtime::rel_id_t RdfGraph::addTriple(const IRI& s, const IRI& p, const BlankNode& o) {
+    return storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
-void RdfGraph::addTriple(const IRI& s, const IRI& p, const Literal& o) {
-    storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
+runtime::rel_id_t RdfGraph::addTriple(const IRI& s, const IRI& p, const Literal& o) {
+    return storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
-void RdfGraph::addTriple(const BlankNode& s, const IRI& p, const IRI& o) {
-    storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
+runtime::rel_id_t RdfGraph::addTriple(const BlankNode& s, const IRI& p, const IRI& o) {
+    return storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
-void RdfGraph::addTriple(const BlankNode& s, const IRI& p, const BlankNode& o) {
-    storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
+runtime::rel_id_t RdfGraph::addTriple(const BlankNode& s, const IRI& p, const BlankNode& o) {
+    return storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
-void RdfGraph::addTriple(const BlankNode& s, const IRI& p, const Literal& o) {
-    storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
+runtime::rel_id_t RdfGraph::addTriple(const BlankNode& s, const IRI& p, const Literal& o) {
+    return storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
 void RdfGraph::loadTriples() {
     if (!loadedFromRdfFile) {
