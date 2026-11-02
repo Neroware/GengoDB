@@ -1,0 +1,10 @@
+PREFIX ex: <http://example.org/>
+SELECT ?person ?drink ?truth
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        ?person ex:type ex:Person .
+        ?truth TRUTH OF {
+            OPTIONAL { ?person ex:drinks ?drink . }
+        }
+    }
+}

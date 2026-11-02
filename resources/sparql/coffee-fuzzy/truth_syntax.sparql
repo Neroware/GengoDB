@@ -1,0 +1,7 @@
+PREFIX ex: <http://example.org/>
+SELECT ?p ?o ?t
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        ?t TRUTH OF { ex:carla ?p ?o . }
+    }
+}

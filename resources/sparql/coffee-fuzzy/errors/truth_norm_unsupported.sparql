@@ -1,0 +1,11 @@
+# Expected to fail: only the product t-norm is supported so far.
+PREFIX ex: <http://example.org/>
+SELECT ?p ?t
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        ?t TRUTH OF {
+            FUZZY_NORM <https://example.org/goedel_norm>
+            ?p ex:drinks ex:coffee .
+        }
+    }
+}
