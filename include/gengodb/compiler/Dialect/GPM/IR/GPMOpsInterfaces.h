@@ -23,7 +23,6 @@ llvm::SmallVector<std::tuple<mlir::Attribute, mlir::Attribute, mlir::Attribute>,
 mlir::LogicalResult verifyGraphPatternBody(mlir::Operation* op);
 mlir::LogicalResult verifyUnionMapping(mlir::Operation* op, mlir::ArrayAttr mapping);
 } // namespace gengodb::compiler::dialect::gpm::detail
-class GPMOperator;
 #define GET_OP_CLASSES
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOpsInterfaces.h.inc"
 

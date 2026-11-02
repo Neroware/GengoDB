@@ -461,6 +461,13 @@ int32_t VariantRuntime::arithNumericCross(int64_t lhsPayload, int32_t lhsTag, in
 }
 
 int8_t VariantRuntime::compareOrder(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag) {
+    const bool lhsIsEdge = lhsTag == xsd::to_int32(xsd::Type::Edge);
+    const bool rhsIsEdge = rhsTag == xsd::to_int32(xsd::Type::Edge);
+    if (lhsIsEdge || rhsIsEdge) {
+        if (lhsIsEdge != rhsIsEdge) return lhsIsEdge ? 1 : -1;
+        if (lhsPayload == rhsPayload) return 0;
+        return lhsPayload < rhsPayload ? -1 : 1;
+    }
     const bool lhsIsNode = lhsTag == xsd::to_int32(xsd::Type::Node);
     const bool rhsIsNode = rhsTag == xsd::to_int32(xsd::Type::Node);
     // Rank: blank node (0) < IRI (1) < literal (2).
@@ -512,6 +519,36 @@ int8_t VariantRuntime::langMatches(int64_t payload, int32_t tag, VarLen32 langRa
     const std::string_view langTagStr = lit->lexical_form().view();
     const std::string_view range(langRange.data(), langRange.getLen());
     return rdf4cpp::lang_matches(langTagStr, range) ? 1 : 0;
+}
+
+int32_t VariantRuntime::resolveEdge(uint8_t* graph, int32_t tag, int64_t payload) {
+    if (tag != xsd::to_int32(xsd::Type::Edge))
+        throw std::runtime_error("unsupported: variant must be a reference to an edge");
+    auto* ref = reinterpret_cast<uint8_t*>(payload);
+    if (GraphStorage::graphPtr(ref) != GraphStorage::graphPtr(graph))
+        throw std::runtime_error("unsupported: cross graph edge resolving from variant");
+    return GraphStorage::relId(ref);
+}
+
+VarLen32 VariantRuntime::toStringEdgeRef(uint8_t* ref) {
+    auto* pgraph = reinterpret_cast<PropertyGraph*>(GraphStorage::graphPtr(ref));
+    const auto& rel = *reinterpret_cast<PropertyGraph::RelEntry*>(ref);
+    const auto& metadata = pgraph->getMetadata();
+    return VarLen32::fromString(metadata.get_node_name(rel.firstNodeId) + " " + metadata.get_node_name(rel.typeId) + " " + metadata.get_node_name(rel.secondNodeId));
+}
+
+int8_t VariantRuntime::compareEdgeRefRef(uint8_t* lhs, uint8_t* rhs, int32_t predicate) {
+    const auto l = reinterpret_cast<uintptr_t>(lhs);
+    const auto r = reinterpret_cast<uintptr_t>(rhs);
+    switch (predicate) {
+        case 0: return l == r;
+        case 1: return l != r;
+        case 2: return l < r;
+        case 3: return l <= r;
+        case 4: return l > r;
+        case 5: return l >= r;
+        default: return -1;
+    }
 }
 
 int32_t VariantRuntime::resolveNode(uint8_t* graph, int32_t tag, int64_t payload) {

@@ -75,6 +75,17 @@ def CreateNodeRefOp : Variant_Op<"create_node_ref", [Pure]> {
     let assemblyFormat = [{ $ref `:` type($ref) attr-dict }];
 }
 
+def CreateEdgeRefOp : Variant_Op<"create_edge_ref", [Pure]> {
+    let summary = "wrap a graph edge reference in a variant";
+    let description = [{
+        `ref` is an opaque graph edge pointer (lowers to `!util.ref<i8>`).
+        The tag is always `Edge`, so lowering needs no runtime call.
+    }];
+    let arguments = (ins AnyType:$ref);
+    let results = (outs Variant:$result);
+    let assemblyFormat = [{ $ref `:` type($ref) attr-dict }];
+}
+
 def UnspecifiedIfOp : Variant_Op<"unspecified_if", [Pure]> {
     let summary = "replace a variant with the `Unspecified` sentinel if a condition holds";
     let arguments = (ins I1:$cond, Variant:$val);
@@ -122,6 +133,13 @@ def ToStringOp : Variant_Op<"to_string", [Pure]> {
 
 def ResolveNodeOp : Variant_Op<"resolve_node", [Pure]> {
     let summary = "resolve a variant to a local graph node id";
+    let arguments = (ins AnyType:$graph, Variant:$val);
+    let results = (outs I32:$result);
+    let assemblyFormat = [{ $graph `:` type($graph) `,` $val attr-dict }];
+}
+
+def ResolveEdgeOp : Variant_Op<"resolve_edge", [Pure]> {
+    let summary = "resolve a variant to a local graph edge id";
     let arguments = (ins AnyType:$graph, Variant:$val);
     let results = (outs I32:$result);
     let assemblyFormat = [{ $graph `:` type($graph) `,` $val attr-dict }];

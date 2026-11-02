@@ -20,6 +20,8 @@
 #include "lingodb/compiler/Dialect/util/UtilDialect.h"
 #include "lingodb/compiler/Dialect/util/UtilOps.h"
 #include "lingodb/runtime/ExternalDataSourceProperty.h"
+#include "gengodb/compiler/Dialect/GPM/IR/GPMOps.h"
+#include "gengodb/compiler/Conversion/GPMToSubOp/TripleEmitter.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -1474,7 +1476,111 @@ static mlir::Value translateINLJ(mlir::Value left, mlir::Value right, mlir::Arra
    }
    return nestedMapOp.getRes();
 }
-static mlir::Value translateNL(mlir::Value left, mlir::Value right, bool useHash, bool useIndexNestedLoop, bool useBindingCompatible, mlir::ArrayAttr nullsEqual, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, relalg::ColumnSet columns, mlir::ConversionPatternRewriter& rewriter, mlir::Operation* op, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn, mlir::ArrayAttr bindingCompatible = mlir::ArrayAttr()) {
+static mlir::Value translateGINLJBindingCompatible(mlir::Value left, mlir::Value right, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, mlir::ConversionPatternRewriter& rewriter, mlir::Operation* op, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn, int graphIndexPosition, mlir::ArrayAttr bindingCompatible) {
+   auto loc = op->getLoc();
+   auto* ctxt = rewriter.getContext();
+   auto& colManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+   auto triple = op->getAttrOfType<mlir::DictionaryAttr>(gpm::lowering::kGraphIndexTripleAttr);
+   if (!triple) assert(false && "expected virtual graph index triple description");
+   auto inFlight = op->getOperand(graphIndexPosition).getDefiningOp<relalg::InFlightOp>();
+   if (!inFlight) assert(false && "should not happen");
+   gsubop::ScanGraphOp scanGraph;
+   for (mlir::Value stream = inFlight.getStream();;) {
+      auto* streamOp = stream.getDefiningOp();
+      if (!streamOp) assert(false && "GINLJ consumed stream must begin with a graph scan");
+      scanGraph = mlir::dyn_cast<gsubop::ScanGraphOp>(streamOp);
+      if (scanGraph) break;
+      auto streamOperands = llvm::make_filter_range(streamOp->getOperands(), [](mlir::Value v) { return mlir::isa<tuples::TupleStreamType>(v.getType()); });
+      if (!llvm::hasSingleElement(streamOperands)) assert(false && "GINLJ only supports triple operators consuming linear streams");
+      stream = *streamOperands.begin();
+   }
+   // Weird parameter flip. Wtf?
+   if (left == inFlight.getStream()) {
+      std::swap(left, right);
+      std::swap(hashLeft, hashRight);
+   }
+   mlir::Value graph = scanGraph.getGraph();
+
+   static auto findAnchor = [](mlir::DictionaryAttr triple, mlir::ArrayAttr hashRight) -> std::optional<std::pair<size_t, gpm::TripleSlot>> {
+      std::array<std::pair<gpm::TripleSlot, mlir::Attribute>, 2> slots{{{gpm::TripleSlot::subject, triple.get("s")}, {gpm::TripleSlot::object, triple.get("o")}}};
+      for (auto [slot, term] : slots) {
+         auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term);
+         if (!varTerm || !varTerm.getProducedBinding()) continue;
+         for (auto [i, attr] : llvm::enumerate(hashRight)) {
+            if (&mlir::cast<tuples::ColumnRefAttr>(attr).getColumn() == &varTerm.getProducedBinding().getColumn()) return std::make_pair(i, slot);
+         }
+      }
+      return std::nullopt;
+   };
+   auto anchor = findAnchor(triple, hashRight);
+   if (!anchor) assert(false && "GINLJ needs an anchor");
+   auto [anchorIdx, anchorSlot] = *anchor;
+   auto anchorRef = mlir::cast<tuples::ColumnRefAttr>(hashLeft[anchorIdx]);
+   auto tripleAnchorRef = mlir::cast<tuples::ColumnRefAttr>(hashRight[anchorIdx]);
+   auto isFlagged = [&](size_t i) { return mlir::cast<mlir::IntegerAttr>(bindingCompatible[i]).getInt() != 0; };
+
+   mlir::Value boundStream = left;
+   mlir::Value unboundStream;
+   if (mlir::isa<db::NullableType>(anchorRef.getColumn().type)) {
+      auto [markerDef, markerRef] = createColumn(rewriter.getI1Type(), "graphindex", "unbound");
+      mlir::Value marked = map(left, rewriter, loc, rewriter.getArrayAttr(markerDef), [&](mlir::ConversionPatternRewriter& rewriter, subop::MapCreationHelper& helper, mlir::Location loc) -> std::vector<mlir::Value> {
+         return {rewriter.create<db::IsNullOp>(loc, rewriter.getI1Type(), helper.access(anchorRef, loc))};
+      });
+      boundStream = rewriter.create<subop::FilterOp>(loc, marked, subop::FilterSemantic::none_true, rewriter.getArrayAttr(markerRef));
+      if (isFlagged(anchorIdx)) {
+         unboundStream = rewriter.create<subop::FilterOp>(loc, marked, subop::FilterSemantic::all_true, rewriter.getArrayAttr(markerRef));
+      }
+   }
+
+   auto expand = [&](mlir::Value stream, bool bound) -> mlir::Value {
+      auto [nodeSetDef, nodeSetRef] = createColumn(scanGraph.getNodeSet().getColumn().type, "graphindex", "vx");
+      auto [edgeSetDef, edgeSetRef] = createColumn(scanGraph.getEdgeSet().getColumn().type, "graphindex", "ex");
+      auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({}));
+      auto* b = new Block;
+      mlir::Value tuple = b->addArgument(tuples::TupleType::get(ctxt), loc);
+      nestedMapOp.getRegion().push_back(b);
+      {
+         mlir::OpBuilder::InsertionGuard guard(rewriter);
+         rewriter.setInsertionPointToStart(b);
+         mlir::Value scan = rewriter.create<gsubop::ScanGraphOp>(loc, graph, nodeSetDef, edgeSetDef);
+         rewriter.create<tuples::ReturnOp>(loc, rewriter.create<subop::CombineTupleOp>(loc, scan, tuple).getResult());
+      }
+      mlir::Value expanded = nestedMapOp.getRes();
+      gpm::lowering::NamedGraphMapper graphs;
+      graphs.insert({mlir::cast<tuples::ColumnRefAttr>(triple.get("graphRef")).getName(), {mlir::cast<gsubop::GraphType>(graph.getType()), &nodeSetDef.getColumn(), &edgeSetDef.getColumn(), graph}});
+      gpm::lowering::TripleEmitter emitter(rewriter, graphs, op, triple);
+      if (bound) {
+         tuples::ColumnRefAttr anchorValueRef = anchorRef;
+         if (auto nullableType = mlir::dyn_cast<db::NullableType>(anchorRef.getColumn().type)) {
+            auto [valueDef, valueRef] = createColumn(nullableType.getType(), "graphindex", "anchor");
+            expanded = map(expanded, rewriter, loc, rewriter.getArrayAttr(valueDef), [&](mlir::ConversionPatternRewriter& rewriter, subop::MapCreationHelper& helper, mlir::Location loc) -> std::vector<mlir::Value> {
+               return {rewriter.create<db::NullableGetVal>(loc, helper.access(anchorRef, loc))};
+            });
+            anchorValueRef = valueRef;
+         }
+         emitter.bind(&tripleAnchorRef.getColumn(), anchorValueRef);
+         expanded = emitter.lower(expanded, anchorSlot);
+         tripleAnchorRef.getColumn().type = anchorValueRef.getColumn().type;
+         expanded = map(expanded, rewriter, loc, rewriter.getArrayAttr(colManager.createDef(&tripleAnchorRef.getColumn())), [&](mlir::ConversionPatternRewriter&, subop::MapCreationHelper& helper, mlir::Location loc) -> std::vector<mlir::Value> {
+            return {helper.access(anchorValueRef, loc)};
+         });
+      } else {
+         expanded = emitter.lower(expanded);
+         expanded = map(expanded, rewriter, loc, rewriter.getArrayAttr(colManager.createDef(&anchorRef.getColumn())), [&](mlir::ConversionPatternRewriter& rewriter, subop::MapCreationHelper& helper, mlir::Location loc) -> std::vector<mlir::Value> {
+            return {rewriter.create<db::AsNullableOp>(loc, anchorRef.getColumn().type, helper.access(tripleAnchorRef, loc))};
+         });
+      }
+      expanded = fn(expanded, rewriter);
+      return expanded;
+   };
+
+   mlir::Value result = expand(boundStream, true);
+   if (unboundStream) {
+      result = rewriter.create<subop::UnionOp>(loc, mlir::ValueRange{result, expand(unboundStream, false)});
+   }
+   return result;
+}
+static mlir::Value translateNL(mlir::Value left, mlir::Value right, bool useHash, bool useIndexNestedLoop, bool useGraphIndexNestedLoop, bool useBindingCompatible, mlir::ArrayAttr nullsEqual, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, relalg::ColumnSet columns, mlir::ConversionPatternRewriter& rewriter, mlir::Operation* op, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn, int graphIndexPosition = -1, mlir::ArrayAttr bindingCompatible = mlir::ArrayAttr()) {
    if (useHash) {
       if (useBindingCompatible) {
          return translateHJBindingCompatible(left, right, nullsEqual, hashLeft, hashRight, columns, rewriter, op->getLoc(), fn, bindingCompatible);
@@ -1483,6 +1589,12 @@ static mlir::Value translateNL(mlir::Value left, mlir::Value right, bool useHash
       }
    } else if (useIndexNestedLoop) {
       return translateINLJ(left, right, nullsEqual, hashLeft, hashRight, columns, rewriter, op, fn);
+   } else if (useGraphIndexNestedLoop) {
+      if (useBindingCompatible) {
+         return translateGINLJBindingCompatible(left, right, hashLeft, hashRight, rewriter, op, fn, graphIndexPosition, bindingCompatible);
+      } else {
+         assert (false && "only binding compatible GINLJ implemented.");
+      }
    } else {
       if (useBindingCompatible) {
          return translateNLJBindingCompatible(left, right, hashLeft, hashRight, columns, rewriter, op, fn, bindingCompatible);
@@ -1589,7 +1701,7 @@ class CrossProductLowering : public OpConversionPattern<relalg::CrossProductOp> 
       : OpConversionPattern<relalg::CrossProductOp>(typeConverter, context), requiredColumns(requiredColumns) {}
 
    LogicalResult matchAndRewrite(relalg::CrossProductOp crossProductOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
-      rewriter.replaceOp(crossProductOp, translateNL(adaptor.getRight(), adaptor.getLeft(), false, false, false, mlir::ArrayAttr(), mlir::ArrayAttr(), mlir::ArrayAttr(), requiredColumns.lookup(mlir::cast<Operator>(crossProductOp.getLeft().getDefiningOp())), rewriter, crossProductOp, [](mlir::Value v, mlir::ConversionPatternRewriter& rewriter) -> mlir::Value {
+      rewriter.replaceOp(crossProductOp, translateNL(adaptor.getRight(), adaptor.getLeft(), false, false, false, false, mlir::ArrayAttr(), mlir::ArrayAttr(), mlir::ArrayAttr(), requiredColumns.lookup(mlir::cast<Operator>(crossProductOp.getLeft().getDefiningOp())), rewriter, crossProductOp, [](mlir::Value v, mlir::ConversionPatternRewriter& rewriter) -> mlir::Value {
                             return v;
                          }));
       return success();
@@ -1606,15 +1718,16 @@ class InnerJoinNLLowering : public OpConversionPattern<relalg::InnerJoinOp> {
       auto loc = innerJoinOp->getLoc();
       bool useHash = innerJoinOp->hasAttr("useHashJoin");
       bool useIndexNestedLoop = innerJoinOp->hasAttr("useIndexNestedLoop");
+      bool useGraphIndex = innerJoinOp->hasAttr("useGraphIndex");
       bool useBindingCompatible = innerJoinOp->hasAttr("bindingCompatible");
       auto rightHash = innerJoinOp->getAttrOfType<mlir::ArrayAttr>("rightHash");
       auto leftHash = innerJoinOp->getAttrOfType<mlir::ArrayAttr>("leftHash");
       auto nullsEqual = innerJoinOp->getAttrOfType<mlir::ArrayAttr>("nullsEqual");
       auto bindingCompatible = innerJoinOp->getAttrOfType<mlir::ArrayAttr>("bindingCompatible");
-      rewriter.replaceOp(innerJoinOp, translateNL(adaptor.getRight(), adaptor.getLeft(), useHash, useIndexNestedLoop, useBindingCompatible, nullsEqual, rightHash, leftHash, requiredColumns.lookup(mlir::cast<Operator>(innerJoinOp.getLeft().getDefiningOp())), rewriter, innerJoinOp, [loc, &innerJoinOp](mlir::Value v, mlir::ConversionPatternRewriter& rewriter) -> mlir::Value {
+      rewriter.replaceOp(innerJoinOp, translateNL(adaptor.getRight(), adaptor.getLeft(), useHash, useIndexNestedLoop, useGraphIndex, useBindingCompatible, nullsEqual, rightHash, leftHash, requiredColumns.lookup(mlir::cast<Operator>(innerJoinOp.getLeft().getDefiningOp())), rewriter, innerJoinOp, [loc, &innerJoinOp](mlir::Value v, mlir::ConversionPatternRewriter& rewriter) -> mlir::Value {
                             return translateSelection(v, innerJoinOp.getPredicate(), rewriter, loc);
                          }, 
-                         bindingCompatible));
+                         1, bindingCompatible));
       return success();
    }
 };
@@ -1635,7 +1748,7 @@ class SemiJoinLowering : public OpConversionPattern<relalg::SemiJoinOp> {
       auto nullsEqual = semiJoinOp->getAttrOfType<mlir::ArrayAttr>("nullsEqual");
 
       if (!reverse) {
-         rewriter.replaceOp(semiJoinOp, translateNL(adaptor.getLeft(), adaptor.getRight(), useHash, useIndexNestedLoop, false, nullsEqual, leftHash, rightHash, requiredColumns.lookup(mlir::cast<Operator>(semiJoinOp.getRight().getDefiningOp())), rewriter, semiJoinOp, [loc, &semiJoinOp](mlir::Value v, mlir::ConversionPatternRewriter& rewriter) -> mlir::Value {
+         rewriter.replaceOp(semiJoinOp, translateNL(adaptor.getLeft(), adaptor.getRight(), useHash, useIndexNestedLoop, false, false, nullsEqual, leftHash, rightHash, requiredColumns.lookup(mlir::cast<Operator>(semiJoinOp.getRight().getDefiningOp())), rewriter, semiJoinOp, [loc, &semiJoinOp](mlir::Value v, mlir::ConversionPatternRewriter& rewriter) -> mlir::Value {
                                auto filtered = translateSelection(v, semiJoinOp.getPredicate(), rewriter, loc);
                                auto [markerDefAttr, markerRefAttr] = createColumn(rewriter.getI1Type(), "marker", "marker");
                                return rewriter.create<subop::FilterOp>(loc, anyTuple(filtered, markerDefAttr, rewriter, loc), subop::FilterSemantic::all_true, rewriter.getArrayAttr({markerRefAttr}));
@@ -1671,7 +1784,7 @@ class MarkJoinLowering : public OpConversionPattern<relalg::MarkJoinOp> {
       auto nullsEqual = markJoinOp->getAttrOfType<mlir::ArrayAttr>("nullsEqual");
 
       if (!reverse) {
-         rewriter.replaceOp(markJoinOp, translateNL(adaptor.getLeft(), adaptor.getRight(), useHash, useIndexNestedLoop, false, nullsEqual, leftHash, rightHash, requiredColumns.lookup(mlir::cast<Operator>(markJoinOp.getRight().getDefiningOp())), rewriter, markJoinOp, [loc, &markJoinOp](mlir::Value v, mlir::ConversionPatternRewriter& rewriter) -> mlir::Value {
+         rewriter.replaceOp(markJoinOp, translateNL(adaptor.getLeft(), adaptor.getRight(), useHash, useIndexNestedLoop, false, false, nullsEqual, leftHash, rightHash, requiredColumns.lookup(mlir::cast<Operator>(markJoinOp.getRight().getDefiningOp())), rewriter, markJoinOp, [loc, &markJoinOp](mlir::Value v, mlir::ConversionPatternRewriter& rewriter) -> mlir::Value {
                                auto filtered = translateSelection(v, markJoinOp.getPredicate(), rewriter, loc);
                                return anyTuple(filtered, markJoinOp.getMarkattr(), rewriter, loc);
                             }));
@@ -1705,7 +1818,7 @@ class AntiSemiJoinLowering : public OpConversionPattern<relalg::AntiSemiJoinOp> 
       auto nullsEqual = antiSemiJoinOp->getAttrOfType<mlir::ArrayAttr>("nullsEqual");
 
       if (!reverse) {
-         rewriter.replaceOp(antiSemiJoinOp, translateNL(adaptor.getLeft(), adaptor.getRight(), useHash, useIndexNestedLoop, false, nullsEqual, leftHash, rightHash, requiredColumns.lookup(mlir::cast<Operator>(antiSemiJoinOp.getRight().getDefiningOp())), rewriter, antiSemiJoinOp, [loc, &antiSemiJoinOp](mlir::Value v, mlir::ConversionPatternRewriter& rewriter) -> mlir::Value {
+         rewriter.replaceOp(antiSemiJoinOp, translateNL(adaptor.getLeft(), adaptor.getRight(), useHash, useIndexNestedLoop, false, false, nullsEqual, leftHash, rightHash, requiredColumns.lookup(mlir::cast<Operator>(antiSemiJoinOp.getRight().getDefiningOp())), rewriter, antiSemiJoinOp, [loc, &antiSemiJoinOp](mlir::Value v, mlir::ConversionPatternRewriter& rewriter) -> mlir::Value {
                                auto filtered = translateSelection(v, antiSemiJoinOp.getPredicate(), rewriter, loc);
                                auto [markerDefAttr, markerRefAttr] = createColumn(rewriter.getI1Type(), "marker", "marker");
                                return rewriter.create<subop::FilterOp>(loc, anyTuple(filtered, markerDefAttr, rewriter, loc), subop::FilterSemantic::none_true, rewriter.getArrayAttr({markerRefAttr}));
@@ -1776,6 +1889,7 @@ class OuterJoinLowering : public OpConversionPattern<relalg::OuterJoinOp> {
       bool reverse = outerJoinOp->hasAttr("reverseSides");
       bool useHash = outerJoinOp->hasAttr("useHashJoin");
       bool useIndexNestedLoop = outerJoinOp->hasAttr("useIndexNestedLoop");
+      bool useGraphIndex = outerJoinOp->hasAttr("useGraphIndex");
       bool useBindingCompatible = outerJoinOp->hasAttr("bindingCompatible");
       auto rightHash = outerJoinOp->getAttrOfType<mlir::ArrayAttr>("rightHash");
       auto leftHash = outerJoinOp->getAttrOfType<mlir::ArrayAttr>("leftHash");
@@ -1783,7 +1897,7 @@ class OuterJoinLowering : public OpConversionPattern<relalg::OuterJoinOp> {
       auto bindingCompatible = outerJoinOp->getAttrOfType<mlir::ArrayAttr>("bindingCompatible");
 
       if (!reverse) {
-         rewriter.replaceOp(outerJoinOp, translateNL(adaptor.getLeft(), adaptor.getRight(), useHash, useIndexNestedLoop, useBindingCompatible, nullsEqual, leftHash, rightHash, requiredColumns.lookup(mlir::cast<Operator>(outerJoinOp.getRight().getDefiningOp())), rewriter, outerJoinOp, [loc, &outerJoinOp](mlir::Value v, mlir::ConversionPatternRewriter& rewriter) -> mlir::Value {
+         rewriter.replaceOp(outerJoinOp, translateNL(adaptor.getLeft(), adaptor.getRight(), useHash, useIndexNestedLoop, useGraphIndex, useBindingCompatible, nullsEqual, leftHash, rightHash, requiredColumns.lookup(mlir::cast<Operator>(outerJoinOp.getRight().getDefiningOp())), rewriter, outerJoinOp, [loc, &outerJoinOp](mlir::Value v, mlir::ConversionPatternRewriter& rewriter) -> mlir::Value {
                                auto filtered = translateSelection(v, outerJoinOp.getPredicate(), rewriter, loc);
                                auto [markerDefAttr, markerRefAttr] = createColumn(rewriter.getI1Type(), "marker", "marker");
                                Value filteredNoMatch = rewriter.create<subop::FilterOp>(loc, anyTuple(filtered, markerDefAttr, rewriter, loc), subop::FilterSemantic::none_true, rewriter.getArrayAttr({markerRefAttr}));
@@ -1791,7 +1905,7 @@ class OuterJoinLowering : public OpConversionPattern<relalg::OuterJoinOp> {
                                auto mappedNullable = mapColsToNullable(filtered, rewriter, loc, outerJoinOp.getMapping());
                                return rewriter.create<subop::UnionOp>(loc, mlir::ValueRange{mappedNullable, mappedNull});
                             },
-                            bindingCompatible));
+                            1, bindingCompatible));
       } else {
          auto [flagAttrDef, flagAttrRef] = createColumn(rewriter.getI1Type(), "materialized", "marker");
          auto [stream, scan] = translateNLWithMarker(adaptor.getLeft(), adaptor.getRight(), useHash, nullsEqual, leftHash, rightHash, requiredColumns.lookup(mlir::cast<Operator>(outerJoinOp.getLeft().getDefiningOp())), rewriter, loc, flagAttrDef, [loc, &outerJoinOp](mlir::Value v, mlir::Value, mlir::ConversionPatternRewriter& rewriter, tuples::ColumnRefAttr ref, Member flagMember) -> mlir::Value {
@@ -1843,7 +1957,7 @@ class SingleJoinLowering : public OpConversionPattern<relalg::SingleJoinOp> {
          auto mappedNullable = mapColsToNullable(gathered.getRes(), rewriter, loc, singleJoinOp.getMapping());
          rewriter.replaceOp(singleJoinOp, mappedNullable);
       } else if (!reverse) {
-         rewriter.replaceOp(singleJoinOp, translateNL(adaptor.getLeft(), adaptor.getRight(), useHash, useIndexNestedLoop, false, nullsEqual, leftHash, rightHash, requiredColumns.lookup(mlir::cast<Operator>(singleJoinOp.getRight().getDefiningOp())), rewriter, singleJoinOp, [loc, &singleJoinOp](mlir::Value v, mlir::ConversionPatternRewriter& rewriter) -> mlir::Value {
+         rewriter.replaceOp(singleJoinOp, translateNL(adaptor.getLeft(), adaptor.getRight(), useHash, useIndexNestedLoop, false, false, nullsEqual, leftHash, rightHash, requiredColumns.lookup(mlir::cast<Operator>(singleJoinOp.getRight().getDefiningOp())), rewriter, singleJoinOp, [loc, &singleJoinOp](mlir::Value v, mlir::ConversionPatternRewriter& rewriter) -> mlir::Value {
                                auto filtered = translateSelection(v, singleJoinOp.getPredicate(), rewriter, loc);
                                auto [markerDefAttr, markerRefAttr] = createColumn(rewriter.getI1Type(), "marker", "marker");
                                Value filteredNoMatch = rewriter.create<subop::FilterOp>(loc, anyTuple(filtered, markerDefAttr, rewriter, loc), subop::FilterSemantic::none_true, rewriter.getArrayAttr({markerRefAttr}));

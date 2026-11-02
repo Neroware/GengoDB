@@ -113,6 +113,21 @@ std::vector<uint8_t> lingodb::execution::buildQueryParamBuffer(mlir::ModuleOp ma
          }
          return;
       }
+      auto writeExpansionParam = [&](auto expansion) {
+         auto id = expansion.getParamId();
+         if (!id) return;
+         auto refType = mlir::cast<gpm::GraphReferenceType>(expansion.getGraphRef().getColumn().type);
+         auto ident = mlir::cast<gpm::IdentifierTermAttr>(expansion.getAnchorTerm());
+         writeI32(buffer, *id, namedGraphManager.resolve(refType.getName().str(), ident.identifier()));
+      };
+      if (auto expansion = mlir::dyn_cast<gpm::NodeExpansionOp>(op.getOperation())) {
+         writeExpansionParam(expansion);
+         return;
+      }
+      if (auto expansion = mlir::dyn_cast<gpm::EdgeExpansionOp>(op.getOperation())) {
+         writeExpansionParam(expansion);
+         return;
+      }
       auto literals = op.getParamLiterals();
       assert(literals.size() == paramsAttr.size() && "buildQueryParamBuffer: predicate region shape changed unexpectedly since marking");
       for (auto [i, entry] : llvm::enumerate(paramsAttr)) {

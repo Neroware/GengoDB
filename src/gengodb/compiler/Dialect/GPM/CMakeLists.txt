@@ -6,6 +6,7 @@ add_mlir_dialect_library(MLIRGPM
         GPMTypes.cpp
         GPMAttributes.cpp
         Transforms/UnnestGraphPatterns.cpp
+        Transforms/BindingColumnTransformer.cpp
         Transforms/Passes.cpp
         ADDITIONAL_HEADER_DIRS
         ../../../../../include/gengodb/compiler/Dialect/GPM

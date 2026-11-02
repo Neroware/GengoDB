@@ -61,6 +61,22 @@ def GPM_TripleSlot : I64EnumAttr<"TripleSlot", "slot in a triple pattern",
     let cppNamespace = "::gengodb::compiler::dialect::gpm";
 }
 
+def GPM_ExpansionDirection_OUTGOING : I64EnumAttrCase<"outgoing", 0>;
+def GPM_ExpansionDirection_INCOMING : I64EnumAttrCase<"incoming", 1>;
+
+def GPM_ExpansionDirection : I64EnumAttr<"ExpansionDirection", "node expansion direction",
+        [GPM_ExpansionDirection_OUTGOING,GPM_ExpansionDirection_INCOMING]> {
+    let cppNamespace = "::gengodb::compiler::dialect::gpm";
+}
+
+def GPM_EdgeEndpoint_FROM : I64EnumAttrCase<"from_node", 0>;
+def GPM_EdgeEndpoint_TO : I64EnumAttrCase<"to_node", 1>;
+
+def GPM_EdgeEndpoint : I64EnumAttr<"EdgeEndpoint", "edge expansion endpoint",
+        [GPM_EdgeEndpoint_FROM,GPM_EdgeEndpoint_TO]> {
+    let cppNamespace = "::gengodb::compiler::dialect::gpm";
+}
+
 //===----------------------------------------------------------------------===//
 // Types
 //===----------------------------------------------------------------------===//

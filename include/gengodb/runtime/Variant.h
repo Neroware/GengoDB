@@ -67,6 +67,14 @@ struct VariantRuntime {
     // resolve a node's graph-local id
     static int32_t resolveNode(uint8_t* graph, int32_t tag, int64_t payload);
 
+    // resolve an edge's graph-local id
+    static int32_t resolveEdge(uint8_t* graph, int32_t tag, int64_t payload);
+
+    static VarLen32 toStringEdgeRef(uint8_t* ref);
+
+    // Total order among edges (by owning graph, then local id)
+    static int8_t compareEdgeRefRef(uint8_t* lhs, uint8_t* rhs, int32_t predicate);
+
     // SPARQL LANG(): a literal's language tag as xsd:string, or the empty string if it has none
     static VarLen32 langTag(int64_t payload, int32_t tag);
 };

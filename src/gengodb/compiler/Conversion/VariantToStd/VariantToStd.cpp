@@ -282,6 +282,18 @@ class CreateNodeRefOpLowering : public OpConversionPattern<variant::CreateNodeRe
     }
 };
 
+class CreateEdgeRefOpLowering : public OpConversionPattern<variant::CreateEdgeRefOp> {
+    public:
+    using OpConversionPattern<variant::CreateEdgeRefOp>::OpConversionPattern;
+    LogicalResult matchAndRewrite(variant::CreateEdgeRefOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+        auto loc = op->getLoc();
+        Value opaqueRef = getPointer(rewriter, loc, adaptor.getRef());
+        Value tag = constI32(rewriter, loc, xsd::to_int32(xsd::Type::Edge));
+        rewriter.replaceOp(op, packVariant(rewriter, loc, tag, opaqueRef));
+        return success();
+    }
+};
+
 class UnspecifiedIfOpLowering : public OpConversionPattern<variant::UnspecifiedIfOp> {
     public:
     using OpConversionPattern<variant::UnspecifiedIfOp>::OpConversionPattern;
@@ -308,6 +320,19 @@ class ResolveNodeOpLowering : public OpConversionPattern<variant::ResolveNodeOp>
         auto [tag, ref] = unpackVariant(rewriter, loc, adaptor.getVal());
         Value payload = rewriter.create<util::PtrToIntOp>(loc, rewriter.getI64Type(), ref);
         rewriter.replaceOp(op, rt::VariantRuntime::resolveNode(rewriter, loc)({graph, tag, payload})[0]);
+        return success();
+    }
+};
+
+class ResolveEdgeOpLowering : public OpConversionPattern<variant::ResolveEdgeOp> {
+    public:
+    using OpConversionPattern<variant::ResolveEdgeOp>::OpConversionPattern;
+    LogicalResult matchAndRewrite(variant::ResolveEdgeOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+        auto loc = op->getLoc();
+        Value graph = getPointer(rewriter, loc, adaptor.getGraph());
+        auto [tag, ref] = unpackVariant(rewriter, loc, adaptor.getVal());
+        Value payload = rewriter.create<util::PtrToIntOp>(loc, rewriter.getI64Type(), ref);
+        rewriter.replaceOp(op, rt::VariantRuntime::resolveEdge(rewriter, loc)({graph, tag, payload})[0]);
         return success();
     }
 };
@@ -368,6 +393,12 @@ Value computeLexicalForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value ta
                             b3.create<scf::YieldOp>(l3, rt::VariantRuntime::toStringNodeRef(b3, l3)({ref})[0]);
                         },
                         [&](OpBuilder& b3, Location l3) {
+                          auto ifEdge = b3.create<scf::IfOp>(
+                            l3, tp.isEdge,
+                            [&](OpBuilder& b3e, Location l3e) {
+                                b3e.create<scf::YieldOp>(l3e, rt::VariantRuntime::toStringEdgeRef(b3e, l3e)({ref})[0]);
+                            },
+                            [&](OpBuilder& b3, Location l3) {
                             auto ifString = b3.create<scf::IfOp>(
                                 l3, tp.isByteString,
                                 [&](OpBuilder& b4, Location l4) {
@@ -394,6 +425,8 @@ Value computeLexicalForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value ta
                                     b4.create<scf::YieldOp>(l4, ifIri.getResult(0));
                                 });
                             b3.create<scf::YieldOp>(l3, ifString.getResult(0));
+                            });
+                          b3.create<scf::YieldOp>(l3, ifEdge.getResult(0));
                         });
                     b2.create<scf::YieldOp>(l2, ifNode.getResult(0));
                 });
@@ -424,7 +457,15 @@ Value computeFullForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value tag, 
                             b3.create<scf::YieldOp>(l3, loadTyped(b3, l3, ref, getVarlen32Type(ctxt)));
                         },
                         [&](OpBuilder& b3, Location l3) {
-                            b3.create<scf::YieldOp>(l3, rt::VariantRuntime::toStringFull(b3, l3)({payload, tag})[0]);
+                            auto ifEdge = b3.create<scf::IfOp>(
+                                l3, tp.isEdge,
+                                [&](OpBuilder& b4, Location l4) {
+                                    b4.create<scf::YieldOp>(l4, rt::VariantRuntime::toStringEdgeRef(b4, l4)({ref})[0]);
+                                },
+                                [&](OpBuilder& b4, Location l4) {
+                                    b4.create<scf::YieldOp>(l4, rt::VariantRuntime::toStringFull(b4, l4)({payload, tag})[0]);
+                                });
+                            b3.create<scf::YieldOp>(l3, ifEdge.getResult(0));
                         });
                     b2.create<scf::YieldOp>(l2, ifIri.getResult(0));
                 });
@@ -585,6 +626,10 @@ class CmpOpLowering : public OpConversionPattern<variant::CmpOp> {
                 }},
                 {lp.isNode, [&](OpBuilder& b2, Location l2) -> Value {
                     Value raw = rt::VariantRuntime::compareNodeRefRef(b2, l2)({lhsRef, rhsRef, predConst})[0];
+                    return packFromTriBool(b2, l2, resultType, raw);
+                }},
+                {lp.isEdge, [&](OpBuilder& b2, Location l2) -> Value {
+                    Value raw = rt::VariantRuntime::compareEdgeRefRef(b2, l2)({lhsRef, rhsRef, predConst})[0];
                     return packFromTriBool(b2, l2, resultType, raw);
                 }},
                 {lp.isIri, [&](OpBuilder& b2, Location l2) -> Value {
@@ -836,6 +881,8 @@ struct VariantToStdLoweringPass
         patterns.insert<CreateScalarOpLowering>(typeConverter, ctxt);
         patterns.insert<CreateNodeRefOpLowering>(typeConverter, ctxt);
         patterns.insert<ResolveNodeOpLowering>(typeConverter, ctxt);
+        patterns.insert<CreateEdgeRefOpLowering>(typeConverter, ctxt);
+        patterns.insert<ResolveEdgeOpLowering>(typeConverter, ctxt);
         patterns.insert<UnspecifiedIfOpLowering>(typeConverter, ctxt);
         patterns.insert<VariantIsAOpLowering>(typeConverter, ctxt);
         patterns.insert<VariantGetValOpLowering>(typeConverter, ctxt);

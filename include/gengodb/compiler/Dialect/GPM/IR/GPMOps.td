@@ -40,18 +40,33 @@ def TriplePatternOp : GPM_RelAlgOp<"triple_pattern", [Pure,GPMOperator,Operator,
   }];
 }
 
-def GraphExpansionOp : GPM_RelAlgOp<"graph_expansion", [Pure,GPMOperator,Operator,UnaryOperator,DeclareOpInterfaceMethods<Parameterizable>]> {
-  let summary = "graph expansion from pre-computed anchor";
-  let arguments = (ins TupleStream:$rel, ColumnRefAttr:$graphRef, AnyAttr:$s, AnyAttr:$p, AnyAttr:$o, GPM_TripleSlot:$anchor);
+def NodeExpansionOp : GPM_RelAlgOp<"node_expansion", [Pure,GPMOperator,Operator,UnaryOperator,DeclareOpInterfaceMethods<Parameterizable>]> {
+  let summary = "graph expansion from node to edge";
+  let arguments = (ins TupleStream:$rel, ColumnRefAttr:$graphRef, AnyAttr:$anchorTerm, AnyAttr:$target, GPM_ExpansionDirection:$anchor);
   let results = (outs TupleStream:$res);
-  let assemblyFormat = [{  $rel custom<CustRef>($graphRef) `(` custom<Term>($s) `,` custom<PredicateTerm>($p) `,` custom<Term>($o) `)` `anchor` `:` $anchor attr-dict }];
+  let assemblyFormat = [{  $rel custom<CustRef>($graphRef) `(` custom<Term>($anchorTerm) `->` custom<Term>($target) `)` `anchor` `:` $anchor attr-dict }];
   let hasVerifier = 1;
   let extraClassDeclaration = [{
     lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
     lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
     lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
     bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
-    std::optional<size_t> getParamId(TripleSlot slot);
+    std::optional<size_t> getParamId();
+  }];
+}
+
+def EdgeExpansionOp : GPM_RelAlgOp<"edge_expansion", [Pure,GPMOperator,Operator,UnaryOperator,DeclareOpInterfaceMethods<Parameterizable>]> {
+  let summary = "graph expansion from edge to node";
+  let arguments = (ins TupleStream:$rel, ColumnRefAttr:$graphRef, AnyAttr:$anchorTerm, AnyAttr:$target, GPM_EdgeEndpoint:$anchor);
+  let results = (outs TupleStream:$res);
+  let assemblyFormat = [{  $rel custom<CustRef>($graphRef) `(` custom<Term>($anchorTerm) `->` custom<Term>($target) `)` `anchor` `:` $anchor attr-dict }];
+  let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
+    bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
+    std::optional<size_t> getParamId();
   }];
 }
 

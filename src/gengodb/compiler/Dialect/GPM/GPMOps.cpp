@@ -206,31 +206,6 @@ void printTerm(OpAsmPrinter& p, mlir::Operation* op, mlir::Attribute attr) {
             p << "}";
         });
 }
-ParseResult parsePredicateTerm(OpAsmParser& parser, mlir::Attribute& attr) {
-    if (failed(parser.parseOptionalLSquare())) {
-        return parseTerm(parser, attr);
-    }
-    std::vector<mlir::Attribute> terms;
-    if (failed(parser.parseOptionalRSquare())) {
-        auto parseElement = [&]() -> ParseResult {
-            mlir::Attribute term;
-            if (parseTerm(parser, term)) {
-                return failure();
-            }
-            terms.push_back(term);
-            return success();
-        };
-        if (parser.parseCommaSeparatedList(parseElement) || parser.parseRSquare()) {
-            return failure();
-        }
-    }
-    if (terms.size() == 1) {
-        attr = terms.front();
-        return success();
-    }
-    attr = mlir::ArrayAttr::get(parser.getContext(), terms);
-    return success();
-}
 void printPredicateTerm(OpAsmPrinter& p, mlir::Operation* op, mlir::Attribute attr) {
     auto list = mlir::dyn_cast<mlir::ArrayAttr>(attr);
     if (!list) {
@@ -304,58 +279,24 @@ void printCustRegion(OpAsmPrinter& p, Operation* op, Region& r) {
     }
     return mlir::success();
 }
-::mlir::LogicalResult gpm::GraphExpansionOp::verify() {
-    auto isValidTerm = [](mlir::Attribute attr) {
-        return mlir::isa<
-            IdentifierTermAttr,
-            BNodeTermAttr,
-            VariableTermAttr
-        >(attr);
-    };
-    if (!isValidTerm(getS())) {
-        return emitOpError("subject must be a GPM term attribute");
+namespace {
+mlir::LogicalResult verifyExpansionTerms(mlir::Operation* op, mlir::Attribute anchorTerm, mlir::Attribute target) {
+    auto anchorVar = mlir::dyn_cast<gpm::VariableTermAttr>(anchorTerm);
+    if (!(anchorVar && anchorVar.hasBinding()) && !mlir::isa<gpm::IdentifierTermAttr>(anchorTerm)) {
+        return op->emitOpError("anchor must be a bound variable reference or an identifier");
     }
-    if (!isValidTerm(getO())) {
-        return emitOpError("object must be a GPM term attribute");
-    }
-    if (auto list = mlir::dyn_cast<mlir::ArrayAttr>(getP())) {
-        if (list.empty()) {
-            return emitOpError("predicate list must not be empty");
-        }
-        if (list.size() == 1) {
-            return emitOpError("a one-element predicate list must be given as a single term");
-        }
-        llvm::SmallPtrSet<mlir::Attribute, 4> seen;
-        for (auto term : list) {
-            if (!mlir::isa<IdentifierTermAttr>(term)) {
-                return emitOpError("predicate list must only contain identifiers");
-            }
-            if (!seen.insert(term).second) {
-                return emitOpError() << "predicate list contains " << mlir::cast<IdentifierTermAttr>(term).getIdent() << " more than once";
-            }
-        }
-    } else if (!isValidTerm(getP())) {
-        return emitOpError("predicate must be a GPM term attribute or a list of identifiers");
-    } else if (mlir::isa<BNodeTermAttr>(getP())) {
-        return emitOpError("predicate cannot be a blank node");
-    }
-
-    mlir::Attribute anchorTerm;
-    switch (getAnchor()) {
-        case TripleSlot::subject: anchorTerm = getS(); break;
-        case TripleSlot::predicate: anchorTerm = getP(); break;
-        case TripleSlot::object: anchorTerm = getO(); break;
-    }
-    auto anchorVar = mlir::dyn_cast<VariableTermAttr>(anchorTerm);
-    bool isBoundReference = anchorVar && anchorVar.hasBinding();
-    if (getAnchor() == TripleSlot::predicate) {
-        if (!isBoundReference) {
-            return emitOpError("predicate anchor must be a bound variable reference; a constant predicate does not depend on the input relation");
-        }
-    } else if (!isBoundReference && !mlir::isa<IdentifierTermAttr>(anchorTerm)) {
-        return emitOpError() << stringifyTripleSlot(getAnchor()) << " anchor must be a bound variable reference or an identifier";
+    auto targetVar = mlir::dyn_cast<gpm::VariableTermAttr>(target);
+    if (!targetVar || targetVar.hasBinding()) {
+        return op->emitOpError("target must be a fresh variable definition");
     }
     return mlir::success();
+}
+} // namespace
+::mlir::LogicalResult gpm::NodeExpansionOp::verify() {
+    return verifyExpansionTerms(getOperation(), getAnchorTerm(), getTarget());
+}
+::mlir::LogicalResult gpm::EdgeExpansionOp::verify() {
+    return verifyExpansionTerms(getOperation(), getAnchorTerm(), getTarget());
 }
 ::mlir::LogicalResult gpm::BasicGraphPatternOp::verify() {
     return gpm::detail::verifyGraphPatternBody(getOperation());
