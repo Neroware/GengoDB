@@ -51,6 +51,7 @@ void RDFGraphCatalogEntry::ensureFullyLoaded() {
     else {
         impl->setLoadedFromRdfFile(true);
         impl->setRdfParseFlags(getRDFParseFlags(format));
+        impl->setFuzzy(format == RDFFileFormat::FUZZY_TURTLE);
     }
     impl->ensureLoaded();
 }

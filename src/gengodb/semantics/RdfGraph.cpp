@@ -1,6 +1,7 @@
 #include "gengodb/semantics/RdfGraph.h"
 
 #include "gengodb/semantics/RdfFileFormat.h"
+#include "gengodb/semantics/FuzzyTurtle.h"
 
 #include <rdf4cpp/Graph.hpp>
 #include <rdf4cpp/datatypes/xsd/time/Date.hpp>
@@ -173,8 +174,45 @@ runtime::rel_id_t RdfGraph::addTriple(const BlankNode& s, const IRI& p, const Bl
 runtime::rel_id_t RdfGraph::addTriple(const BlankNode& s, const IRI& p, const Literal& o) {
     return storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
+void RdfGraph::setTruth(runtime::rel_id_t rel, float degree) {
+    storage->storage().rel(rel).payload = std::bit_cast<runtime::prop_id_t>(degree);
+}
+static void loadFuzzyTriples(RdfGraph* rdfGraph, const std::string& dbDir, const std::string sourceFileName, ParsingFlag rdfParseFlags) {
+    const std::string path = dbDir + sourceFileName + getRDFFileExtension(RDFFileFormat::FUZZY_TURTLE);
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("cannot open fuzzy turtle file '" + path + "'");
+    }
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    std::optional<FuzzyTurtleFile> fttl;
+    try {
+        fttl = loadFuzzyTTL(content, rdfParseFlags);
+    } catch (const FuzzyTurtleError& e) {
+        throw std::runtime_error(path + ": " + e.what());
+    }
+    content.clear();
+    size_t idx = 0;
+    auto it = (*fttl).triples();
+    for (; it != std::default_sentinel; ++it) {
+        if (!it->has_value()) {
+            throw std::runtime_error(path + ": " + std::string(it->error().message) + " (line " + std::to_string(it->error().line) + ")");
+        }
+        if (idx >= fttl->degrees.size()) {
+            break;
+        }
+        const auto& quad = it->value();
+        rdfGraph->addTriple(quad.subject(), quad.predicate(), quad.object(), fttl->degrees[idx++]);
+    }
+    if (idx != fttl->degrees.size() || it != std::default_sentinel) {
+        throw std::runtime_error(path + ": parsed triple count does not match the truth degree annotations (expected " + std::to_string(fttl->degrees.size()) + ")");
+    }
+}
 void RdfGraph::loadTriples() {
     if (!loadedFromRdfFile) {
+        return;
+    }
+    if (fuzzy) {
+        loadFuzzyTriples(this, dbDir, sourceFileName, rdfParseFlags);
         return;
     }
     RDFFileParser parser(dbDir + sourceFileName + getRDFFileExtension(rdfParseFlags), rdfParseFlags);

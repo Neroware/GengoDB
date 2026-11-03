@@ -13,12 +13,14 @@ enum class RDFFileFormat {
     TURTLE,
     NTRIPLES,
     NQUADS,
-    RDFXML
+    RDFXML,
+    FUZZY_TURTLE
 };
 
 inline ParsingFlag getRDFParseFlags(RDFFileFormat format) {
     switch (format) {
         case RDFFileFormat::TURTLE: return ParsingFlag::Turtle;
+        case RDFFileFormat::FUZZY_TURTLE: return ParsingFlag::Turtle;
         default: return (ParsingFlag) 0;
     }
 }
@@ -28,6 +30,11 @@ inline std::string getRDFFileExtension(ParsingFlag flag) {
         case ParsingFlag::Turtle: return ".ttl";
         default: return ".rdf";
     }
+}
+
+inline std::string getRDFFileExtension(RDFFileFormat format) {
+    if (format == RDFFileFormat::FUZZY_TURTLE) return ".fttl";
+    return getRDFFileExtension(getRDFParseFlags(format));
 }
 
 }

@@ -261,7 +261,7 @@ public:
         else {
             assert(false && "triple subject invalid");
         }
-        storage->storage().rel(rel).payload = std::bit_cast<runtime::prop_id_t>(fuzzy ? truth : 1.0f);
+        setTruth(rel, fuzzy ? truth : 1.0f);
     }
     runtime::rel_id_t addTriple(const IRI& s, const IRI& p, const IRI& o);
     runtime::rel_id_t addTriple(const IRI& s, const IRI& p, const BlankNode& o);
@@ -269,6 +269,7 @@ public:
     runtime::rel_id_t addTriple(const BlankNode& s, const IRI& p, const IRI& o);
     runtime::rel_id_t addTriple(const BlankNode& s, const IRI& p, const BlankNode& o);
     runtime::rel_id_t addTriple(const BlankNode& s, const IRI& p, const Literal& o);
+    void setTruth(runtime::rel_id_t rel, float degree);
     IRI getIri() const { return iri; }
     const NodeIdDict& getNodes() const { return *nodes; }
     RDFNodeType getNodeType(int32_t id) const { return nodes->get(id).type; }

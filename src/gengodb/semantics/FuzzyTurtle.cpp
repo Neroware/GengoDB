@@ -330,13 +330,12 @@ private:
 
 } // namespace
 
-FuzzyTurtleFile parseFuzzyTTL(std::string_view input, ParsingFlag rdfParseFlags) {
+FuzzyTurtleFile loadFuzzyTTL(std::string_view input, ParsingFlag rdfParseFlags) {
     std::vector<float> degrees;
-    std::string turtle;
+    std::string turtle(input);
     Parser(input, turtle, degrees).parseDocument();
-    std::istringstream triples(turtle);
-    IStreamQuadIterator it(triples, rdfParseFlags);
-    return FuzzyTurtleFile { .triples = std::move(it), .degrees = std::move(degrees)};
+    auto source = std::make_unique<std::istringstream>(turtle);
+    return FuzzyTurtleFile { .source = std::move(source), .rdfParseFlags = rdfParseFlags, .degrees = std::move(degrees)};
 }
 
 } // namespace gengodb::semantics
