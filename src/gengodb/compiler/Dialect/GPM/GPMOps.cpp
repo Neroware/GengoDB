@@ -304,6 +304,15 @@ mlir::LogicalResult verifyExpansionTerms(mlir::Operation* op, mlir::Attribute an
 ::mlir::LogicalResult gpm::OptionalGraphPatternOp::verify() {
     return gpm::detail::verifyGraphPatternBody(getOperation());
 }
+::mlir::LogicalResult gpm::FuzzyGraphPatternOp::verify() {
+    if (static_cast<bool>(getTruthDegrAttr()) == getThreshold().has_value()) {
+        return emitOpError("requires exactly one of 'result' (truth variable) and 'threshold'");
+    }
+    if (auto threshold = getThreshold(); threshold && !(threshold->convertToFloat() >= 0.0f && threshold->convertToFloat() <= 1.0f)) {
+        return emitOpError("threshold must be in [0, 1]");
+    }
+    return gpm::detail::verifyGraphPatternBody(getOperation());
+}
 ::mlir::LogicalResult gpm::BagOp::verify() {
     return gpm::detail::verifyUnionMapping(getOperation(), getMapping());
 }

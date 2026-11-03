@@ -46,9 +46,17 @@ def GPM_TermType : I64EnumAttr<"TermType", "term type",
 def GPM_PatternKind_BASIC    : I64EnumAttrCase<"basic", 0>;
 def GPM_PatternKind_OPTIONAL : I64EnumAttrCase<"optional", 1>;
 def GPM_PatternKind_MINUS    : I64EnumAttrCase<"minus", 2>;
+def GPM_PatternKind_FUZZY    : I64EnumAttrCase<"fuzzy", 3>;
 
-def GPM_PatternKind : I64EnumAttr<"PatternKind", "graph pattern construct (SPARQL BGP / OPTIONAL / MINUS)",
-        [GPM_PatternKind_BASIC,GPM_PatternKind_OPTIONAL,GPM_PatternKind_MINUS]> {
+def GPM_PatternKind : I64EnumAttr<"PatternKind", "graph pattern construct (SPARQL BGP / OPTIONAL / MINUS / FuzzySPARQL TRUTH OF)",
+        [GPM_PatternKind_BASIC,GPM_PatternKind_OPTIONAL,GPM_PatternKind_MINUS,GPM_PatternKind_FUZZY]> {
+    let cppNamespace = "::gengodb::compiler::dialect::gpm";
+}
+
+def GPM_TNorm_PRODUCT : I64EnumAttrCase<"product", 0>;
+
+def GPM_TNorm : I64EnumAttr<"TNorm", "fuzzy graph pattern t-norm",
+        [GPM_TNorm_PRODUCT]> {
     let cppNamespace = "::gengodb::compiler::dialect::gpm";
 }
 

@@ -20,6 +20,7 @@ ColumnSet getUsedVariables(mlir::Operation* op);
 ColumnSet getAvailableVariables(mlir::Operation* op);
 void moveSubTreeBefore(mlir::Operation* op, mlir::Operation* before);
 llvm::SmallVector<std::tuple<mlir::Attribute, mlir::Attribute, mlir::Attribute>, 16> getPatternTriples(mlir::Operation* op);
+ColumnSet getPatternCreatedVariables(mlir::Region& pattern);
 mlir::LogicalResult verifyGraphPatternBody(mlir::Operation* op);
 mlir::LogicalResult verifyUnionMapping(mlir::Operation* op, mlir::ArrayAttr mapping);
 } // namespace gengodb::compiler::dialect::gpm::detail
