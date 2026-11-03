@@ -4372,13 +4372,16 @@ class GetIdentifierLowering : public SubOpConversionPattern<gsubop::GetIdentifie
       auto loc = op->getLoc();
       auto* ctxt = op.getContext();
       auto refType = op.getRef().getType();
+      auto isConverted = [&](mlir::TupleType expected) {
+         auto ref = mlir::dyn_cast<util::RefType>(refType);
+         auto entry = ref ? mlir::dyn_cast<mlir::TupleType>(ref.getElementType()) : mlir::TupleType();
+         return entry && entry.size() == expected.size() && llvm::equal(entry.getTypes().drop_back(), expected.getTypes().drop_back());
+      };
       auto propertyPayload = mlir::TupleType::get(ctxt, {rewriter.getI32Type()});
-      auto convertedNodeRefType = util::RefType::get(ctxt, getNodeEntryType(ctxt, propertyPayload));
-      auto convertedEdgeRefType = util::RefType::get(ctxt, getEdgeEntryType(ctxt, propertyPayload));
       mlir::Value ident;
-      if (mlir::isa<gsubop::NodeRefType>(refType) || refType == convertedNodeRefType) {
+      if (mlir::isa<gsubop::NodeRefType>(refType) || isConverted(getNodeEntryType(ctxt, propertyPayload))) {
          ident = rt::GraphStorage::nodeId(rewriter, loc)(adaptor.getRef())[0];
-      } else if (mlir::isa<gsubop::EdgeRefType>(refType) || refType == convertedEdgeRefType) {
+      } else if (mlir::isa<gsubop::EdgeRefType>(refType) || isConverted(getEdgeEntryType(ctxt, propertyPayload))) {
          ident = rewriter.create<util::LoadElementOp>(loc, rewriter.getI32Type(), adaptor.getRef(), gsubop::RELATIONSHIP_ENTRY_RELATIONSHIP_TYPE_PTR);
       } else if (mlir::isa<gsubop::PropertyRefType>(refType)) {
          ident = rewriter.create<util::LoadElementOp>(loc, rewriter.getI32Type(), adaptor.getRef(), gsubop::PROPERTY_ENTRY_PROPERTY_KEY_PTR);
