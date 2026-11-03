@@ -175,7 +175,7 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::BasicGraphPatternOp::getUsedV
 
 lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getCreatedColumns() {
     auto created = getCreatedVariables();
-    if (auto degree = getDegreeAttr()) created.insert(degree.getColumnPtr().get());
+    if (auto degree = getTruthDegrAttr()) created.insert(degree.getColumnPtr().get());
     return created;
 }
 lingodb::compiler::dialect::relalg::ColumnSet gpm::TriplePatternOp::getUsedColumns() {

@@ -26,7 +26,7 @@ class GPM_RelAlgOp<string mnemonic, list<Trait> traits = []> : GPM_Op<"relalg." 
 
 def TriplePatternOp : GPM_RelAlgOp<"triple_pattern", [Pure,GPMOperator,Operator,UnaryOperator,DeclareOpInterfaceMethods<Parameterizable>]> {
   let summary = "triple pattern";
-  let arguments = (ins TupleStream:$rel, ColumnRefAttr:$graphRef, AnyAttr:$s, AnyAttr:$p, AnyAttr:$o, OptionalAttr<ColumnDefAttr>:$degree);
+  let arguments = (ins TupleStream:$rel, ColumnRefAttr:$graphRef, AnyAttr:$s, AnyAttr:$p, AnyAttr:$o, OptionalAttr<ColumnDefAttr>:$truthDegr);
   let results = (outs TupleStream:$res);
   let assemblyFormat = [{  $rel custom<CustRef>($graphRef) `(` custom<Term>($s) `,` custom<Term>($p) `,` custom<Term>($o) `)` attr-dict }];
   let hasVerifier = 1;
