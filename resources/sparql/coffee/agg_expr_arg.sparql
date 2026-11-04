@@ -1,0 +1,11 @@
+PREFIX ex: <http://example.org/>
+
+# Expression arguments; HAVING reuses the SELECT's SUM(?n * 2).
+SELECT ?food (SUM(?n * 2) AS ?s) (AVG(?n + 1) AS ?a) (MAX(-?n) AS ?m) (COUNT(DISTINCT ?n - ?n) AS ?zeros)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?food ex:portions ?n .
+    }
+}
+GROUP BY ?food
+HAVING (SUM(?n * 2) > 10)

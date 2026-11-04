@@ -146,14 +146,29 @@ def _normalize_nums(row):
     return tuple(('num', _num_key(c[1])) if c[0] == 'num' else c for c in row)
 
 
-def compare_rows(actual_raw_rows, expected_rows):
+def _sort_concat(row, unordered_concat):
+    """Canonicalize GROUP_CONCAT cells whose element order is engine-defined:
+    split by the separator, sort, re-join."""
+    row = list(row)
+    for col, sep in unordered_concat:
+        c = row[col]
+        if c[0] == 'str' and sep:
+            row[col] = ('str', sep.join(sorted(c[1].split(sep))))
+    return tuple(row)
+
+
+def compare_rows(actual_raw_rows, expected_rows, unordered_concat=()):
     """actual_raw_rows: list[list[str]] as returned by parse_table.
     expected_rows: list[list[tuple]] already-canonical rows (e.g. loaded
-    from a golden fixture, with blank nodes pre-numbered as small ints)."""
+    from a golden fixture, with blank nodes pre-numbered as small ints).
+    unordered_concat: [column_index, separator] pairs, see _sort_concat."""
     actual = [canonical_row(row) for row in actual_raw_rows]
     expected = [tuple(tuple(c) for c in row) for row in expected_rows]
     actual = [_normalize_nums(row) for row in actual]
     expected = [_normalize_nums(row) for row in expected]
+    if unordered_concat:
+        actual = [_sort_concat(row, unordered_concat) for row in actual]
+        expected = [_sort_concat(row, unordered_concat) for row in expected]
     if len(actual) != len(expected):
         return False, f"row count differs: actual={len(actual)} expected={len(expected)}"
     return rows_equal_bag(actual, expected)

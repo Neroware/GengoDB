@@ -1,0 +1,10 @@
+PREFIX ex: <http://example.org/>
+
+# GROUP BY an unaliased expression: both rows fall into one group. Expected: ?n = 2, ?s = 201.
+SELECT (COUNT(*) AS ?n) (SUM(?v) AS ?s)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?food ex:portions ?v .
+    }
+}
+GROUP BY (?v * 0)

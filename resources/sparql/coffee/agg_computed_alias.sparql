@@ -1,0 +1,11 @@
+PREFIX ex: <http://example.org/>
+
+# Computed aliases plus ORDER BY on an alias.
+SELECT ?who (COUNT(*) + 1 AS ?c) (COUNT(?food) * 2 AS ?d)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?who ex:eats ?food .
+    }
+}
+GROUP BY ?who
+ORDER BY DESC(?c)

@@ -1,0 +1,9 @@
+PREFIX ex: <http://example.org/>
+
+# SELECT expressions without aggregation.
+SELECT ?n (?n + 1 AS ?m) (-?m AS ?neg)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?food ex:portions ?n .
+    }
+}

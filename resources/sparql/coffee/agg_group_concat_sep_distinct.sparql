@@ -1,0 +1,13 @@
+PREFIX ex: <http://example.org/>
+
+# Custom separators, DISTINCT, and IRIs (concatenated by their string form).
+# oracle: unordered-concat ?whos ", "
+# oracle: unordered-concat ?all " ; "
+SELECT ?name (GROUP_CONCAT(DISTINCT ?who; SEPARATOR=", ") AS ?whos) (GROUP_CONCAT(?who ; SEPARATOR = " ; ") AS ?all)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?who ex:name ?name .
+        ?who ex:nickname ?nick .
+    }
+}
+GROUP BY ?name

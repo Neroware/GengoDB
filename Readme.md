@@ -34,7 +34,7 @@ This project is an extension of LingoDB for scientific purposes. Its goal is to 
 
 ## Work In Progress
 - **Graph Indexing:** Enable fast index lookups through graph sub-operators.
-- **Aggregates:** GengoDB still lacks aggregates for SPARQL queries.
+- **OpPaths & RDFS reasoning:** Reasoning over RDFS data at query time.
 - **Fuzzy RDF:** A fuzzy SPARQL frontend for GengoDB.
 
 ## Future Work In Social Robotics
