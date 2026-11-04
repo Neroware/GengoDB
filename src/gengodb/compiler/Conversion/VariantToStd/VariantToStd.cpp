@@ -773,27 +773,11 @@ class ArithOpLowering : public OpConversionPattern<variant::ArithOp> {
         auto [rhsTag, rhsRef] = unpackVariant(rewriter, loc, adaptor.getRhs());
         Value sameTag = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lhsTag, rhsTag);
         auto predicate = op.getPredicate();
-
-        // Runtime-call fallback via rdf4cpp API
-        auto slowArith = [&](OpBuilder& b, Location l) -> Value {
-            Value predConst = constI32(b, l, static_cast<int32_t>(predicate));
-            Value lhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), lhsRef);
-            Value rhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), rhsRef);
-            Value outSlot = allocStack(rewriter, op, b.getIntegerType(8), 8);
-            Value resultTag = rt::VariantRuntime::arithNumericCross(b, l)({lhsPayload, lhsTag, rhsPayload, rhsTag, predConst, outSlot})[0];
-            return packVariant(b, l, resultTag, inlineFromScratch(b, l, outSlot));
-        };
-
+        
         Value integerTagConst = constI32(rewriter, loc, xsd::to_int32(xsd::Type::Integer));
         Value decimalTagConst = constI32(rewriter, loc, xsd::to_int32(xsd::Type::Decimal));
-        auto isBlobNumericTag = [&](Value tag) -> Value {
-            Value isInt = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, tag, integerTagConst);
-            Value isDec = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, tag, decimalTagConst);
-            return rewriter.create<arith::OrIOp>(loc, isInt, isDec);
-        };
-        Value eitherBlobNumeric = rewriter.create<arith::OrIOp>(loc, isBlobNumericTag(lhsTag), isBlobNumericTag(rhsTag));
 
-        auto blobNumericArith = [&](OpBuilder& b, Location l) -> Value {
+        auto slowFallback = [&](OpBuilder& b, Location l) -> Value {
             Value predConst = constI32(b, l, static_cast<int32_t>(predicate));
             Value lhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), lhsRef);
             Value rhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), rhsRef);
@@ -818,11 +802,6 @@ class ArithOpLowering : public OpConversionPattern<variant::ArithOp> {
                     b2.create<scf::YieldOp>(l2, packVariant(b2, l2, resultTag, inlineFromScratch(b2, l2, outSlot)));
                 });
             return packed.getResult(0);
-        };
-
-        auto slowFallback = [&](OpBuilder& b, Location l) -> Value {
-            std::vector<TagCase> blobNumericCase = {{eitherBlobNumeric, blobNumericArith}};
-            return dispatchOnTag(b, l, blobNumericCase, slowArith);
         };
 
         // Same-tag fast paths for fixed sized scalars up to 8 bytes.

@@ -450,17 +450,6 @@ int64_t VariantRuntime::hashNumeric(int64_t payload, int32_t tag) {
     return bits;
 }
 
-int32_t VariantRuntime::arithNumericCross(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag, int32_t predicate, uint8_t* outPtr) {
-    auto lhsLit = getLiteralFromNumeric(reinterpret_cast<uint8_t*>(&lhsPayload), lhsTag);
-    auto rhsLit = getLiteralFromNumeric(reinterpret_cast<uint8_t*>(&rhsPayload), rhsTag);
-    if (lhsLit.null() || rhsLit.null()) return xsd::to_int32(xsd::Type::Unspecified);
-    auto result = applyArith(lhsLit, rhsLit, predicate);
-    if (result.null()) return xsd::to_int32(xsd::Type::Unspecified);
-    auto resultTag = static_cast<int32_t>(xsd::from_iri(result.datatype()));
-    if (!extractNumericByTag(result, resultTag, outPtr)) return xsd::to_int32(xsd::Type::Unspecified);
-    return resultTag;
-}
-
 int8_t VariantRuntime::compareOrder(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag) {
     const bool lhsIsEdge = lhsTag == xsd::to_int32(xsd::Type::Edge);
     const bool rhsIsEdge = rhsTag == xsd::to_int32(xsd::Type::Edge);

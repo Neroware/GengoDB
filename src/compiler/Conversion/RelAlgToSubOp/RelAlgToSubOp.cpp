@@ -2502,6 +2502,134 @@ class SumAggrFunc : public DistAggrFunc {
       }
    }
 };
+
+// ---------------------------------------------------------------------------
+// Aggregate functions over GPM/RDF terms (!variant.variant)
+// ---------------------------------------------------------------------------
+
+class VariantMinMaxAggrFunc : public DistAggrFunc {
+   bool isMax;
+
+   mlir::Value asNullableState(mlir::OpBuilder& builder, mlir::Location loc, mlir::Value v) {
+      if (mlir::isa<db::NullableType>(v.getType())) return v;
+      return builder.create<db::AsNullableOp>(loc, stateType, v);
+   }
+   mlir::Value pick(mlir::OpBuilder& builder, mlir::Location loc, mlir::Value current, mlir::Value candidate) {
+      mlir::Value cand = asNullableState(builder, loc, candidate);
+      mlir::Value isCurNull = builder.create<db::IsNullOp>(loc, current);
+      mlir::Value isCandNull = builder.create<db::IsNullOp>(loc, cand);
+      mlir::Value anyNull = builder.create<mlir::arith::OrIOp>(loc, isCurNull, isCandNull);
+      auto ifOp = builder.create<mlir::scf::IfOp>(
+         loc, anyNull,
+         [&](mlir::OpBuilder& b, mlir::Location l) {
+            mlir::Value trueVal = b.create<mlir::arith::ConstantIntOp>(l, 1, 1);
+            mlir::Value candNotNull = b.create<mlir::arith::XOrIOp>(l, isCandNull, trueVal);
+            b.create<mlir::scf::YieldOp>(l, candNotNull);
+         },
+         [&](mlir::OpBuilder& b, mlir::Location l) {
+            mlir::Value curRaw = b.create<db::NullableGetVal>(l, current);
+            mlir::Value candRaw = b.create<db::NullableGetVal>(l, cand);
+            mlir::Value ord = b.create<variant::OrderOp>(l, b.getI8Type(), candRaw, curRaw);
+            mlir::Value zero = b.create<mlir::arith::ConstantIntOp>(l, 0, 8);
+            mlir::Value better = b.create<mlir::arith::CmpIOp>(l, isMax ? mlir::arith::CmpIPredicate::sgt : mlir::arith::CmpIPredicate::slt, ord, zero);
+            b.create<mlir::scf::YieldOp>(l, better);
+         });
+      return builder.create<mlir::arith::SelectOp>(loc, ifOp.getResult(0), cand, current);
+   }
+
+   public:
+   VariantMinMaxAggrFunc(const tuples::ColumnDefAttr& destAttribute, const tuples::ColumnRefAttr& sourceColumn, bool isMax) : DistAggrFunc(destAttribute, sourceColumn), isMax(isMax) {
+      assert(mlir::isa<db::NullableType>(stateType) && "variant MIN/MAX state must be nullable");
+   }
+   mlir::Value createDefaultValue(mlir::OpBuilder& builder, mlir::Location loc) override {
+      return builder.create<db::NullOp>(loc, stateType);
+   }
+   mlir::Value aggregate(mlir::OpBuilder& builder, mlir::Location loc, mlir::Value state, mlir::ValueRange args) override {
+      return pick(builder, loc, state, args[0]);
+   }
+   mlir::Value combine(mlir::OpBuilder& builder, mlir::Location loc, mlir::Value left, mlir::Value right) override {
+      return pick(builder, loc, left, right);
+   }
+};
+
+class VariantSumAggrFunc : public DistAggrFunc {
+   mlir::Value add(mlir::OpBuilder& builder, mlir::Location loc, mlir::Value l, mlir::Value r) {
+      return builder.create<variant::ArithOp>(loc, variant::VariantType::get(builder.getContext()), variant::VariantArithPredicate::add, l, r);
+   }
+
+   public:
+   VariantSumAggrFunc(const tuples::ColumnDefAttr& destAttribute, const tuples::ColumnRefAttr& sourceColumn) : DistAggrFunc(destAttribute, sourceColumn) {
+      assert(mlir::isa<variant::VariantType>(stateType) && "variant SUM state must be a non-nullable variant");
+   }
+   mlir::Value createDefaultValue(mlir::OpBuilder& builder, mlir::Location loc) override {
+      mlir::Value zero = builder.create<mlir::arith::ConstantIntOp>(loc, 0, 64);
+      return builder.create<variant::CreateScalarOp>(loc, stateType, zero);
+   }
+   mlir::Value aggregate(mlir::OpBuilder& builder, mlir::Location loc, mlir::Value state, mlir::ValueRange args) override {
+      mlir::Value arg = args[0];
+      if (!mlir::isa<db::NullableType>(arg.getType())) return add(builder, loc, state, arg);
+      mlir::Value isNull = builder.create<db::IsNullOp>(loc, arg);
+      auto ifOp = builder.create<mlir::scf::IfOp>(
+         loc, isNull,
+         [&](mlir::OpBuilder& b, mlir::Location l) { b.create<mlir::scf::YieldOp>(l, state); },
+         [&](mlir::OpBuilder& b, mlir::Location l) {
+            mlir::Value raw = b.create<db::NullableGetVal>(l, arg);
+            b.create<mlir::scf::YieldOp>(l, add(b, l, state, raw));
+         });
+      return ifOp.getResult(0);
+   }
+   mlir::Value combine(mlir::OpBuilder& builder, mlir::Location loc, mlir::Value left, mlir::Value right) override {
+      return add(builder, loc, left, right);
+   }
+};
+
+class VariantSampleAggrFunc : public DistAggrFunc {
+   public:
+   VariantSampleAggrFunc(const tuples::ColumnDefAttr& destAttribute, const tuples::ColumnRefAttr& sourceColumn) : DistAggrFunc(destAttribute, sourceColumn) {
+      assert(mlir::isa<db::NullableType>(stateType) && "variant SAMPLE state must be nullable");
+   }
+   mlir::Value createDefaultValue(mlir::OpBuilder& builder, mlir::Location loc) override {
+      return builder.create<db::NullOp>(loc, stateType);
+   }
+   mlir::Value aggregate(mlir::OpBuilder& builder, mlir::Location loc, mlir::Value state, mlir::ValueRange args) override {
+      mlir::Value arg = args[0];
+      if (!mlir::isa<db::NullableType>(arg.getType())) {
+         return builder.create<db::AsNullableOp>(loc, stateType, arg);
+      }
+      mlir::Value isArgNull = builder.create<db::IsNullOp>(loc, arg);
+      return builder.create<mlir::arith::SelectOp>(loc, isArgNull, state, arg);
+   }
+   mlir::Value combine(mlir::OpBuilder& builder, mlir::Location loc, mlir::Value left, mlir::Value right) override {
+      mlir::Value isLeftNull = builder.create<db::IsNullOp>(loc, left);
+      return builder.create<mlir::arith::SelectOp>(loc, isLeftNull, right, left);
+   }
+};
+
+static std::shared_ptr<DistAggrFunc> createDistAggrFunc(relalg::AggrFuncOp aggrFn, const tuples::ColumnDefAttr& destColumnAttr) {
+   auto sourceColumnAttr = aggrFn.getAttr();
+   mlir::Type destType = destColumnAttr.getColumn().type;
+   bool variantState = mlir::isa<variant::VariantType>(stripNullable(destType));
+   bool nullableVariantState = variantState && mlir::isa<db::NullableType>(destType);
+   switch (aggrFn.getFn()) {
+      case relalg::AggrFunc::sum:
+         if (variantState) return std::make_shared<VariantSumAggrFunc>(destColumnAttr, sourceColumnAttr);
+         return std::make_shared<SumAggrFunc>(destColumnAttr, sourceColumnAttr);
+      case relalg::AggrFunc::min:
+         if (variantState) return std::make_shared<VariantMinMaxAggrFunc>(destColumnAttr, sourceColumnAttr, /*isMax=*/false);
+         return std::make_shared<MinAggrFunc>(destColumnAttr, sourceColumnAttr);
+      case relalg::AggrFunc::max:
+         if (variantState) return std::make_shared<VariantMinMaxAggrFunc>(destColumnAttr, sourceColumnAttr, /*isMax=*/true);
+         return std::make_shared<MaxAggrFunc>(destColumnAttr, sourceColumnAttr);
+      case relalg::AggrFunc::any:
+         if (nullableVariantState) return std::make_shared<VariantSampleAggrFunc>(destColumnAttr, sourceColumnAttr);
+         return std::make_shared<AnyAggrFunc>(destColumnAttr, sourceColumnAttr);
+      case relalg::AggrFunc::count:
+         return std::make_shared<CountAggrFunc>(destColumnAttr, sourceColumnAttr);
+      default:
+         return nullptr;
+   }
+}
+
 class OrderedWindowFunc {
    protected:
    tuples::ColumnDefAttr destAttribute;
@@ -2690,18 +2818,7 @@ class WindowLowering : public OpConversionPattern<relalg::WindowOp> {
          std::shared_ptr<DistAggrFunc> distAggrFunc;
          if (auto aggrFn = mlir::dyn_cast_or_null<relalg::AggrFuncOp>(computedVal.getDefiningOp())) {
             tupleStream = aggrFn.getRel();
-            auto sourceColumnAttr = aggrFn.getAttr();
-            if (aggrFn.getFn() == relalg::AggrFunc::sum) {
-               distAggrFunc = std::make_shared<SumAggrFunc>(destColumnAttr, sourceColumnAttr);
-            } else if (aggrFn.getFn() == relalg::AggrFunc::min) {
-               distAggrFunc = std::make_shared<MinAggrFunc>(destColumnAttr, sourceColumnAttr);
-            } else if (aggrFn.getFn() == relalg::AggrFunc::max) {
-               distAggrFunc = std::make_shared<MaxAggrFunc>(destColumnAttr, sourceColumnAttr);
-            } else if (aggrFn.getFn() == relalg::AggrFunc::any) {
-               distAggrFunc = std::make_shared<AnyAggrFunc>(destColumnAttr, sourceColumnAttr);
-            } else if (aggrFn.getFn() == relalg::AggrFunc::count) {
-               distAggrFunc = std::make_shared<CountAggrFunc>(destColumnAttr, sourceColumnAttr);
-            }
+            distAggrFunc = createDistAggrFunc(aggrFn, destColumnAttr);
          }
          if (auto countOp = mlir::dyn_cast_or_null<relalg::CountRowsOp>(computedVal.getDefiningOp())) {
             tupleStream = countOp.getRel();
@@ -3047,26 +3164,8 @@ class AggregationLowering : public OpConversionPattern<relalg::AggregationOp> {
          std::shared_ptr<DistAggrFunc> distAggrFunc;
          if (auto aggrFn = mlir::dyn_cast_or_null<relalg::AggrFuncOp>(computedVal.getDefiningOp())) {
             tupleStream = aggrFn.getRel();
-            auto sourceColumnAttr = aggrFn.getAttr();
-            switch (aggrFn.getFn()) {
-               case relalg::AggrFunc::sum:
-                  distAggrFunc = std::make_shared<SumAggrFunc>(destColumnAttr, sourceColumnAttr);
-                  break;
-               case relalg::AggrFunc::min:
-                  distAggrFunc = std::make_shared<MinAggrFunc>(destColumnAttr, sourceColumnAttr);
-                  break;
-               case relalg::AggrFunc::max:
-                  distAggrFunc = std::make_shared<MaxAggrFunc>(destColumnAttr, sourceColumnAttr);
-                  break;
-               case relalg::AggrFunc::any:
-                  distAggrFunc = std::make_shared<AnyAggrFunc>(destColumnAttr, sourceColumnAttr);
-                  break;
-               case relalg::AggrFunc::count:
-                  distAggrFunc = std::make_shared<CountAggrFunc>(destColumnAttr, sourceColumnAttr);
-                  break;
-               default:
-                  assert(false && "Aggregation Function is not implemented");
-            }
+            distAggrFunc = createDistAggrFunc(aggrFn, destColumnAttr);
+            assert(distAggrFunc && "Aggregation Function is not implemented");
          }
          if (auto countOp = mlir::dyn_cast_or_null<relalg::CountRowsOp>(computedVal.getDefiningOp())) {
             tupleStream = countOp.getRel();
@@ -3175,18 +3274,7 @@ class GroupJoinLowering : public OpConversionPattern<relalg::GroupJoinOp> {
          std::shared_ptr<DistAggrFunc> distAggrFunc;
          if (auto aggrFn = mlir::dyn_cast_or_null<relalg::AggrFuncOp>(computedVal.getDefiningOp())) {
             tupleStream = aggrFn.getRel();
-            auto sourceColumnAttr = aggrFn.getAttr();
-            if (aggrFn.getFn() == relalg::AggrFunc::sum) {
-               distAggrFunc = std::make_shared<SumAggrFunc>(destColumnAttr, sourceColumnAttr);
-            } else if (aggrFn.getFn() == relalg::AggrFunc::min) {
-               distAggrFunc = std::make_shared<MinAggrFunc>(destColumnAttr, sourceColumnAttr);
-            } else if (aggrFn.getFn() == relalg::AggrFunc::max) {
-               distAggrFunc = std::make_shared<MaxAggrFunc>(destColumnAttr, sourceColumnAttr);
-            } else if (aggrFn.getFn() == relalg::AggrFunc::any) {
-               distAggrFunc = std::make_shared<AnyAggrFunc>(destColumnAttr, sourceColumnAttr);
-            } else if (aggrFn.getFn() == relalg::AggrFunc::count) {
-               distAggrFunc = std::make_shared<CountAggrFunc>(destColumnAttr, sourceColumnAttr);
-            }
+            distAggrFunc = createDistAggrFunc(aggrFn, destColumnAttr);
          }
          if (auto countOp = mlir::dyn_cast_or_null<relalg::CountRowsOp>(computedVal.getDefiningOp())) {
             tupleStream = countOp.getRel();
