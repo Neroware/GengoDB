@@ -66,11 +66,17 @@ def normalize_rows(rows):
     return [[("bnode", idx[c[1]]) if c[0] == "bnode" else list(c) for c in row] for row in rows]
 
 
-def write_golden(out_path, rows):
+def write_golden(out_path, rows, unordered_concat=None):
     """rows: list of tuples of already-term_key'd cells. Writes the
-    normalized fixture as JSON and returns the row count."""
+    normalized fixture as JSON and returns the row count.
+
+    unordered_concat: optional list of [column_index, separator] pairs for
+    GROUP_CONCAT columns whose element order is engine-defined. If given, the
+    fixture is written as {"rows": [...], "unordered_concat": [...]} instead
+    of a bare row list (check_result.py accepts both)."""
     norm_rows = normalize_rows(rows)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    payload = {"rows": norm_rows, "unordered_concat": unordered_concat} if unordered_concat else norm_rows
     with open(out_path, "w") as f:
-        json.dump(norm_rows, f, indent=1)
+        json.dump(payload, f, indent=1)
     return len(rows)

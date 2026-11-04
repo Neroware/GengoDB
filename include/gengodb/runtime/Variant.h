@@ -26,6 +26,7 @@ struct VariantRuntime {
     static VarLen32 toStringNumeric(int64_t payload, int32_t tag);
     static VarLen32 toStringNodeRef(PropertyGraph::NodeEntry* ref);
     static VarLen32 toStringBlobLiteral(PropertyGraph::NodeEntry* ref);
+    static VarLen32 toStringFullNodeRef(PropertyGraph::NodeEntry* ref);
     static VarLen32 toStringFull(int64_t payload, int32_t tag);
 
     // AnyLiteralScalar payload ([u32 dtIriLen][dtIriBytes][lexicalBytes])
@@ -44,15 +45,16 @@ struct VariantRuntime {
     // Rare-tag literal comparison fallback (needs full XSD value semantics).
     static int8_t compareBlobLiteral(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag, int32_t predicate);
 
-    // Cross-tag numeric comparison/arithmetic: tag + raw bytes -> rdf4cpp::Literal
+    // Cross-tag numeric comparison: tag + raw bytes -> rdf4cpp::Literal
     // via compile-time datatype tags, no IRI/graph lookup involved; genuinely
     // needs rdf4cpp for XSD numeric promotion rules.
     static int8_t compareNumericCross(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag, int32_t predicate);
-    static int32_t arithNumericCross(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag, int32_t predicate, uint8_t* outPtr);
 
-    // Arithmetic where either operand is xsd:Integer or xsd:Decimal (both
-    // arbitrary-precision, blob-shaped) and the other is one of those two or a
-    // fixed-numeric-family member.
+    // Slow-path numeric arithmetic (everything except same-tag fixed-width ops):
+    // operands may be any fixed-numeric-family member or xsd:Integer/xsd:Decimal
+    // (arbitrary-precision, varlen). Fixed-width results are written to outPtr,
+    // xsd:Integer/xsd:Decimal results (which XSD promotion can also produce from
+    // two fixed-width inputs) to outBlob.
     static int32_t arithBlobNumeric(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag, int32_t predicate, uint8_t* outPtr, VarLen32* outBlob);
 
     // Canonicalizing hash for the fixed/inline numeric family

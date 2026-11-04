@@ -1,0 +1,9 @@
+PREFIX ex: <http://example.org/>
+
+# SUM/AVG across xsd:int and xsd:double (numeric type promotion).
+SELECT (SUM(?v) AS ?sum) (AVG(?v) AS ?avg) (COUNT(?v) AS ?n)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        { ?x ex:portions ?v } UNION { ?x ex:age ?v } UNION { ?x ex:price ?v }
+    }
+}

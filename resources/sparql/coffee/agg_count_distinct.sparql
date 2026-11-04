@@ -1,0 +1,10 @@
+PREFIX ex: <http://example.org/>
+
+# COUNT vs. COUNT(DISTINCT) on the same and on different arguments.
+SELECT ?p (COUNT(?s) AS ?n) (COUNT(DISTINCT ?s) AS ?subjects) (COUNT(DISTINCT ?o) AS ?objects) (COUNT(DISTINCT *) AS ?rows)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?s ?p ?o .
+    }
+}
+GROUP BY ?p

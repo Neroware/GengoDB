@@ -49,8 +49,12 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")
 GOLDEN_DIR = os.path.join(os.path.dirname(__file__), "golden")
 
 COFFEE_GRAPH_IRI = "file://resources/ttl/coffee/coffee.ttl#rdf"
-SKIP = {"bsbm/9.sparql", "bsbm/12.sparql"}  # DESCRIBE / CONSTRUCT -- not a row-table result
+SKIP = {"bsbm/9.sparql", "bsbm/12.sparql"}  # DESCRIBE / CONSTRUCT not yet supported
+# list of exclusions, due to rdflib issues
+SKIP_RDFLIB = {"coffee/agg_expr_arg_error.sparql", "coffee/agg_group_by_expr_noalias.sparql",
+               "coffee/agg_computed_alias_chain.sparql"}
 TRUTH_OF_RE = re.compile(r"\bTRUTH\s+OF\b", re.IGNORECASE)  # fuzzy extension, not standard SPARQL
+UNORDERED_CONCAT_RE = re.compile(r'^#\s*oracle:\s*unordered-concat\s+\?(\w+)\s+"((?:[^"\\]|\\.)*)"\s*$', re.MULTILINE)
 
 
 def load_coffee():
@@ -76,14 +80,24 @@ def main():
             if rel in SKIP:
                 print(f"skip {rel} (CONSTRUCT/DESCRIBE, not a row-table result)")
                 continue
+            if rel in SKIP_RDFLIB:
+                print(f"skip {rel} (rdflib bug, no independent oracle)")
+                continue
             with open(path) as f:
                 query_text = f.read()
             if TRUTH_OF_RE.search(query_text):
                 print(f"skip {rel} (TRUTH OF extension, not standard SPARQL)")
                 continue
-            rows = [tuple(golden.term_key(t) for t in row) for row in store.query(query_text)]
+            result = store.query(query_text)
+            rows = [tuple(golden.term_key(t) for t in row) for row in result]
+            result_vars = [str(v) for v in result.vars]
+            unordered = []
+            for var, sep in UNORDERED_CONCAT_RE.findall(query_text):
+                if var not in result_vars:
+                    sys.exit(f"{rel}: unordered-concat directive names ?{var}, which is not projected")
+                unordered.append([result_vars.index(var), sep.encode().decode("unicode_escape")])
             out_path = os.path.join(GOLDEN_DIR, f"{category}__{name}.json")
-            n = golden.write_golden(out_path, rows)
+            n = golden.write_golden(out_path, rows, unordered or None)
             print(f"wrote {out_path} ({n} rows)")
 
 

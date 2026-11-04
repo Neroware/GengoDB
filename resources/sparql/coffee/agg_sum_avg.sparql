@@ -1,0 +1,9 @@
+PREFIX ex: <http://example.org/>
+
+SELECT ?food (SUM(?n) AS ?sum) (AVG(?n) AS ?avg) (SUM(DISTINCT ?n) AS ?dsum)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?food ex:portions ?n .
+    }
+}
+GROUP BY ?food

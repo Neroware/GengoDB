@@ -1,0 +1,10 @@
+PREFIX ex: <http://example.org/>
+
+# Rows whose grouping expression errors share a single unbound-key group.
+SELECT ?k (COUNT(*) AS ?n)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ex:bob ?p ?v .
+    }
+}
+GROUP BY (?v + 0 AS ?k)

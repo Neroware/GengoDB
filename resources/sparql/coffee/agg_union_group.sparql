@@ -1,0 +1,10 @@
+PREFIX ex: <http://example.org/>
+
+# ?eater is unbound in the second branch: those rows form their own group.
+SELECT ?eater (COUNT(*) AS ?n)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        { ?eater ex:eats ?o } UNION { ?drinker ex:drinks ?o }
+    }
+}
+GROUP BY ?eater

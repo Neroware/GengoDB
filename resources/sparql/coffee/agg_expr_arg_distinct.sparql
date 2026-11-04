@@ -1,0 +1,9 @@
+PREFIX ex: <http://example.org/>
+
+# DISTINCT over an expression argument: both names are "Bob".
+SELECT (COUNT(DISTINCT STR(?name)) AS ?distinctNames) (COUNT(STR(?name)) AS ?names)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?who ex:name ?name .
+    }
+}

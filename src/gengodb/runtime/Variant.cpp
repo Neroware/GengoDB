@@ -366,6 +366,15 @@ VarLen32 VariantRuntime::toStringNumeric(int64_t payload, int32_t tag) {
 VarLen32 VariantRuntime::toStringNodeRef(PropertyGraph::NodeEntry* ref) {
     PropertyGraph* pgraph = propertyGraphOf(ref);
     const int32_t localId = GraphStorage::nodeId(reinterpret_cast<uint8_t*>(ref));
+    std::string name = pgraph->getMetadata().get_node_name(localId);
+    if (name.size() >= 2 && name.front() == '<' && name.back() == '>')
+        name = name.substr(1, name.size() - 2);
+    return VarLen32::fromString(std::move(name));
+}
+
+VarLen32 VariantRuntime::toStringFullNodeRef(PropertyGraph::NodeEntry* ref) {
+    PropertyGraph* pgraph = propertyGraphOf(ref);
+    const int32_t localId = GraphStorage::nodeId(reinterpret_cast<uint8_t*>(ref));
     return VarLen32::fromString(pgraph->getMetadata().get_node_name(localId));
 }
 
@@ -448,17 +457,6 @@ int64_t VariantRuntime::hashNumeric(int64_t payload, int32_t tag) {
     int64_t bits;
     std::memcpy(&bits, &*asDouble, sizeof(bits));
     return bits;
-}
-
-int32_t VariantRuntime::arithNumericCross(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag, int32_t predicate, uint8_t* outPtr) {
-    auto lhsLit = getLiteralFromNumeric(reinterpret_cast<uint8_t*>(&lhsPayload), lhsTag);
-    auto rhsLit = getLiteralFromNumeric(reinterpret_cast<uint8_t*>(&rhsPayload), rhsTag);
-    if (lhsLit.null() || rhsLit.null()) return xsd::to_int32(xsd::Type::Unspecified);
-    auto result = applyArith(lhsLit, rhsLit, predicate);
-    if (result.null()) return xsd::to_int32(xsd::Type::Unspecified);
-    auto resultTag = static_cast<int32_t>(xsd::from_iri(result.datatype()));
-    if (!extractNumericByTag(result, resultTag, outPtr)) return xsd::to_int32(xsd::Type::Unspecified);
-    return resultTag;
 }
 
 int8_t VariantRuntime::compareOrder(int64_t lhsPayload, int32_t lhsTag, int64_t rhsPayload, int32_t rhsTag) {

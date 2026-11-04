@@ -1,0 +1,11 @@
+PREFIX ex: <http://example.org/>
+
+# anna's cup has no ex:size: COUNT 0, SUM 0, AVG 0, MIN/SAMPLE unbound.
+SELECT ?who (COUNT(?size) AS ?n) (COUNT(*) AS ?rows) (SUM(?size) AS ?sum) (AVG(?size) AS ?avg) (MIN(?size) AS ?min) (SAMPLE(?size) AS ?any)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?who ex:cup ?cup .
+        OPTIONAL { ?cup ex:size ?size }
+    }
+}
+GROUP BY ?who

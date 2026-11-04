@@ -1,0 +1,9 @@
+PREFIX ex: <http://example.org/>
+
+# Arithmetic over several aggregates.
+SELECT (SUM(?n) / COUNT(?n) AS ?mean) (AVG(?n) AS ?avg) (MAX(?n) - MIN(?n) AS ?range)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?food ex:portions ?n .
+    }
+}

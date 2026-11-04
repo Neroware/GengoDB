@@ -1,0 +1,12 @@
+PREFIX ex: <http://example.org/>
+
+# Argument expressions that error for some rows (non-numeric ?v): COUNT skips errors,
+# an error poisons SUM. Expected: ?n = 0 and ?s unbound for ex:drinks, ex:eats, ex:name,
+# ex:nickname, ex:awake, ex:birthday, ex:cup; ?n = 1 and ?s = the value otherwise.
+SELECT ?p (COUNT(?v + 0) AS ?n) (SUM(?v * 1) AS ?s)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ex:bob ?p ?v .
+    }
+}
+GROUP BY ?p

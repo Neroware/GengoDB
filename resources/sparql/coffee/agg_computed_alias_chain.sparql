@@ -1,0 +1,11 @@
+PREFIX ex: <http://example.org/>
+
+# A SELECT expression referencing an earlier aggregate alias (spec: Extend is applied left to right).
+# Expected: bob 6 12, steve 3 6, anna 2 4.
+SELECT ?who (COUNT(*) + 1 AS ?c) (?c * 2 AS ?d)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?who ex:eats ?food .
+    }
+}
+GROUP BY ?who

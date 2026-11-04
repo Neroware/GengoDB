@@ -1,0 +1,11 @@
+PREFIX ex: <http://example.org/>
+
+# GROUP_CONCAT with the default separator; language tags are dropped.
+# oracle: unordered-concat ?nicks " "
+SELECT ?who (GROUP_CONCAT(?nick) AS ?nicks)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?who ex:nickname ?nick .
+    }
+}
+GROUP BY ?who

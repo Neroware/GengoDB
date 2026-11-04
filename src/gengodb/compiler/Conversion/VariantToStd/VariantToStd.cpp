@@ -448,7 +448,7 @@ Value computeFullForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value tag, 
             auto result = b1.create<scf::IfOp>(
                 l1, tp.isNode,
                 [&](OpBuilder& b2, Location l2) {
-                    b2.create<scf::YieldOp>(l2, rt::VariantRuntime::toStringNodeRef(b2, l2)({ref})[0]);
+                    b2.create<scf::YieldOp>(l2, rt::VariantRuntime::toStringFullNodeRef(b2, l2)({ref})[0]);
                 },
                 [&](OpBuilder& b2, Location l2) {
                     auto ifIri = b2.create<scf::IfOp>(
@@ -540,6 +540,26 @@ class StrCastOpLowering : public OpConversionPattern<variant::StrCastOp> {
         Value scratch = allocScratch(rewriter, loc, getVarlen32Type(ctxt));
         Value typedScratch = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, getVarlen32Type(ctxt)), scratch);
         rewriter.create<util::StoreOp>(loc, lex, typedScratch, Value());
+        Value strTag = constI32(rewriter, loc, xsd::to_int32(xsd::Type::String));
+        rewriter.replaceOp(op, packVariant(rewriter, loc, strTag, scratch));
+        return success();
+    }
+};
+
+class ConcatOpLowering : public OpConversionPattern<variant::ConcatOp> {
+    public:
+    using OpConversionPattern<variant::ConcatOp>::OpConversionPattern;
+    LogicalResult matchAndRewrite(variant::ConcatOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+        auto loc = op->getLoc();
+        auto* ctxt = getContext();
+        auto [lhsTag, lhsRef] = unpackVariant(rewriter, loc, adaptor.getLhs());
+        Value lhsLex = computeLexicalForm(rewriter, loc, ctxt, lhsTag, lhsRef);
+        auto [rhsTag, rhsRef] = unpackVariant(rewriter, loc, adaptor.getRhs());
+        Value rhsLex = computeLexicalForm(rewriter, loc, ctxt, rhsTag, rhsRef);
+        Value cat = rt::StringRuntime::concat(rewriter, loc)({lhsLex, rhsLex})[0];
+        Value scratch = allocScratch(rewriter, loc, getVarlen32Type(ctxt));
+        Value typedScratch = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, getVarlen32Type(ctxt)), scratch);
+        rewriter.create<util::StoreOp>(loc, cat, typedScratch, Value());
         Value strTag = constI32(rewriter, loc, xsd::to_int32(xsd::Type::String));
         rewriter.replaceOp(op, packVariant(rewriter, loc, strTag, scratch));
         return success();
@@ -773,27 +793,11 @@ class ArithOpLowering : public OpConversionPattern<variant::ArithOp> {
         auto [rhsTag, rhsRef] = unpackVariant(rewriter, loc, adaptor.getRhs());
         Value sameTag = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lhsTag, rhsTag);
         auto predicate = op.getPredicate();
-
-        // Runtime-call fallback via rdf4cpp API
-        auto slowArith = [&](OpBuilder& b, Location l) -> Value {
-            Value predConst = constI32(b, l, static_cast<int32_t>(predicate));
-            Value lhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), lhsRef);
-            Value rhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), rhsRef);
-            Value outSlot = allocStack(rewriter, op, b.getIntegerType(8), 8);
-            Value resultTag = rt::VariantRuntime::arithNumericCross(b, l)({lhsPayload, lhsTag, rhsPayload, rhsTag, predConst, outSlot})[0];
-            return packVariant(b, l, resultTag, inlineFromScratch(b, l, outSlot));
-        };
-
+        
         Value integerTagConst = constI32(rewriter, loc, xsd::to_int32(xsd::Type::Integer));
         Value decimalTagConst = constI32(rewriter, loc, xsd::to_int32(xsd::Type::Decimal));
-        auto isBlobNumericTag = [&](Value tag) -> Value {
-            Value isInt = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, tag, integerTagConst);
-            Value isDec = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, tag, decimalTagConst);
-            return rewriter.create<arith::OrIOp>(loc, isInt, isDec);
-        };
-        Value eitherBlobNumeric = rewriter.create<arith::OrIOp>(loc, isBlobNumericTag(lhsTag), isBlobNumericTag(rhsTag));
 
-        auto blobNumericArith = [&](OpBuilder& b, Location l) -> Value {
+        auto slowFallback = [&](OpBuilder& b, Location l) -> Value {
             Value predConst = constI32(b, l, static_cast<int32_t>(predicate));
             Value lhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), lhsRef);
             Value rhsPayload = b.create<util::PtrToIntOp>(l, b.getI64Type(), rhsRef);
@@ -818,11 +822,6 @@ class ArithOpLowering : public OpConversionPattern<variant::ArithOp> {
                     b2.create<scf::YieldOp>(l2, packVariant(b2, l2, resultTag, inlineFromScratch(b2, l2, outSlot)));
                 });
             return packed.getResult(0);
-        };
-
-        auto slowFallback = [&](OpBuilder& b, Location l) -> Value {
-            std::vector<TagCase> blobNumericCase = {{eitherBlobNumeric, blobNumericArith}};
-            return dispatchOnTag(b, l, blobNumericCase, slowArith);
         };
 
         // Same-tag fast paths for fixed sized scalars up to 8 bytes.
@@ -903,6 +902,7 @@ struct VariantToStdLoweringPass
         patterns.insert<VariantGetValOpLowering>(typeConverter, ctxt);
         patterns.insert<ToStringOpLowering>(typeConverter, ctxt);
         patterns.insert<StrCastOpLowering>(typeConverter, ctxt);
+        patterns.insert<ConcatOpLowering>(typeConverter, ctxt);
         patterns.insert<LangCastOpLowering>(typeConverter, ctxt, PatternBenefit(2));
         patterns.insert<CastOpLowering>(typeConverter, ctxt);
         patterns.insert<CmpOpLowering>(typeConverter, ctxt);

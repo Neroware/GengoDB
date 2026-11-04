@@ -1,0 +1,10 @@
+PREFIX ex: <http://example.org/>
+
+# No solutions + implicit grouping: still exactly one result row.
+SELECT (COUNT(*) AS ?n) (COUNT(?v) AS ?c) (SUM(?v) AS ?sum) (AVG(?v) AS ?avg) (MIN(?v) AS ?min) (MAX(?v) AS ?max)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?x ex:portions ?v .
+        ?x ex:drinks ?v .
+    }
+}

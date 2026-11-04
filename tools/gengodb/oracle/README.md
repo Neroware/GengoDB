@@ -14,6 +14,39 @@ real `.sparql` query files under `resources/sparql/`, run against `resources/ttl
 - `mlir-oracle.sh` / `sparql-oracle.sh` — invoke `check_result.py` automatically for any snippet/query that has a matching `golden/<category>__<name>.json` file (name includes the `.mlir`/`.sparql` extension), in addition to their existing crash check. A snippet/query can now fail two ways: `FAIL` (non-zero exit / crash) or `MISMATCH` (ran fine, wrong rows). Each takes one directory (plus a matching ttl-dir) at a time.
 - `all-oracle.sh` — the "run everything" entry point. Auto-discovers every leaf directory under `test/gengodb/` holding `.mlir` files and every dataset directory under `resources/sparql/`, runs both oracles over all of them, and prints an aggregate pass/fail/mismatch total (exit code = total failures across every directory).
 
+### GROUP_CONCAT and engine-defined order
+
+GROUP_CONCAT's element order is engine-defined, so a `.sparql` file can mark a projected
+GROUP_CONCAT column as order-insensitive:
+
+```
+# oracle: unordered-concat ?nicks " "
+```
+
+`generate_sparql_golden.py` then writes the fixture as
+`{"rows": [...], "unordered_concat": [[column, separator], ...]}` (instead of a bare row list),
+and `check_result.py` splits that column by the separator and sorts it on both sides before
+comparing. Avoid `|` in separators: it collides with the pipe-table `run-sparql` prints.
+
+(Engine note: GROUP_CONCAT re-copies the accumulated string on every step, so a group of n
+values costs O(n²) bytes of arena memory. Fine for test-sized groups; revisit before
+concatenating very large groups.)
+
+### Queries without an rdflib fixture
+
+`generate_sparql_golden.py`'s `SKIP_RDFLIB` lists queries where rdflib 7.x can't serve as
+the oracle; `sparql-oracle.sh` only crash-checks them. Their expected results are written
+in the query file's header comment.
+
+- `coffee/agg_expr_arg_error.sparql` — rdflib crashes on SUM over an argument expression
+  that errors for some rows, and its COUNT counts errors. GengoDB follows the spec instead:
+  COUNT/MIN/MAX/SAMPLE/GROUP_CONCAT skip errors, and an error poisons SUM/AVG (unbound result).
+- `coffee/agg_group_by_expr_noalias.sparql` — rdflib crashes on an unaliased GROUP BY
+  expression such as `GROUP BY (?v * 0)`.
+- `coffee/agg_computed_alias_chain.sparql` — rdflib leaves `(?c * 2 AS ?d)` unbound when
+  `?c` is an aggregate alias defined earlier in the same SELECT. Per spec, SELECT
+  expressions are evaluated left to right.
+
 ## Regenerating the fixtures
 
 ```

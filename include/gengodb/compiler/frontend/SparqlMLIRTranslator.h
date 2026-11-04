@@ -41,6 +41,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -94,7 +95,7 @@ struct UnionPattern : PatternElement {
 };
 
 struct Expr {
-   enum class Kind { Variable, Literal, Not, And, Or, Compare, Arith, Negate, FunctionCall, Cast };
+   enum class Kind { Variable, Literal, Not, And, Or, Compare, Arith, Negate, FunctionCall, Cast, Aggregate };
    virtual ~Expr() = default;
    virtual Kind kind() const = 0;
 };
@@ -156,6 +157,105 @@ struct CastExpr : Expr {
    Kind kind() const override { return Kind::Cast; }
 };
 
+enum class AggFn { Count, Sum, Avg, Min, Max, Sample, GroupConcat };
+
+inline const char* aggFnName(AggFn fn) {
+   switch (fn) {
+      case AggFn::Count: return "COUNT";
+      case AggFn::Sum: return "SUM";
+      case AggFn::Avg: return "AVG";
+      case AggFn::Min: return "MIN";
+      case AggFn::Max: return "MAX";
+      case AggFn::Sample: return "SAMPLE";
+      case AggFn::GroupConcat: return "GROUP_CONCAT";
+   }
+   return "?";
+}
+
+inline std::string exprKey(const Expr& e);
+
+struct AggregateExpr : Expr {
+   AggFn fn{AggFn::Count};
+   bool distinct{false};
+   std::unique_ptr<Expr> arg;
+   std::string separator{" "};
+   Kind kind() const override { return Kind::Aggregate; }
+   bool star() const { return !arg; }
+   std::string key() const {
+      std::string k = std::string(aggFnName(fn)) + (distinct ? "|distinct|" : "|all|") + (arg ? exprKey(*arg) : std::string("*"));
+      if (fn == AggFn::GroupConcat) k += "|sep:" + separator;
+      return k;
+   }
+};
+
+inline std::string exprKey(const Expr& e) {
+   switch (e.kind()) {
+      case Expr::Kind::Variable: return "?" + static_cast<const VariableExpr&>(e).name;
+      case Expr::Kind::Literal: {
+         const auto& l = static_cast<const LiteralExpr&>(e);
+         return "lit(" + std::to_string(l.lexicalForm.size()) + ":" + l.lexicalForm + "^" +
+            std::to_string(gengodb::semantics::xsd::to_int32(l.xsdType)) + "^" + l.datatypeIri + ")";
+      }
+      case Expr::Kind::Not: return "not(" + exprKey(*static_cast<const NotExpr&>(e).operand) + ")";
+      case Expr::Kind::Negate: return "neg(" + exprKey(*static_cast<const NegateExpr&>(e).operand) + ")";
+      case Expr::Kind::And:
+      case Expr::Kind::Or: {
+         const auto& ops = e.kind() == Expr::Kind::And ? static_cast<const AndExpr&>(e).operands : static_cast<const OrExpr&>(e).operands;
+         std::string k = e.kind() == Expr::Kind::And ? "and(" : "or(";
+         for (const auto& o : ops) k += exprKey(*o) + ",";
+         return k + ")";
+      }
+      case Expr::Kind::Compare: {
+         const auto& c = static_cast<const CompareExpr&>(e);
+         return "cmp" + std::to_string(static_cast<int>(c.op)) + "(" + exprKey(*c.lhs) + "," + exprKey(*c.rhs) + ")";
+      }
+      case Expr::Kind::Arith: {
+         const auto& a = static_cast<const ArithExpr&>(e);
+         return "arith" + std::to_string(static_cast<int>(a.op)) + "(" + exprKey(*a.lhs) + "," + exprKey(*a.rhs) + ")";
+      }
+      case Expr::Kind::FunctionCall: {
+         const auto& f = static_cast<const FunctionCallExpr&>(e);
+         std::string k = "fn:" + f.name + "(";
+         for (const auto& o : f.args) k += exprKey(*o) + ",";
+         return k + ")";
+      }
+      case Expr::Kind::Cast: {
+         const auto& c = static_cast<const CastExpr&>(e);
+         std::string target = c.isLangCast ? "lang" : (c.targetType ? std::to_string(gengodb::semantics::xsd::to_int32(*c.targetType)) : "str");
+         return "cast:" + target + "(" + exprKey(*c.operand) + ")";
+      }
+      case Expr::Kind::Aggregate: return "agg(" + static_cast<const AggregateExpr&>(e).key() + ")";
+   }
+   return "?";
+}
+
+template <typename F>
+void forEachFreeVariable(const Expr& e, F&& f) {
+   switch (e.kind()) {
+      case Expr::Kind::Variable: f(static_cast<const VariableExpr&>(e).name); return;
+      case Expr::Kind::Literal:
+      case Expr::Kind::Aggregate: return;
+      case Expr::Kind::Not: forEachFreeVariable(*static_cast<const NotExpr&>(e).operand, f); return;
+      case Expr::Kind::Negate: forEachFreeVariable(*static_cast<const NegateExpr&>(e).operand, f); return;
+      case Expr::Kind::Cast: forEachFreeVariable(*static_cast<const CastExpr&>(e).operand, f); return;
+      case Expr::Kind::And: for (const auto& o : static_cast<const AndExpr&>(e).operands) forEachFreeVariable(*o, f); return;
+      case Expr::Kind::Or: for (const auto& o : static_cast<const OrExpr&>(e).operands) forEachFreeVariable(*o, f); return;
+      case Expr::Kind::FunctionCall: for (const auto& o : static_cast<const FunctionCallExpr&>(e).args) forEachFreeVariable(*o, f); return;
+      case Expr::Kind::Compare: {
+         const auto& c = static_cast<const CompareExpr&>(e);
+         forEachFreeVariable(*c.lhs, f);
+         forEachFreeVariable(*c.rhs, f);
+         return;
+      }
+      case Expr::Kind::Arith: {
+         const auto& a = static_cast<const ArithExpr&>(e);
+         forEachFreeVariable(*a.lhs, f);
+         forEachFreeVariable(*a.rhs, f);
+         return;
+      }
+   }
+}
+
 struct FilterPattern : PatternElement {
    std::unique_ptr<Expr> expr;
    Kind kind() const override { return Kind::Filter; }
@@ -165,12 +265,29 @@ struct Query {
    std::map<std::string, std::string> prefixes;
    bool selectStar{false};
    std::vector<std::string> selectVars;
+   struct SelectExpr { std::string alias; std::unique_ptr<Expr> expr; };
+   std::vector<SelectExpr> selectExprs;
    std::vector<std::unique_ptr<PatternElement>> patterns;
+   struct GroupKey { std::string var; std::unique_ptr<Expr> expr; };
+   std::vector<GroupKey> groupBy;
+   std::vector<std::unique_ptr<Expr>> having;
    std::optional<int64_t> limit;
    std::optional<int64_t> offset;
    bool distinct{false};
    struct OrderKey { std::unique_ptr<Expr> expr; bool descending{false}; };
    std::vector<OrderKey> orderBy;
+   bool hasAggregateCall{false};
+   bool hasAggregation() const { return !groupBy.empty() || !having.empty() || hasAggregateCall; }
+   const SelectExpr* findSelectExpr(const std::string& alias) const {
+      for (const auto& se : selectExprs)
+         if (se.alias == alias) return &se;
+      return nullptr;
+   }
+   bool isGroupKey(const std::string& v) const {
+      for (const auto& g : groupBy)
+         if (g.var == v) return true;
+      return false;
+   }
 };
 
 } // namespace sparql
@@ -326,6 +443,8 @@ class Tokenizer {
 class Parser {
    Tokenizer tz;
    Token tok;
+   bool aggregatesAllowed{false};
+   bool sawAggregate{false};
 
    void advance() { tok = tz.next(); }
    bool is(TK k) const { return tok.kind == k; }
@@ -380,7 +499,58 @@ class Parser {
       }
    }
 
+   static std::optional<sparql::AggFn> aggFnFromKeyword(const std::string& kwName) {
+      if (kwName == "COUNT") return sparql::AggFn::Count;
+      if (kwName == "SUM") return sparql::AggFn::Sum;
+      if (kwName == "AVG") return sparql::AggFn::Avg;
+      if (kwName == "MIN") return sparql::AggFn::Min;
+      if (kwName == "MAX") return sparql::AggFn::Max;
+      if (kwName == "SAMPLE") return sparql::AggFn::Sample;
+      if (kwName == "GROUP_CONCAT") return sparql::AggFn::GroupConcat;
+      return std::nullopt;
+   }
+
+   std::unique_ptr<sparql::Expr> parseAggregate(sparql::AggFn fn, const std::map<std::string, std::string>& pref) {
+      size_t line = tok.line;
+      std::string name = tok.value;
+      if (!aggregatesAllowed)
+         throw std::runtime_error("Aggregate " + name + "() at line " + std::to_string(line) +
+                                  " is only allowed in SELECT expressions, HAVING or ORDER BY (and cannot be nested)");
+      advance();
+      eat(TK::LeftParen);
+      auto e = std::make_unique<sparql::AggregateExpr>();
+      e->fn = fn;
+      if (kw("DISTINCT")) { e->distinct = true; advance(); }
+      if (is(TK::Star)) {
+         if (fn != sparql::AggFn::Count)
+            throw std::runtime_error("'*' is only allowed as argument of COUNT (line " + std::to_string(line) + ")");
+         advance();
+      } else {
+         aggregatesAllowed = false;
+         e->arg = parseFilterExpr(pref);
+         aggregatesAllowed = true;
+      }
+      if (fn == sparql::AggFn::GroupConcat && is(TK::Semicolon)) {
+         advance();
+         eatKw("SEPARATOR");
+         eat(TK::Eq);
+         if (!is(TK::StringLit))
+            throw std::runtime_error("Expected string literal after SEPARATOR= at line " + std::to_string(tok.line));
+         e->separator = tok.value;
+         advance();
+      }
+      if (!is(TK::RightParen))
+         throw std::runtime_error("Parse error in aggregate " + name + "() at line " + std::to_string(line) + ": unexpected '" + tok.value + "'");
+      advance();
+      sawAggregate = true;
+      return e;
+   }
+
    std::unique_ptr<sparql::Expr> parsePrimary(const std::map<std::string, std::string>& pref) {
+      if (is(TK::Keyword)) {
+         if (auto fn = aggFnFromKeyword(tok.value); fn && tz.peek().kind == TK::LeftParen)
+            return parseAggregate(*fn, pref);
+      }
       if (is(TK::LeftParen)) {
          advance();
          auto e = parseFilterExpr(pref);
@@ -740,7 +910,33 @@ class Parser {
       if (kw("DISTINCT")) { q.distinct = true; advance(); } else if (kw("REDUCED")) { advance(); }
       if (is(TK::Star)) { advance(); q.selectStar = true; }
       else {
-         while (is(TK::Variable)) { q.selectVars.push_back(tok.value); advance(); }
+         std::set<std::string> projected;
+         while (is(TK::Variable) || is(TK::LeftParen)) {
+            if (is(TK::Variable)) {
+               if (!projected.insert(tok.value).second)
+                  throw std::runtime_error("Variable ?" + tok.value + " is projected twice at line " + std::to_string(tok.line));
+               q.selectVars.push_back(tok.value);
+               advance();
+               continue;
+            }
+            size_t line = tok.line;
+            advance();
+            aggregatesAllowed = true;
+            auto expr = parseFilterExpr(q.prefixes);
+            aggregatesAllowed = false;
+            if (!kw("AS"))
+               throw std::runtime_error("Expected AS in SELECT expression at line " + std::to_string(tok.line) + ", got '" + tok.value + "'");
+            advance();
+            if (!is(TK::Variable))
+               throw std::runtime_error("Expected variable after AS at line " + std::to_string(tok.line) + ", got '" + tok.value + "'");
+            std::string alias = tok.value;
+            advance();
+            eat(TK::RightParen);
+            if (!projected.insert(alias).second)
+               throw std::runtime_error("Variable ?" + alias + " is projected twice at line " + std::to_string(line));
+            q.selectVars.push_back(alias);
+            q.selectExprs.push_back({alias, std::move(expr)});
+         }
          if (q.selectVars.empty())
             throw std::runtime_error("SELECT requires variables or * at line " + std::to_string(tok.line));
       }
@@ -750,10 +946,61 @@ class Parser {
       if (kw("WHERE")) advance();
       parseGroup(q.patterns, q.prefixes, defaultGraph);
 
+      if (kw("GROUP")) {
+         advance();
+         if (!kw("BY")) throw std::runtime_error("Expected BY after GROUP at line " + std::to_string(tok.line));
+         advance();
+         size_t hiddenKeys = 0;
+         while (!kw("HAVING") && !kw("ORDER") && !kw("LIMIT") && !kw("OFFSET") && !is(TK::Eof)) {
+            sparql::Query::GroupKey key;
+            if (is(TK::Variable)) {
+               key.var = tok.value;
+               advance();
+               if (q.isGroupKey(key.var)) continue;
+            } else if (is(TK::LeftParen)) {
+               advance();
+               key.expr = parseFilterExpr(q.prefixes);
+               if (kw("AS")) {
+                  advance();
+                  if (!is(TK::Variable))
+                     throw std::runtime_error("Expected variable after AS in GROUP BY at line " + std::to_string(tok.line) + ", got '" + tok.value + "'");
+                  key.var = tok.value;
+                  advance();
+               }
+               eat(TK::RightParen);
+            } else {
+               key.expr = parsePrimary(q.prefixes);
+            }
+            if (key.expr && key.expr->kind() == sparql::Expr::Kind::Variable && key.var.empty()) {
+               key.var = static_cast<const sparql::VariableExpr&>(*key.expr).name;
+               key.expr.reset();
+               if (q.isGroupKey(key.var)) continue;
+            }
+            if (key.var.empty()) key.var = "__gk" + std::to_string(hiddenKeys++);
+            else if (key.expr && q.isGroupKey(key.var))
+               throw std::runtime_error("GROUP BY alias ?" + key.var + " is defined twice at line " + std::to_string(tok.line));
+            q.groupBy.push_back(std::move(key));
+         }
+         if (q.groupBy.empty())
+            throw std::runtime_error("GROUP BY requires at least one grouping key at line " + std::to_string(tok.line));
+      }
+
+      if (kw("HAVING")) {
+         advance();
+         aggregatesAllowed = true;
+         while (is(TK::LeftParen) || (is(TK::Keyword) && !kw("ORDER") && !kw("LIMIT") && !kw("OFFSET"))) {
+            q.having.push_back(parsePrimary(q.prefixes));
+         }
+         aggregatesAllowed = false;
+         if (q.having.empty())
+            throw std::runtime_error("HAVING requires at least one constraint at line " + std::to_string(tok.line));
+      }
+
       if (kw("ORDER")) {
          advance();
          if (!kw("BY")) throw std::runtime_error("Expected BY after ORDER at line " + std::to_string(tok.line));
          advance();
+         aggregatesAllowed = true;
          do {
             bool desc = false;
             std::unique_ptr<sparql::Expr> expr;
@@ -771,6 +1018,7 @@ class Parser {
             key.descending = desc;
             q.orderBy.push_back(std::move(key));
          } while (!kw("LIMIT") && !kw("OFFSET") && !is(TK::Eof));
+         aggregatesAllowed = false;
       }
       for (int i = 0; i < 2 && (kw("LIMIT") || kw("OFFSET")); i++) {
          if (kw("LIMIT")) {
@@ -790,7 +1038,37 @@ class Parser {
          }
       }
 
-      while (!is(TK::Eof)) advance();
+      if (!is(TK::Eof))
+         throw std::runtime_error("Parse error at line " + std::to_string(tok.line) + ": unexpected '" + tok.value +
+                                  "' after the query (unsupported or misplaced solution modifier?)");
+
+      q.hasAggregateCall = sawAggregate;
+      if (q.hasAggregation()) {
+         if (q.selectStar)
+            throw std::runtime_error("SELECT * is not allowed together with GROUP BY, HAVING or aggregates");
+         std::set<std::string> visible;
+         for (const auto& g : q.groupBy) visible.insert(g.var);
+         for (const auto& v : q.selectVars) {
+            if (const auto* se = q.findSelectExpr(v)) {
+               sparql::forEachFreeVariable(*se->expr, [&](const std::string& fv) {
+                  if (!visible.count(fv))
+                     throw std::runtime_error("Variable ?" + fv + " in the SELECT expression for ?" + v +
+                                              " is neither grouped (GROUP BY) nor aggregated");
+               });
+               visible.insert(v);
+               continue;
+            }
+            if (!visible.count(v))
+               throw std::runtime_error("Variable ?" + v + " is projected but neither grouped (GROUP BY) nor aggregated");
+         }
+         for (const auto& h : q.having) {
+            sparql::forEachFreeVariable(*h, [&](const std::string& fv) {
+               const auto* se = q.findSelectExpr(fv);
+               if (se && se->expr->kind() != sparql::Expr::Kind::Aggregate)
+                  throw std::runtime_error("HAVING references ?" + fv + ", which is computed by a SELECT expression evaluated after HAVING");
+            });
+         }
+      }
       return q;
    }
 };
@@ -830,6 +1108,7 @@ class Translator {
    std::map<std::string, tuples::ColumnDefAttr> varDefs;
 
    std::string currentVarScope{"vars"};
+   std::map<std::string, tuples::ColumnDefAttr> aggCols;
 
    std::pair<std::string, mlir::Value> namedGraph(const std::string& uri) {
       auto it = graphInfo.find(uri);
@@ -1119,12 +1398,30 @@ class Translator {
       }
       throw std::runtime_error("Unknown FILTER arithmetic operator");
    }
-   mlir::Value getFilterColumn(const std::string& name, mlir::Value tupleArg) {
+   mlir::Value readTerm(tuples::ColumnRefAttr ref, mlir::Value tupleArg) {
+      auto loc = builder.getUnknownLoc();
+      auto variantType = variant::VariantType::get(ctxt);
+      mlir::Value val = builder.create<tuples::GetColumnOp>(loc, ref.getColumn().type, ref, tupleArg);
+      if (auto nullable = mlir::dyn_cast<db::NullableType>(val.getType()); nullable && mlir::isa<variant::VariantType>(nullable.getType())) {
+         mlir::Value isNull = builder.create<db::IsNullOp>(loc, val);
+         mlir::Value raw = builder.create<db::NullableGetVal>(loc, val);
+         return builder.create<variant::UnspecifiedIfOp>(loc, variantType, isNull, raw);
+      }
+      if (mlir::isa<variant::VariantType>(val.getType())) return val;
+      return builder.create<gpm::GetBindingOp>(loc, variantType, val);
+   }
+   mlir::Value termOrNull(mlir::Value v) {
+      auto loc = builder.getUnknownLoc();
+      auto nullableVariantType = db::NullableType::get(ctxt, variant::VariantType::get(ctxt));
+      mlir::Value unspecTag = builder.create<mlir::arith::ConstantIntOp>(loc, gengodb::semantics::xsd::to_int32(gengodb::semantics::xsd::Type::Unspecified), 32);
+      mlir::Value isUnspec = builder.create<variant::VariantIsAOp>(loc, builder.getI1Type(), v, unspecTag);
+      return builder.create<db::AsNullableOp>(loc, nullableVariantType, v, isUnspec);
+   }
+   tuples::ColumnRefAttr varRef(const std::string& name) {
       auto it = varDefs.find(name);
       if (it == varDefs.end())
          throw std::runtime_error("expression references unbound variable ?" + name);
-      auto ref = colMgr.createRef(it->second.getColumnPtr().get());
-      return builder.create<tuples::GetColumnOp>(builder.getUnknownLoc(), ref.getColumn().type, ref, tupleArg);
+      return colMgr.createRef(it->second.getColumnPtr().get());
    }
    mlir::Value packedDateTimeScalar(const std::string& lexicalForm, mlir::Location loc) {
       auto value = rdf4cpp::datatypes::xsd::DateTime::from_string(lexicalForm);
@@ -1171,8 +1468,7 @@ class Translator {
       auto variantType = variant::VariantType::get(ctxt);
       switch (expr.kind()) {
          case sparql::Expr::Kind::Variable: {
-            mlir::Value ref = getFilterColumn(static_cast<const sparql::VariableExpr&>(expr).name, tupleArg);
-            return builder.create<gpm::GetBindingOp>(loc, variantType, ref);
+            return readTerm(varRef(static_cast<const sparql::VariableExpr&>(expr).name), tupleArg);
          }
          case sparql::Expr::Kind::Literal: {
             const auto& lit = static_cast<const sparql::LiteralExpr&>(expr);
@@ -1220,8 +1516,15 @@ class Translator {
             mlir::Value typeId = builder.create<mlir::arith::ConstantIntOp>(loc, gengodb::semantics::xsd::to_int32(*e.targetType), 32);
             return builder.create<variant::CastOp>(loc, variantType, operand, typeId);
          }
+         case sparql::Expr::Kind::Aggregate: {
+            const auto& e = static_cast<const sparql::AggregateExpr&>(expr);
+            auto it = aggCols.find(e.key());
+            if (it == aggCols.end())
+               throw std::runtime_error(std::string("Aggregate ") + sparql::aggFnName(e.fn) + "() used outside of an aggregation context");
+            return readTerm(colMgr.createRef(it->second.getColumnPtr().get()), tupleArg);
+         }
          default:
-            throw std::runtime_error("Expected a numeric FILTER expression (variable, literal, arithmetic, cast, or unary '-')");
+            throw sparql::UnsupportedFeatureError("Unsupported value expression (only variables, literals, arithmetic, casts, unary '-' and aggregates are supported here)");
       }
    }
    mlir::Value translateCompareExpr(const sparql::CompareExpr& e, mlir::Value tupleArg) {
@@ -1396,6 +1699,324 @@ class Translator {
       }
    }
 
+   static void collectAggregates(const sparql::Expr& e, std::vector<const sparql::AggregateExpr*>& out) {
+      switch (e.kind()) {
+         case sparql::Expr::Kind::Aggregate:
+            out.push_back(static_cast<const sparql::AggregateExpr*>(&e));
+            return;
+         case sparql::Expr::Kind::Not:
+            collectAggregates(*static_cast<const sparql::NotExpr&>(e).operand, out);
+            return;
+         case sparql::Expr::Kind::Negate:
+            collectAggregates(*static_cast<const sparql::NegateExpr&>(e).operand, out);
+            return;
+         case sparql::Expr::Kind::Cast:
+            collectAggregates(*static_cast<const sparql::CastExpr&>(e).operand, out);
+            return;
+         case sparql::Expr::Kind::And:
+            for (const auto& o : static_cast<const sparql::AndExpr&>(e).operands) collectAggregates(*o, out);
+            return;
+         case sparql::Expr::Kind::Or:
+            for (const auto& o : static_cast<const sparql::OrExpr&>(e).operands) collectAggregates(*o, out);
+            return;
+         case sparql::Expr::Kind::Compare: {
+            const auto& c = static_cast<const sparql::CompareExpr&>(e);
+            collectAggregates(*c.lhs, out);
+            collectAggregates(*c.rhs, out);
+            return;
+         }
+         case sparql::Expr::Kind::Arith: {
+            const auto& a = static_cast<const sparql::ArithExpr&>(e);
+            collectAggregates(*a.lhs, out);
+            collectAggregates(*a.rhs, out);
+            return;
+         }
+         case sparql::Expr::Kind::FunctionCall:
+            for (const auto& o : static_cast<const sparql::FunctionCallExpr&>(e).args) collectAggregates(*o, out);
+            return;
+         default:
+            return;
+      }
+   }
+
+   mlir::Value buildExprMap(mlir::Value stream, const std::vector<std::pair<const sparql::Expr*, bool>>& exprs, const std::string& scope,
+                            const std::string& prefix, std::vector<tuples::ColumnDefAttr>& outDefs) {
+      auto loc = builder.getUnknownLoc();
+      auto* block = new mlir::Block;
+      auto tupleArg = block->addArgument(tuples::TupleType::get(ctxt), loc);
+      llvm::SmallVector<mlir::Attribute> cols;
+      {
+         mlir::OpBuilder::InsertionGuard guard(builder);
+         builder.setInsertionPointToStart(block);
+         llvm::SmallVector<mlir::Value> vals;
+         for (size_t i = 0; i < exprs.size(); i++) {
+            auto [expr, nullable] = exprs[i];
+            mlir::Value v = translateArithExpr(*expr, tupleArg);
+            if (nullable) v = termOrNull(v);
+            auto def = colMgr.createDef(scope, prefix + std::to_string(i));
+            def.getColumn().type = v.getType();
+            cols.push_back(def);
+            outDefs.push_back(def);
+            vals.push_back(v);
+         }
+         builder.create<tuples::ReturnOp>(loc, vals);
+      }
+      auto mapOp = builder.create<relalg::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, builder.getArrayAttr(cols));
+      mapOp.getPredicate().push_back(block);
+      return mapOp.getResult();
+   }
+
+   mlir::Value buildAggregation(const sparql::Query& query, mlir::Value input) {
+      auto loc = builder.getUnknownLoc();
+      auto variantType = variant::VariantType::get(ctxt);
+      auto nullableVariantType = db::NullableType::get(ctxt, variantType);
+      auto i64Type = builder.getI64Type();
+      std::string scope = colMgr.getUniqueScope("aggr");
+
+      std::vector<const sparql::AggregateExpr*> found;
+      for (const auto& se : query.selectExprs) collectAggregates(*se.expr, found);
+      for (const auto& h : query.having) collectAggregates(*h, found);
+      for (const auto& k : query.orderBy) collectAggregates(*k.expr, found);
+      std::vector<const sparql::AggregateExpr*> aggs;
+      std::set<std::string> seenKeys;
+      for (const auto* a : found) {
+         if (seenKeys.insert(a->key()).second) aggs.push_back(a);
+      }
+
+      for (const auto& g : query.groupBy) {
+         if (g.expr) {
+            if (varDefs.count(g.var))
+               throw std::runtime_error("GROUP BY alias ?" + g.var + " is already bound in WHERE clause");
+            sparql::forEachFreeVariable(*g.expr, [&](const std::string& v) {
+               if (!varDefs.count(v)) throw std::runtime_error("GROUP BY expression references ?" + v + ", which is not bound in WHERE clause");
+            });
+         } else if (!varDefs.count(g.var)) {
+            throw std::runtime_error("GROUP BY variable ?" + g.var + " is not bound in WHERE clause");
+         }
+      }
+      for (const auto* a : aggs) {
+         if (!a->arg) continue;
+         sparql::forEachFreeVariable(*a->arg, [&](const std::string& v) {
+            if (!varDefs.count(v))
+               throw std::runtime_error(std::string("Aggregate ") + sparql::aggFnName(a->fn) + "() references ?" + v + ", which is not bound in WHERE clause");
+         });
+      }
+      for (const auto& se : query.selectExprs) {
+         if (varDefs.count(se.alias))
+            throw std::runtime_error("SELECT alias ?" + se.alias + " is already bound in WHERE clause");
+      }
+
+      auto poisonsOnError = [](sparql::AggFn fn) { return fn == sparql::AggFn::Sum || fn == sparql::AggFn::Avg; };
+      std::vector<std::pair<const sparql::Expr*, bool>> preExprs;
+      std::map<std::string, size_t> preIdx; // exprKey|mode -> index into preExprs
+      auto preKey = [](const sparql::Expr& e, bool nullable) { return sparql::exprKey(e) + (nullable ? "|null" : "|keep"); };
+      auto addPre = [&](const sparql::Expr& e, bool nullable) {
+         auto k = preKey(e, nullable);
+         if (!preIdx.count(k)) {
+            preIdx[k] = preExprs.size();
+            preExprs.push_back({&e, nullable});
+         }
+      };
+      for (const auto& g : query.groupBy)
+         if (g.expr) addPre(*g.expr, true);
+      for (const auto* a : aggs)
+         if (a->arg && a->arg->kind() != sparql::Expr::Kind::Variable) addPre(*a->arg, !poisonsOnError(a->fn));
+      std::vector<tuples::ColumnDefAttr> preDefs;
+      if (!preExprs.empty()) input = buildExprMap(input, preExprs, scope, "pre", preDefs);
+
+      auto refOfDef = [&](const tuples::ColumnDefAttr& d) { return colMgr.createRef(d.getColumnPtr().get()); };
+      auto argRefOf = [&](const sparql::AggregateExpr& a) -> tuples::ColumnRefAttr {
+         if (a.arg->kind() == sparql::Expr::Kind::Variable) return varRef(static_cast<const sparql::VariableExpr&>(*a.arg).name);
+         return refOfDef(preDefs[preIdx.at(preKey(*a.arg, !poisonsOnError(a.fn)))]);
+      };
+
+      llvm::SmallVector<mlir::Attribute> groupRefs;
+      std::map<std::string, tuples::ColumnDefAttr> groupDefs;
+      for (const auto& g : query.groupBy) {
+         tuples::ColumnDefAttr def = g.expr ? preDefs[preIdx.at(preKey(*g.expr, true))] : varDefs.at(g.var);
+         groupDefs[g.var] = def;
+         groupRefs.push_back(refOfDef(def));
+      }
+
+      auto* block = new mlir::Block;
+      mlir::Value streamArg = block->addArgument(tuples::TupleStreamType::get(ctxt), loc);
+      block->addArgument(tuples::TupleType::get(ctxt), loc);
+      llvm::SmallVector<mlir::Attribute> computedCols;
+      std::vector<tuples::ColumnDefAttr> resultDefs;
+      std::map<size_t, tuples::ColumnDefAttr> avgCountDefs;
+      {
+         mlir::OpBuilder::InsertionGuard guard(builder);
+         builder.setInsertionPointToStart(block);
+         std::map<std::string, mlir::Value> distinctStreams;
+         llvm::SmallVector<mlir::Value> results;
+         for (size_t i = 0; i < aggs.size(); i++) {
+            const auto& a = *aggs[i];
+            tuples::ColumnRefAttr argRef;
+            if (a.arg) argRef = argRefOf(a);
+            mlir::Value rel = streamArg;
+            if (a.distinct) {
+               std::string distinctKey = a.arg ? std::to_string(reinterpret_cast<uintptr_t>(&argRef.getColumn())) : "*";
+               auto it = distinctStreams.find(distinctKey);
+               if (it != distinctStreams.end()) {
+                  rel = it->second;
+               } else {
+                  llvm::SmallVector<mlir::Attribute> cols;
+                  if (!a.arg) {
+                     for (const auto& v : allVars) cols.push_back(varRef(v));
+                  } else {
+                     cols.push_back(argRef);
+                  }
+                  rel = builder.create<relalg::ProjectionOp>(loc, relalg::SetSemantic::distinct, streamArg, builder.getArrayAttr(cols));
+                  distinctStreams[distinctKey] = rel;
+               }
+            }
+            mlir::Value res;
+            switch (a.fn) {
+               case sparql::AggFn::Count:
+                  if (!a.arg)
+                     res = builder.create<relalg::CountRowsOp>(loc, i64Type, rel);
+                  else
+                     res = builder.create<relalg::AggrFuncOp>(loc, i64Type, relalg::AggrFunc::count, rel, argRef);
+                  break;
+               case sparql::AggFn::Sum:
+                  res = builder.create<relalg::AggrFuncOp>(loc, variantType, relalg::AggrFunc::sum, rel, argRef);
+                  break;
+               case sparql::AggFn::Avg: {
+                  res = builder.create<relalg::AggrFuncOp>(loc, variantType, relalg::AggrFunc::sum, rel, argRef);
+                  mlir::Value cnt = builder.create<relalg::AggrFuncOp>(loc, i64Type, relalg::AggrFunc::count, rel, argRef);
+                  auto cntDef = colMgr.createDef(scope, "agg" + std::to_string(i) + "_count");
+                  cntDef.getColumn().type = i64Type;
+                  computedCols.push_back(cntDef);
+                  results.push_back(cnt);
+                  avgCountDefs[i] = cntDef;
+                  break;
+               }
+               case sparql::AggFn::Min:
+                  res = builder.create<relalg::AggrFuncOp>(loc, nullableVariantType, relalg::AggrFunc::min, rel, argRef);
+                  break;
+               case sparql::AggFn::Max:
+                  res = builder.create<relalg::AggrFuncOp>(loc, nullableVariantType, relalg::AggrFunc::max, rel, argRef);
+                  break;
+               case sparql::AggFn::Sample:
+                  res = builder.create<relalg::AggrFuncOp>(loc, nullableVariantType, relalg::AggrFunc::any, rel, argRef);
+                  break;
+               case sparql::AggFn::GroupConcat: {
+                  auto op = builder.create<relalg::AggrFuncOp>(loc, nullableVariantType, relalg::AggrFunc::group_concat, rel, argRef);
+                  op->setAttr("separator", builder.getStringAttr(a.separator));
+                  res = op;
+                  break;
+               }
+            }
+            auto def = colMgr.createDef(scope, "agg" + std::to_string(i));
+            def.getColumn().type = res.getType();
+            computedCols.push_back(def);
+            resultDefs.push_back(def);
+            results.push_back(res);
+         }
+         builder.create<tuples::ReturnOp>(loc, results);
+      }
+      auto aggrOp = builder.create<relalg::AggregationOp>(loc, tuples::TupleStreamType::get(ctxt), input,
+                                                          builder.getArrayAttr(groupRefs), builder.getArrayAttr(computedCols));
+      aggrOp.getAggrFunc().push_back(block);
+      mlir::Value stream = aggrOp.getResult();
+
+      llvm::SmallVector<size_t> postIdx;
+      for (size_t i = 0; i < aggs.size(); i++) {
+         auto fn = aggs[i]->fn;
+         if (fn == sparql::AggFn::Count || fn == sparql::AggFn::Avg || fn == sparql::AggFn::GroupConcat) postIdx.push_back(i);
+      }
+      if (!postIdx.empty()) {
+         auto* mapBlock = new mlir::Block;
+         auto tupleArg = mapBlock->addArgument(tuples::TupleType::get(ctxt), loc);
+         llvm::SmallVector<mlir::Attribute> mapCols;
+         {
+            mlir::OpBuilder::InsertionGuard guard(builder);
+            builder.setInsertionPointToStart(mapBlock);
+            llvm::SmallVector<mlir::Value> mapped;
+            for (size_t i : postIdx) {
+               auto ref = colMgr.createRef(resultDefs[i].getColumnPtr().get());
+               if (aggs[i]->fn == sparql::AggFn::Count) {
+                  mlir::Value cnt = builder.create<tuples::GetColumnOp>(loc, i64Type, ref, tupleArg);
+                  mapped.push_back(builder.create<variant::CreateScalarOp>(loc, variantType, cnt));
+               } else if (aggs[i]->fn == sparql::AggFn::GroupConcat) {
+                  mlir::Value cat = builder.create<tuples::GetColumnOp>(loc, nullableVariantType, ref, tupleArg);
+                  mlir::Value isNull = builder.create<db::IsNullOp>(loc, cat);
+                  mlir::Value raw = builder.create<db::NullableGetVal>(loc, cat);
+                  mlir::Value emptyStr = builder.create<db::ConstantOp>(loc, db::StringType::get(ctxt), builder.getStringAttr(""));
+                  mlir::Value empty = builder.create<variant::CreateScalarOp>(loc, variantType, emptyStr);
+                  mapped.push_back(builder.create<mlir::arith::SelectOp>(loc, isNull, empty, raw));
+               } else {
+                  mlir::Value sum = builder.create<tuples::GetColumnOp>(loc, variantType, ref, tupleArg);
+                  auto cntRef = colMgr.createRef(avgCountDefs.at(i).getColumnPtr().get());
+                  mlir::Value cnt = builder.create<tuples::GetColumnOp>(loc, i64Type, cntRef, tupleArg);
+                  mlir::Value zero = builder.create<mlir::arith::ConstantIntOp>(loc, 0, 64);
+                  mlir::Value one = builder.create<mlir::arith::ConstantIntOp>(loc, 1, 64);
+                  mlir::Value isEmpty = builder.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::eq, cnt, zero);
+                  mlir::Value divisor = builder.create<mlir::arith::SelectOp>(loc, isEmpty, one, cnt);
+                  mlir::Value divisorTerm = builder.create<variant::CreateScalarOp>(loc, variantType, divisor);
+                  mapped.push_back(builder.create<variant::ArithOp>(loc, variantType, variant::VariantArithPredicate::div, sum, divisorTerm));
+               }
+               auto def = colMgr.createDef(scope, "agg" + std::to_string(i) + "_term");
+               def.getColumn().type = variantType;
+               mapCols.push_back(def);
+               resultDefs[i] = def;
+            }
+            builder.create<tuples::ReturnOp>(loc, mapped);
+         }
+         auto mapOp = builder.create<relalg::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, builder.getArrayAttr(mapCols));
+         mapOp.getPredicate().push_back(mapBlock);
+         stream = mapOp.getResult();
+      }
+
+      for (size_t i = 0; i < aggs.size(); i++) aggCols[aggs[i]->key()] = resultDefs[i];
+
+      std::map<std::string, tuples::ColumnDefAttr> newDefs;
+      std::vector<std::string> newVars;
+      for (const auto& g : query.groupBy) {
+         newDefs[g.var] = groupDefs.at(g.var);
+         newVars.push_back(g.var);
+      }
+      for (const auto& se : query.selectExprs) {
+         if (se.expr->kind() != sparql::Expr::Kind::Aggregate) continue;
+         if (newDefs.count(se.alias))
+            throw std::runtime_error("SELECT alias ?" + se.alias + " is already a GROUP BY key");
+         newDefs[se.alias] = aggCols.at(static_cast<const sparql::AggregateExpr&>(*se.expr).key());
+         newVars.push_back(se.alias);
+      }
+      varDefs = std::move(newDefs);
+      allVars = std::move(newVars);
+
+      if (!query.having.empty()) {
+         auto selOp = builder.create<relalg::SelectionOp>(loc, tuples::TupleStreamType::get(ctxt), stream);
+         auto* predBlock = new mlir::Block;
+         auto tupleArg = predBlock->addArgument(tuples::TupleType::get(ctxt), loc);
+         selOp.getPredicate().push_back(predBlock);
+         {
+            mlir::OpBuilder::InsertionGuard guard(builder);
+            builder.setInsertionPointToStart(predBlock);
+            llvm::SmallVector<mlir::Value> preds;
+            for (const auto& h : query.having) preds.push_back(translateFilterExpr(*h, tupleArg));
+            mlir::Value pred = preds.size() == 1 ? preds.front() : builder.create<db::AndOp>(loc, preds).getResult();
+            builder.create<tuples::ReturnOp>(loc, pred);
+         }
+         stream = selOp.getResult();
+      }
+      return stream;
+   }
+
+   mlir::Value buildSelectExprs(const sparql::Query& query, mlir::Value stream) {
+      for (const auto& se : query.selectExprs) {
+         if (query.hasAggregation() && se.expr->kind() == sparql::Expr::Kind::Aggregate) continue; // already bound to its aggregate column
+         if (varDefs.count(se.alias))
+            throw std::runtime_error("SELECT alias ?" + se.alias + " is already bound");
+         std::vector<tuples::ColumnDefAttr> defs;
+         stream = buildExprMap(stream, {{se.expr.get(), false}}, colMgr.getUniqueScope("select"), se.alias + "_", defs);
+         varDefs[se.alias] = defs.front();
+         allVars.push_back(se.alias);
+      }
+      return stream;
+   }
+
    public:
    Translator(mlir::MLIRContext* ctxt, mlir::OpBuilder& builder)
       : ctxt(ctxt), builder(builder),
@@ -1417,6 +2038,10 @@ class Translator {
 
          if (!prevStream)
             throw sparql::UnsupportedFeatureError("WHERE clause contains no supported graph patterns");
+
+         if (query.hasAggregation())
+            prevStream = buildAggregation(query, prevStream);
+         prevStream = buildSelectExprs(query, prevStream);
 
          std::vector<std::string> outVars = query.selectStar ? allVars : query.selectVars;
 
