@@ -448,7 +448,7 @@ Value computeFullForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value tag, 
             auto result = b1.create<scf::IfOp>(
                 l1, tp.isNode,
                 [&](OpBuilder& b2, Location l2) {
-                    b2.create<scf::YieldOp>(l2, rt::VariantRuntime::toStringNodeRef(b2, l2)({ref})[0]);
+                    b2.create<scf::YieldOp>(l2, rt::VariantRuntime::toStringFullNodeRef(b2, l2)({ref})[0]);
                 },
                 [&](OpBuilder& b2, Location l2) {
                     auto ifIri = b2.create<scf::IfOp>(

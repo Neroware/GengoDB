@@ -366,6 +366,15 @@ VarLen32 VariantRuntime::toStringNumeric(int64_t payload, int32_t tag) {
 VarLen32 VariantRuntime::toStringNodeRef(PropertyGraph::NodeEntry* ref) {
     PropertyGraph* pgraph = propertyGraphOf(ref);
     const int32_t localId = GraphStorage::nodeId(reinterpret_cast<uint8_t*>(ref));
+    std::string name = pgraph->getMetadata().get_node_name(localId);
+    if (name.size() >= 2 && name.front() == '<' && name.back() == '>')
+        name = name.substr(1, name.size() - 2);
+    return VarLen32::fromString(std::move(name));
+}
+
+VarLen32 VariantRuntime::toStringFullNodeRef(PropertyGraph::NodeEntry* ref) {
+    PropertyGraph* pgraph = propertyGraphOf(ref);
+    const int32_t localId = GraphStorage::nodeId(reinterpret_cast<uint8_t*>(ref));
     return VarLen32::fromString(pgraph->getMetadata().get_node_name(localId));
 }
 
