@@ -1,0 +1,10 @@
+PREFIX ex: <http://example.org/>
+
+SELECT ?who (COUNT(*) AS ?n)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?who ex:eats ?food .
+    }
+}
+GROUP BY ?who
+HAVING (COUNT(*) >= 2 && COUNT(*) < 5)

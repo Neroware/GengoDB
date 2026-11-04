@@ -1,0 +1,10 @@
+PREFIX ex: <http://example.org/>
+
+# Each subject has exactly one ex:name, so SAMPLE is deterministic here.
+SELECT ?s (SAMPLE(?name) AS ?n)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?s ex:name ?name .
+    }
+}
+GROUP BY ?s

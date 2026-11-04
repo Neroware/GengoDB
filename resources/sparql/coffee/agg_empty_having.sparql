@@ -1,0 +1,10 @@
+PREFIX ex: <http://example.org/>
+
+# HAVING can filter away the single implicit group.
+SELECT (COUNT(*) AS ?n)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?who ex:drinks ?what .
+    }
+}
+HAVING (COUNT(*) > 100)

@@ -1,0 +1,14 @@
+PREFIX ex: <http://example.org/>
+
+# MIN/MAX over IRIs (ORDER BY ordering of IRIs is lexical). Known oracle mismatch:
+# rdflib returns MIN/MAX of IRIs as plain literals (spec: the IRI itself). steve is excluded:
+# his group contains a blank node, which rdflib (the golden oracle) returns as
+# a plain string from MIN/MAX, so it could not be compared.
+SELECT ?who (MIN(?food) AS ?first) (MAX(?food) AS ?last)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?who ex:eats ?food .
+        FILTER(?who != ex:steve)
+    }
+}
+GROUP BY ?who
