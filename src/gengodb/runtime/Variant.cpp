@@ -398,11 +398,12 @@ int8_t VariantRuntime::compareNodeRefRef(PropertyGraph::NodeEntry* lhs, Property
 }
 
 int8_t VariantRuntime::compareIriNodeRef(VarLen32 iri, PropertyGraph::NodeEntry* ref, int32_t predicate) {
-    if (ref->payload >= 0) return -1;
+    auto triBool = [predicate]() -> int8_t { return predicate == 0 ? 0 : predicate == 1 ? 1 : -1; };
+    if (ref->payload >= 0) return triBool();
     PropertyGraph* pgraph = propertyGraphOf(ref);
     const int32_t localId = GraphStorage::nodeId(reinterpret_cast<uint8_t*>(ref));
     if (pgraph->getMetadata().type_id(localId) != static_cast<int32_t>(RDFNodeType::IRI))
-        return -1;
+        return triBool();
     const std::string nodeName = pgraph->getMetadata().get_node_name(localId);
     const std::string bracketed = "<" + std::string(iri.data(), iri.getLen()) + ">";
     const int cmp = bracketed.compare(nodeName);

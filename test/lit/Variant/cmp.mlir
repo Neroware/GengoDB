@@ -125,6 +125,24 @@ module {
         //CHECK: bool(NULL)
         db.runtime_call "DumpValue" (%ltAlErr) : (!db.nullable<i1>) -> ()
 
+        // IRI vs. string literal with different RDF term kinds
+        %iriStr = db.constant ("http://example.org/coffee") : !db.string
+        %vIri = variant.create_scalar %iriStr : !db.string {type = 1002}
+        %litStr = db.constant ("http://example.org/coffee") : !db.string
+        %vLit = variant.create_scalar %litStr : !db.string
+        %eqIriLit = variant.cmp eq %vIri, %vLit -> !db.nullable<i1>
+        //CHECK: bool(false)
+        db.runtime_call "DumpValue" (%eqIriLit) : (!db.nullable<i1>) -> ()
+        %neqIriLit = variant.cmp neq %vIri, %vLit -> !db.nullable<i1>
+        //CHECK: bool(true)
+        db.runtime_call "DumpValue" (%neqIriLit) : (!db.nullable<i1>) -> ()
+        %neqLitIri = variant.cmp neq %vLit, %vIri -> !db.nullable<i1>
+        //CHECK: bool(true)
+        db.runtime_call "DumpValue" (%neqLitIri) : (!db.nullable<i1>) -> ()
+        %ltIriLit = variant.cmp lt %vIri, %vLit -> !db.nullable<i1>
+        //CHECK: bool(NULL)
+        db.runtime_call "DumpValue" (%ltIriLit) : (!db.nullable<i1>) -> ()
+
         return
     }
 }

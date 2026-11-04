@@ -653,7 +653,22 @@ class CmpOpLowering : public OpConversionPattern<variant::CmpOp> {
                 Value bothNumeric = b.create<arith::AndIOp>(l, lp.isNumericFamily, rp.isNumericFamily);
                 Value iriVsNode = b.create<arith::AndIOp>(l, lp.isIri, rp.isNode);
                 Value nodeVsIri = b.create<arith::AndIOp>(l, lp.isNode, rp.isIri);
+                auto isResource = [&](const TagPredicates& p) { return b.create<arith::OrIOp>(l, p.isIri, p.isNode).getResult(); };
+                auto isLiteral = [&](const TagPredicates& p) {
+                    Value nonLiteral = b.create<arith::OrIOp>(l, b.create<arith::OrIOp>(l, p.isIri, p.isNode), b.create<arith::OrIOp>(l, p.isEdge, p.isUnspecified));
+                    return notB(b, l, nonLiteral);
+                };
+                Value resourceVsLiteral = b.create<arith::OrIOp>(l,
+                                                                 b.create<arith::AndIOp>(l, isResource(lp), isLiteral(rp)),
+                                                                 b.create<arith::AndIOp>(l, isLiteral(lp), isResource(rp)));
                 std::vector<TagCase> crossTagCases = {
+                    {resourceVsLiteral, [&](OpBuilder& b2, Location l2) -> Value {
+                        switch (predicate) {
+                            case variant::VariantCmpPredicate::eq: return asNullable(b2, l2, resultType, constBool(b2, l2, false), constBool(b2, l2, false));
+                            case variant::VariantCmpPredicate::neq: return asNullable(b2, l2, resultType, constBool(b2, l2, true), constBool(b2, l2, false));
+                            default: return nullValue(b2, l2, resultType);
+                        }
+                    }},
                     {bothNumeric, numericCrossCmp},
                     {anyInteger, blobLiteralCmp},
                     {iriVsNode, [&](OpBuilder& b2, Location l2) -> Value {

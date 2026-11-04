@@ -24,10 +24,9 @@ python3 tools/gengodb/oracle/generate_sparql_golden.py   # resources/sparql/{cof
 
 ## Known mismatches (as of the rz/main verification pass, 2026-08-24)
 
-One snippet currently reports `MISMATCH`, confirmed (reproduced many times) as a
-real bug, not an oracle-translation issue:
+No GPM snippet currently reports `MISMATCH`.
 
-- `filter/filter_iri_neq.mlir` — comparing an IRI constant with `!=` against an RDF term of a different kind (blank node, or a string-typed literal) silently excludes the row instead of evaluating to true.
+- `filter/filter_iri_neq.mlir` (fixed) — comparing an IRI constant with `!=` against an RDF term of a different kind (blank node, or a string-typed literal) used to evaluate to NULL and silently exclude the row. `variant.cmp` now follows SPARQL RDFterm-equal for IRI/blank node vs. literal and IRI vs. blank node: `=` is false, `!=` is true, ordering operators remain a type error (NULL).
 
 `optional/optional_unbound_key_join.mlir` was initially flagged as a second
 mismatch (a stale value supposedly leaking across two independent `OPTIONAL`

@@ -22,6 +22,10 @@ return RDF triples, not the row-of-bindings table check_result.py compares,
 and run-sparql rejects both forms outright ("not yet supported"), so there's
 nothing to check either way yet.
 
+Queries using the GengoDB-specific fuzzy `?t TRUTH OF { ... }` extension
+(e.g. coffee/truth_crisp.sparql) are skipped too: rdflib can't parse that
+non-standard construct, so there's no independent oracle for them.
+
 This is NOT run as part of the build or test suite -- it requires `rdflib`
 (`pip install rdflib`), and only needs to be re-run by hand if the ttl
 fixtures or a query's text change.
@@ -30,6 +34,7 @@ Usage: python3 generate_sparql_golden.py
 """
 import glob
 import os
+import re
 import sys
 
 try:
@@ -45,6 +50,7 @@ GOLDEN_DIR = os.path.join(os.path.dirname(__file__), "golden")
 
 COFFEE_GRAPH_IRI = "file://resources/ttl/coffee/coffee.ttl#rdf"
 SKIP = {"bsbm/9.sparql", "bsbm/12.sparql"}  # DESCRIBE / CONSTRUCT -- not a row-table result
+TRUTH_OF_RE = re.compile(r"\bTRUTH\s+OF\b", re.IGNORECASE)  # fuzzy extension, not standard SPARQL
 
 
 def load_coffee():
@@ -72,6 +78,9 @@ def main():
                 continue
             with open(path) as f:
                 query_text = f.read()
+            if TRUTH_OF_RE.search(query_text):
+                print(f"skip {rel} (TRUTH OF extension, not standard SPARQL)")
+                continue
             rows = [tuple(golden.term_key(t) for t in row) for row in store.query(query_text)]
             out_path = os.path.join(GOLDEN_DIR, f"{category}__{name}.json")
             n = golden.write_golden(out_path, rows)
