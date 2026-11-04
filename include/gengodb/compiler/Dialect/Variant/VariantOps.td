@@ -203,6 +203,13 @@ def StrCastOp : Variant_Op<"str_cast", [Pure]> {
     let assemblyFormat = [{ $var attr-dict }];
 }
 
+def ConcatOp : Variant_Op<"concat", [Pure]> {
+    let summary = "concatenate lexical forms of two variants";
+    let arguments = (ins Variant:$lhs, Variant:$rhs);
+    let results = (outs Variant:$result);
+    let assemblyFormat = [{ $lhs `,` $rhs attr-dict }];
+}
+
 def PredicateOp : Variant_Op<"predicate", [Pure]> {
     let summary = "a tri-booled predicate";
     let arguments = (ins Variant:$var, ArrayAttr:$pred);

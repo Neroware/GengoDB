@@ -2605,6 +2605,63 @@ class VariantSampleAggrFunc : public DistAggrFunc {
    }
 };
 
+class VariantGroupConcatAggrFunc : public DistAggrFunc {
+   std::string separator;
+
+   mlir::Value join(mlir::OpBuilder& builder, mlir::Location loc, mlir::Value l, mlir::Value r) {
+      auto variantType = variant::VariantType::get(builder.getContext());
+      mlir::Value sepStr = builder.create<db::ConstantOp>(loc, db::StringType::get(builder.getContext()), builder.getStringAttr(separator));
+      mlir::Value sep = builder.create<variant::CreateScalarOp>(loc, variantType, sepStr);
+      mlir::Value withSep = builder.create<variant::ConcatOp>(loc, variantType, l, sep);
+      return builder.create<variant::ConcatOp>(loc, variantType, withSep, r);
+   }
+   mlir::Value merge(mlir::OpBuilder& builder, mlir::Location loc, mlir::Value left, mlir::Value right) {
+      mlir::Value isLeftNull = builder.create<db::IsNullOp>(loc, left);
+      mlir::Value isRightNull = builder.create<db::IsNullOp>(loc, right);
+      mlir::Value anyNull = builder.create<mlir::arith::OrIOp>(loc, isLeftNull, isRightNull);
+      auto ifOp = builder.create<mlir::scf::IfOp>(
+         loc, anyNull,
+         [&](mlir::OpBuilder& b, mlir::Location l) {
+            b.create<mlir::scf::YieldOp>(l, b.create<mlir::arith::SelectOp>(l, isLeftNull, right, left).getResult());
+         },
+         [&](mlir::OpBuilder& b, mlir::Location l) {
+            mlir::Value lRaw = b.create<db::NullableGetVal>(l, left);
+            mlir::Value rRaw = b.create<db::NullableGetVal>(l, right);
+            b.create<mlir::scf::YieldOp>(l, b.create<db::AsNullableOp>(l, stateType, join(b, l, lRaw, rRaw)).getResult());
+         });
+      return ifOp.getResult(0);
+   }
+
+   public:
+   VariantGroupConcatAggrFunc(const tuples::ColumnDefAttr& destAttribute, const tuples::ColumnRefAttr& sourceColumn, std::string separator) : DistAggrFunc(destAttribute, sourceColumn), separator(std::move(separator)) {
+      assert(mlir::isa<db::NullableType>(stateType) && "variant GROUP_CONCAT state must be nullable");
+   }
+   mlir::Value createDefaultValue(mlir::OpBuilder& builder, mlir::Location loc) override {
+      return builder.create<db::NullOp>(loc, stateType);
+   }
+   mlir::Value aggregate(mlir::OpBuilder& builder, mlir::Location loc, mlir::Value state, mlir::ValueRange args) override {
+      auto variantType = variant::VariantType::get(builder.getContext());
+      mlir::Value arg = args[0];
+      if (!mlir::isa<db::NullableType>(arg.getType())) {
+         mlir::Value str = builder.create<variant::StrCastOp>(loc, variantType, arg);
+         return merge(builder, loc, state, builder.create<db::AsNullableOp>(loc, stateType, str));
+      }
+      mlir::Value isArgNull = builder.create<db::IsNullOp>(loc, arg);
+      auto ifOp = builder.create<mlir::scf::IfOp>(
+         loc, isArgNull,
+         [&](mlir::OpBuilder& b, mlir::Location l) { b.create<mlir::scf::YieldOp>(l, state); },
+         [&](mlir::OpBuilder& b, mlir::Location l) {
+            mlir::Value raw = b.create<db::NullableGetVal>(l, arg);
+            mlir::Value str = b.create<variant::StrCastOp>(l, variantType, raw);
+            b.create<mlir::scf::YieldOp>(l, merge(b, l, state, b.create<db::AsNullableOp>(l, stateType, str)));
+         });
+      return ifOp.getResult(0);
+   }
+   mlir::Value combine(mlir::OpBuilder& builder, mlir::Location loc, mlir::Value left, mlir::Value right) override {
+      return merge(builder, loc, left, right);
+   }
+};
+
 static std::shared_ptr<DistAggrFunc> createDistAggrFunc(relalg::AggrFuncOp aggrFn, const tuples::ColumnDefAttr& destColumnAttr) {
    auto sourceColumnAttr = aggrFn.getAttr();
    mlir::Type destType = destColumnAttr.getColumn().type;
@@ -2625,6 +2682,11 @@ static std::shared_ptr<DistAggrFunc> createDistAggrFunc(relalg::AggrFuncOp aggrF
          return std::make_shared<AnyAggrFunc>(destColumnAttr, sourceColumnAttr);
       case relalg::AggrFunc::count:
          return std::make_shared<CountAggrFunc>(destColumnAttr, sourceColumnAttr);
+      case relalg::AggrFunc::group_concat: {
+         assert(nullableVariantState && "group_concat is only supported over RDF terms");
+         auto sep = aggrFn->getAttrOfType<mlir::StringAttr>("separator");
+         return std::make_shared<VariantGroupConcatAggrFunc>(destColumnAttr, sourceColumnAttr, sep ? sep.str() : std::string(" "));
+      }
       default:
          return nullptr;
    }

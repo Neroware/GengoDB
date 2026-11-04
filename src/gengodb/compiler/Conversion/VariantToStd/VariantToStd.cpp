@@ -546,6 +546,26 @@ class StrCastOpLowering : public OpConversionPattern<variant::StrCastOp> {
     }
 };
 
+class ConcatOpLowering : public OpConversionPattern<variant::ConcatOp> {
+    public:
+    using OpConversionPattern<variant::ConcatOp>::OpConversionPattern;
+    LogicalResult matchAndRewrite(variant::ConcatOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+        auto loc = op->getLoc();
+        auto* ctxt = getContext();
+        auto [lhsTag, lhsRef] = unpackVariant(rewriter, loc, adaptor.getLhs());
+        Value lhsLex = computeLexicalForm(rewriter, loc, ctxt, lhsTag, lhsRef);
+        auto [rhsTag, rhsRef] = unpackVariant(rewriter, loc, adaptor.getRhs());
+        Value rhsLex = computeLexicalForm(rewriter, loc, ctxt, rhsTag, rhsRef);
+        Value cat = rt::StringRuntime::concat(rewriter, loc)({lhsLex, rhsLex})[0];
+        Value scratch = allocScratch(rewriter, loc, getVarlen32Type(ctxt));
+        Value typedScratch = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, getVarlen32Type(ctxt)), scratch);
+        rewriter.create<util::StoreOp>(loc, cat, typedScratch, Value());
+        Value strTag = constI32(rewriter, loc, xsd::to_int32(xsd::Type::String));
+        rewriter.replaceOp(op, packVariant(rewriter, loc, strTag, scratch));
+        return success();
+    }
+};
+
 class LangCastOpLowering : public OpConversionPattern<variant::StrCastOp> {
     public:
     using OpConversionPattern<variant::StrCastOp>::OpConversionPattern;
@@ -882,6 +902,7 @@ struct VariantToStdLoweringPass
         patterns.insert<VariantGetValOpLowering>(typeConverter, ctxt);
         patterns.insert<ToStringOpLowering>(typeConverter, ctxt);
         patterns.insert<StrCastOpLowering>(typeConverter, ctxt);
+        patterns.insert<ConcatOpLowering>(typeConverter, ctxt);
         patterns.insert<LangCastOpLowering>(typeConverter, ctxt, PatternBenefit(2));
         patterns.insert<CastOpLowering>(typeConverter, ctxt);
         patterns.insert<CmpOpLowering>(typeConverter, ctxt);
