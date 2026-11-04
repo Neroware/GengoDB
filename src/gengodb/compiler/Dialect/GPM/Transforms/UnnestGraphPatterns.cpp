@@ -3,13 +3,17 @@
 #include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOps.h"
 #include "gengodb/compiler/Dialect/GPM/Transforms/BindingColumnTransformer.h"
+#include "gengodb/compiler/Dialect/Variant/VariantDialect.h"
+#include "gengodb/compiler/Dialect/Variant/VariantOps.h"
 #include "lingodb/compiler/Dialect/DB/IR/DBOps.h"
 #include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgOps.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringMap.h"
@@ -70,6 +74,10 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
    public:
    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(UnnestGraphPatternsPass)
 
+   void getDependentDialects(mlir::DialectRegistry& registry) const override {
+      registry.insert<mlir::arith::ArithDialect, variant::VariantDialect>();
+   }
+
    void runOnOperation() override {
       llvm::SmallVector<std::pair<mlir::Operation*, unsigned>> entries;
       getOperation()->walk([&](mlir::Operation* op) {
@@ -111,6 +119,12 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
    llvm::MapVector<const tuples::Column*, const tuples::Column*> splitOrigin;
    ColumnMapper nameMerges;
    llvm::DenseMap<const tuples::Column*, tuples::ColumnRefAttr> isolatedGraphs;
+   struct FuzzyScope {
+      std::optional<float> threshold;
+      llvm::DenseMap<mlir::Value, const tuples::Column*> degreeOf;
+      llvm::DenseSet<mlir::Value> pruned;
+   };
+   llvm::SmallVector<FuzzyScope> fuzzyScopes;
    template <typename OpTy>
    void rescopeGraph(OpTy expansion) {
       if (auto it = isolatedGraphs.find(&expansion.getGraphRef().getColumn()); it != isolatedGraphs.end()) expansion.setGraphRefAttr(it->second);
@@ -170,7 +184,20 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       llvm::StringMap<tuples::ColumnRefAttr> ownScope;
       bnodesToVariables(triple, bnodeScope ? *bnodeScope : ownScope);
       isolateTriple(triple, insertPoint);
+      if (!fuzzyScopes.empty()) attachDegree(triple);
       return fold(accumulator, triple.getRes(), gpm::PatternKind::basic, relalg::ColumnSet(), triple.getLoc());
+   }
+   void attachDegree(gpm::TriplePatternOp triple) {
+      auto& columnManager = triple.getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      auto degreeDef = columnManager.createDef(columnManager.getUniqueScope("fuzzy"), "degree");
+      degreeDef.getColumn().type = mlir::Float32Type::get(triple.getContext());
+      triple.setTruthDegrAttr(degreeDef);
+      for (auto& scope : fuzzyScopes) scope.degreeOf[triple.getRes()] = &degreeDef.getColumn();
+   }
+   void propagateDegrees(mlir::Value from, mlir::Value to) {
+      for (auto& scope : fuzzyScopes) {
+         if (const auto* degree = scope.degreeOf.lookup(from)) scope.degreeOf[to] = degree;
+      }
    }
    mlir::Value rewriteFilter(gpm::FilterOp filterOp) {
       mlir::Value newRel = rewrite(filterOp.getRel());
@@ -179,9 +206,42 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       builder.setInsertionPoint(insertPoint);
       auto selOp = builder.create<relalg::SelectionOp>(filterOp.getLoc(), filterOp.getRes().getType(), rel);
       selOp.getPredicate().takeBody(filterOp.getPredicate());
+      propagateDegrees(rel, selOp.getResult());
       return selOp.getResult();
    }
+   mlir::Value rewriteFuzzy(gpm::FuzzyGraphPatternOp fuzzyOp) {
+      auto loc = fuzzyOp.getLoc();
+      mlir::Value accumulator = rewrite(fuzzyOp.getRel());
+      mlir::Value blockArg = fuzzyOp.getPattern().front().getArgument(0);
+      rewritten[blockArg] = accumulator;
+      std::optional<float> threshold;
+      if (auto attr = fuzzyOp.getThreshold()) threshold = attr->convertToFloat();
+      fuzzyScopes.emplace_back().threshold = threshold;
+      mlir::Value result = rewriteRegion(fuzzyOp.getPattern());
+      FuzzyScope scope = fuzzyScopes.pop_back_val();
+      rewritten.erase(blockArg);
+      if (!result || result == accumulator) return result;
+      const auto* degree = scope.degreeOf.lookup(result);
+      if (!degree) {
+         fuzzyOp.emitOpError("TRUTH OF block matches no triples");
+         signalPassFailure();
+         return {};
+      }
+      mlir::Value finalStream;
+      if (!threshold) {
+         finalStream = bindTruthDegree(result, degree, fuzzyOp.getTruthDegrAttr(), loc);
+      }
+      else if (scope.pruned.contains(result)) {
+         finalStream = result;
+      }
+      else {
+         finalStream = buildThresholdSelection(result, degree, *threshold, /*keepUnbound=*/false, loc);
+      }
+      propagateDegrees(result, finalStream);
+      return finalStream;
+   }
    mlir::Value rewritePattern(gpm::GraphPatternOp patternOp) {
+      if (auto fuzzyOp = mlir::dyn_cast<gpm::FuzzyGraphPatternOp>(patternOp.getOperation())) return rewriteFuzzy(fuzzyOp);
       auto createdVars = mlir::cast<gpm::GPMOperator>(patternOp.getOperation()).getCreatedVariables();
       auto kind = patternOp.getPatternKind();
       auto loc = patternOp.getLoc();
@@ -439,6 +499,22 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          mappingEntries.push_back(newDef);
       }
 
+      llvm::SmallVector<std::pair<FuzzyScope*, const tuples::Column*>> unionDegrees;
+      for (auto& scope : fuzzyScopes) {
+         const auto* leftDegree = scope.degreeOf.lookup(leftStream);
+         const auto* rightDegree = scope.degreeOf.lookup(rightStream);
+         if (!leftDegree && !rightDegree) continue;
+         auto side = [&](const tuples::Column* degree) -> mlir::Attribute {
+            return degree ? static_cast<mlir::Attribute>(columnManager.createRef(degree)) : static_cast<mlir::Attribute>(mlir::UnitAttr::get(ctxt));
+         };
+         auto degreeDef = columnManager.createDef(columnManager.getUniqueScope("fuzzy"), "acc", mlir::ArrayAttr::get(ctxt, {side(leftDegree), side(rightDegree)}));
+         bool nullable = !leftDegree || !rightDegree || mlir::isa<db::NullableType>(leftDegree->type) || mlir::isa<db::NullableType>(rightDegree->type);
+         mlir::Type f32 = mlir::Float32Type::get(ctxt);
+         degreeDef.getColumn().type = nullable ? static_cast<mlir::Type>(db::NullableType::get(ctxt, f32)) : f32;
+         mappingEntries.push_back(degreeDef);
+         unionDegrees.emplace_back(&scope, &degreeDef.getColumn());
+      }
+
       mlir::OpBuilder builder(ctxt);
       builder.setInsertionPoint(insertPoint);
       auto relUnion = builder.create<relalg::UnionOp>(loc, relalg::SetSemanticAttr::get(ctxt, relalg::SetSemantic::all), leftStream, rightStream, mlir::ArrayAttr::get(ctxt, mappingEntries));
@@ -446,6 +522,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       collectSubtreeOps(leftStream, preMergeOps);
       collectSubtreeOps(rightStream, preMergeOps);
       gpm::BindingColumnTransformer(ctxt).remapColumnsEverywhere(getOperation(), relUnion.getOperation(), passthroughColMap, &preMergeOps);
+      for (auto [scope, degree] : unionDegrees) scope->degreeOf[relUnion.getResult()] = degree;
       return relUnion.getResult();
    }
    void isolateTriple(gpm::TriplePatternOp triple, mlir::Operation* insertBefore) {
@@ -483,6 +560,9 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          }
          relalg::ColumnSet paddedVars = elementCreatedVars;
          for (auto [leftCol, rightCol] : mergePairs) paddedVars.insert(rightCol);
+         for (auto& scope : fuzzyScopes) {
+            if (const auto* degree = scope.degreeOf.lookup(elementStream)) paddedVars.insert(degree);
+         }
          ColumnMapper nullableColMap;
          auto mapping = buildNullableMapping(builder, paddedVars, nullableColMap);
          auto join = builder.create<relalg::OuterJoinOp>(loc, streamType, accumulator, elementStream, mapping);
@@ -511,7 +591,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
             }
          }
          gpm::BindingColumnTransformer(&getContext()).remapColumnsEverywhere(getOperation(), join.getOperation(), colMap, &preMergeOps);
-         return join.getResult();
+         return combineDegrees(join.getResult(), accumulator, elementStream, nullableColMap, loc);
       }
       if (elementKind == gpm::PatternKind::minus) {
          auto join = builder.create<relalg::AntiSemiJoinOp>(loc, streamType, accumulator, elementStream);
@@ -520,13 +600,132 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          auto pairs = sharedVariablePairs(elementStream, loc, collectTripleVariables(accumulator, visitedLeft));
          addSharedVariablePredicate(join, pairs, loc);
          addDomainOverlapPredicate(join, pairs, loc);
-         return join.getResult();
+         return combineDegrees(join.getResult(), accumulator, mlir::Value(), ColumnMapper(), loc);
       }
       auto join = builder.create<relalg::InnerJoinOp>(loc, streamType, accumulator, elementStream);
       join.initPredicate();
       addSharedVariablePredicate(join, accumulator, elementStream, loc);
       addNameMatchedPredicate(join, splitPairs, loc);
-      return join.getResult();
+      return combineDegrees(join.getResult(), accumulator, elementStream, ColumnMapper(), loc);
+   }
+   mlir::Value combineDegrees(mlir::Value joined, mlir::Value left, mlir::Value right, const ColumnMapper& paddedRight, mlir::Location loc) {
+      mlir::Value current = joined;
+      llvm::SmallVector<std::pair<const tuples::Column*, bool>> combined;
+      for (auto& scope : fuzzyScopes) {
+         const auto* leftDegree = scope.degreeOf.lookup(left);
+         const auto* rightDegree = right ? scope.degreeOf.lookup(right) : nullptr;
+         if (const auto* padded = rightDegree ? paddedRight.lookup(rightDegree) : nullptr) rightDegree = padded;
+         const tuples::Column* degree = leftDegree ? leftDegree : rightDegree;
+         if (leftDegree && rightDegree) std::tie(current, degree) = buildProductTNorm(current, leftDegree, rightDegree, loc);
+         combined.emplace_back(degree, rightDegree != nullptr);
+      }
+      llvm::SmallVector<bool> prunedNow;
+      for (auto [scope, entry] : llvm::zip(fuzzyScopes, combined)) {
+         auto [degree, contributed] = entry;
+         bool prune = scope.threshold && degree && contributed;
+         if (prune) current = buildThresholdSelection(current, degree, *scope.threshold, /*keepUnbound=*/true, loc);
+         prunedNow.push_back(prune && !mlir::isa<db::NullableType>(degree->type));
+      }
+      for (auto [scope, entry, prunedHere] : llvm::zip(fuzzyScopes, combined, prunedNow)) {
+         if (entry.first) scope.degreeOf[current] = entry.first;
+         if (prunedHere) scope.pruned.insert(current);
+      }
+      return current;
+   }
+   std::pair<mlir::Value, const tuples::Column*> buildProductTNorm(mlir::Value stream, const tuples::Column* lhs, const tuples::Column* rhs, mlir::Location loc) {
+      auto* ctxt = stream.getContext();
+      auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      mlir::Type f32 = mlir::Float32Type::get(ctxt);
+      bool nullable = mlir::isa<db::NullableType>(lhs->type) && mlir::isa<db::NullableType>(rhs->type);
+      auto accDef = columnManager.createDef(columnManager.getUniqueScope("fuzzy"), "acc");
+      accDef.getColumn().type = nullable ? static_cast<mlir::Type>(db::NullableType::get(ctxt, f32)) : f32;
+      mlir::OpBuilder builder(ctxt);
+      builder.setInsertionPoint(insertPoint);
+      auto* block = new mlir::Block;
+      mlir::Value tuple = block->addArgument(tuples::TupleType::get(ctxt), loc);
+      {
+         mlir::OpBuilder::InsertionGuard guard(builder);
+         builder.setInsertionPointToStart(block);
+         llvm::SmallVector<mlir::Value, 2> isNull;
+         auto load = [&](const tuples::Column* column) -> mlir::Value {
+            mlir::Value value = builder.create<tuples::GetColumnOp>(loc, column->type, columnManager.createRef(column), tuple);
+            if (!mlir::isa<db::NullableType>(column->type)) return value;
+            mlir::Value null = builder.create<db::IsNullOp>(loc, value);
+            isNull.push_back(null);
+            mlir::Value raw = builder.create<db::NullableGetVal>(loc, value);
+            mlir::Value one = builder.create<mlir::arith::ConstantOp>(loc, f32, builder.getF32FloatAttr(1.0f));
+            return builder.create<mlir::arith::SelectOp>(loc, null, one, raw);
+         };
+         mlir::Value lhsVal = load(lhs);
+         mlir::Value rhsVal = load(rhs);
+         mlir::Value product = builder.create<mlir::arith::MulFOp>(loc, lhsVal, rhsVal);
+         if (nullable) {
+            mlir::Value bothNull = builder.create<mlir::arith::AndIOp>(loc, isNull[0], isNull[1]);
+            product = builder.create<db::AsNullableOp>(loc, accDef.getColumn().type, product, bothNull);
+         }
+         builder.create<tuples::ReturnOp>(loc, product);
+      }
+      auto mapOp = builder.create<relalg::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, builder.getArrayAttr({accDef}));
+      mapOp.getPredicate().push_back(block);
+      return {mapOp.getResult(), &accDef.getColumn()};
+   }
+   mlir::Value buildThresholdSelection(mlir::Value stream, const tuples::Column* degree, float threshold, bool keepUnbound, mlir::Location loc) {
+      auto* ctxt = stream.getContext();
+      auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      mlir::OpBuilder builder(ctxt);
+      builder.setInsertionPoint(insertPoint);
+      auto selOp = builder.create<relalg::SelectionOp>(loc, tuples::TupleStreamType::get(ctxt), stream);
+      auto* block = new mlir::Block;
+      mlir::Value tuple = block->addArgument(tuples::TupleType::get(ctxt), loc);
+      selOp.getPredicate().push_back(block);
+      mlir::OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPointToStart(block);
+      mlir::Value value = builder.create<tuples::GetColumnOp>(loc, degree->type, columnManager.createRef(degree), tuple);
+      mlir::Value bound = builder.create<mlir::arith::ConstantOp>(loc, builder.getF32Type(), builder.getF32FloatAttr(threshold));
+      mlir::Value pred;
+      if (mlir::isa<db::NullableType>(degree->type)) {
+         mlir::Value null = builder.create<db::IsNullOp>(loc, value);
+         mlir::Value raw = builder.create<db::NullableGetVal>(loc, value);
+         mlir::Value reached = builder.create<mlir::arith::CmpFOp>(loc, mlir::arith::CmpFPredicate::OGE, raw, bound);
+         mlir::Value unboundResult = builder.create<mlir::arith::ConstantIntOp>(loc, keepUnbound ? 1 : 0, 1);
+         pred = builder.create<mlir::arith::SelectOp>(loc, null, unboundResult, reached);
+      }
+      else {
+         pred = builder.create<mlir::arith::CmpFOp>(loc, mlir::arith::CmpFPredicate::OGE, value, bound);
+      }
+      builder.create<tuples::ReturnOp>(loc, pred);
+      return selOp.getResult();
+   }
+   mlir::Value bindTruthDegree(mlir::Value stream, const tuples::Column* degree, tuples::ColumnDefAttr resultDef, mlir::Location loc) {
+      auto* ctxt = stream.getContext();
+      auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      mlir::Type variantType = variant::VariantType::get(ctxt);
+      bool nullable = mlir::isa<db::NullableType>(degree->type);
+      auto truthDef = columnManager.createDef(&resultDef.getColumn());
+      truthDef.getColumn().type = nullable ? static_cast<mlir::Type>(db::NullableType::get(ctxt, variantType)) : variantType;
+      mlir::OpBuilder builder(ctxt);
+      builder.setInsertionPoint(insertPoint);
+      auto* block = new mlir::Block;
+      mlir::Value tuple = block->addArgument(tuples::TupleType::get(ctxt), loc);
+      {
+         mlir::OpBuilder::InsertionGuard guard(builder);
+         builder.setInsertionPointToStart(block);
+         mlir::Value value = builder.create<tuples::GetColumnOp>(loc, degree->type, columnManager.createRef(degree), tuple);
+         mlir::Value truth;
+         if (nullable) {
+            mlir::Value null = builder.create<db::IsNullOp>(loc, value);
+            mlir::Value raw = builder.create<db::NullableGetVal>(loc, value);
+            mlir::Value scalar = builder.create<variant::CreateScalarOp>(loc, variantType, raw);
+            truth = builder.create<db::AsNullableOp>(loc, truthDef.getColumn().type, scalar, null);
+         }
+         else {
+            truth = builder.create<variant::CreateScalarOp>(loc, variantType, value);
+         }
+         builder.create<tuples::ReturnOp>(loc, truth);
+      }
+      auto mapOp = builder.create<relalg::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, builder.getArrayAttr({truthDef}));
+      mapOp.getPredicate().push_back(block);
+      return mapOp.getResult();
    }
    relalg::ColumnSet collectTripleVariables(mlir::Value v, llvm::SmallPtrSet<mlir::Operation*, 16>& visited) {
       relalg::ColumnSet result;

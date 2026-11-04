@@ -85,7 +85,7 @@ subop::StateMembersAttr gsubop::EdgeRefType::getMembers() {
    for (const auto& member : getFromMembers().getMembers()) {
       combined.push_back(member);
    }
-   for (const auto& member : getFromMembers().getMembers()) {
+   for (const auto& member : getToMembers().getMembers()) {
       combined.push_back(member);
    }
    for (const auto& member : getPropertyMembers().getMembers()) {

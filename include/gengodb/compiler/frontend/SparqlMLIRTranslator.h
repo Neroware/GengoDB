@@ -59,7 +59,7 @@ struct Triple {
 };
 
 struct PatternElement {
-   enum class Kind { Graph, Optional, Filter, Union, Group };
+   enum class Kind { Graph, Optional, Filter, Union, Group, Truth };
    virtual ~PatternElement() = default;
    virtual Kind kind() const = 0;
 };
@@ -78,6 +78,14 @@ struct GroupPattern : PatternElement {
 struct OptionalPattern : PatternElement {
    std::vector<std::unique_ptr<PatternElement>> patterns;
    Kind kind() const override { return Kind::Optional; }
+};
+
+struct TruthPattern : PatternElement {
+   std::optional<std::string> variable;
+   std::optional<float> threshold;
+   std::optional<std::string> normIri;
+   std::vector<std::unique_ptr<PatternElement>> patterns;
+   Kind kind() const override { return Kind::Truth; }
 };
 
 struct UnionPattern : PatternElement {
@@ -143,9 +151,7 @@ struct FunctionCallExpr : Expr {
 
 struct CastExpr : Expr {
    std::unique_ptr<Expr> operand;
-   // nullopt = STR() (or LANG(), see isLangCast)
    std::optional<gengodb::semantics::xsd::Type> targetType;
-   // true iff this is LANG() rather than STR();
    bool isLangCast{false}; 
    Kind kind() const override { return Kind::Cast; }
 };
@@ -218,7 +224,7 @@ class Tokenizer {
          name += adv();
 
       if (cur() == ':' && la() != ':') {
-         adv(); // consume ':'
+         adv();
          std::string local;
          while (pos < src.size()) {
             char c = cur();
@@ -236,6 +242,14 @@ class Tokenizer {
 
    public:
    explicit Tokenizer(std::string s) : src(std::move(s)) {}
+
+   Token peek() {
+      size_t savedPos = pos, savedLine = line;
+      Token t = next();
+      pos = savedPos;
+      line = savedLine;
+      return t;
+   }
 
    Token next() {
       skipWS();
@@ -321,6 +335,11 @@ class Parser {
       if (tok.kind != k)
          throw std::runtime_error("Parse error at line " + std::to_string(tok.line) + ": unexpected '" + tok.value + "'");
       Token t = tok; advance(); return t;
+   }
+   bool atTruthOf() {
+      if (!is(TK::Variable) && !is(TK::Number)) return false;
+      Token next = tz.peek();
+      return next.kind == TK::Keyword && next.value == "TRUTH";
    }
    void eatKw(const char* w) {
       if (!kw(w))
@@ -564,7 +583,7 @@ class Parser {
       std::vector<sparql::Triple> out;
       while (!is(TK::RBrace) && !is(TK::Eof) && !kw("GRAPH") && !kw("OPTIONAL") &&
              !kw("FILTER")  && !kw("UNION")  && !kw("MINUS")  && !kw("SERVICE") &&
-             !kw("BIND")    && !kw("VALUES")  && !is(TK::LBrace)) {
+             !kw("BIND")    && !kw("VALUES")  && !is(TK::LBrace) && !kw("FUZZY_NORM") && !atTruthOf()) {
          if (is(TK::Dot)) { advance(); continue; }
          sparql::Term s = parseTerm(pref);
          sparql::Term p = parseTerm(pref);
@@ -588,10 +607,40 @@ class Parser {
 
    void parseGroup(std::vector<std::unique_ptr<sparql::PatternElement>>& out,
                    const std::map<std::string, std::string>& prefixes,
-                   const std::string& activeGraph) {
+                   const std::string& activeGraph,
+                   std::optional<std::string>* fuzzyNorm = nullptr) {
       eat(TK::LBrace);
       while (!is(TK::RBrace) && !is(TK::Eof)) {
          if (is(TK::Dot)) { advance(); continue; }
+
+         if (atTruthOf()) {
+            auto tp = std::make_unique<sparql::TruthPattern>();
+            if (is(TK::Variable)) {
+               tp->variable = tok.value;
+            } else {
+               tp->threshold = std::stof(tok.value);
+               if (*tp->threshold < 0.0f || *tp->threshold > 1.0f)
+                  throw std::runtime_error("TRUTH OF threshold must be in [0, 1] at line " + std::to_string(tok.line));
+            }
+            advance();
+            eatKw("TRUTH");
+            eatKw("OF");
+            parseGroup(tp->patterns, prefixes, activeGraph, &tp->normIri);
+            out.push_back(std::move(tp));
+            continue;
+         }
+
+         if (kw("FUZZY_NORM")) {
+            if (!fuzzyNorm)
+               throw std::runtime_error("FUZZY_NORM is only allowed directly inside a TRUTH OF block (line " + std::to_string(tok.line) + ")");
+            if (fuzzyNorm->has_value())
+               throw std::runtime_error("Duplicate FUZZY_NORM in TRUTH OF block at line " + std::to_string(tok.line));
+            advance();
+            if      (is(TK::IRI))          { *fuzzyNorm = tok.value; advance(); }
+            else if (is(TK::PrefixedName)) { *fuzzyNorm = expandPrefix(tok.value, prefixes); advance(); }
+            else throw std::runtime_error("Expected norm IRI after FUZZY_NORM at line " + std::to_string(tok.line));
+            continue;
+         }
 
          if (kw("GRAPH")) {
             advance();
@@ -777,7 +826,7 @@ class Translator {
    std::map<std::string, std::pair<std::string, mlir::Value>> graphInfo;
    int graphCount{0};
 
-   std::vector<std::string> allVars; // in order of first appearance
+   std::vector<std::string> allVars;
    std::map<std::string, tuples::ColumnDefAttr> varDefs;
 
    std::string currentVarScope{"vars"};
@@ -840,7 +889,7 @@ class Translator {
             auto p = termAttr(triple.p);
             auto o = termAttr(triple.o);
             cur = builder.create<gpm::TriplePatternOp>(
-               loc, tuples::TupleStreamType::get(ctxt), cur, graphRef, s, p, o);
+               loc, tuples::TupleStreamType::get(ctxt), cur, graphRef, s, p, o, /*degree=*/tuples::ColumnDefAttr());
          }
          builder.create<tuples::ReturnOp>(loc, cur);
       }
@@ -874,6 +923,12 @@ class Translator {
             case sparql::PatternElement::Kind::Group:
                if (auto* gp = firstGraphPattern(static_cast<const sparql::GroupPattern&>(*elemPtr).patterns)) return gp;
                break;
+            case sparql::PatternElement::Kind::Truth:
+               if (auto* gp = firstGraphPattern(static_cast<const sparql::TruthPattern&>(*elemPtr).patterns)) return gp;
+               break;
+            case sparql::PatternElement::Kind::Optional:
+               if (auto* gp = firstGraphPattern(static_cast<const sparql::OptionalPattern&>(*elemPtr).patterns)) return gp;
+               break;
             case sparql::PatternElement::Kind::Union:
                for (const auto& branch : static_cast<const sparql::UnionPattern&>(*elemPtr).branches) {
                   if (auto* gp = firstGraphPattern(branch)) return gp;
@@ -884,6 +939,49 @@ class Translator {
          }
       }
       return nullptr;
+   }
+
+   static constexpr const char* kProductNormIri = "https://example.org/product_norm";
+
+   mlir::Value buildFuzzy(const sparql::TruthPattern& tp, mlir::Value inputStream) {
+      auto loc = builder.getUnknownLoc();
+      if (tp.normIri && *tp.normIri != kProductNormIri)
+         throw sparql::UnsupportedFeatureError("FUZZY_NORM <" + *tp.normIri + "> is not supported (only <" + kProductNormIri + "> is implemented)");
+      if (tp.variable && varDefs.count(*tp.variable))
+         throw sparql::UnsupportedFeatureError("TRUTH OF target ?" + *tp.variable + " is already bound");
+      if (!inputStream) {
+         const auto* gp = firstGraphPattern(tp.patterns);
+         if (!gp || gp->graphUri.empty())
+            throw std::runtime_error("Triple patterns without an explicit GRAPH clause are not supported. Did you forget to define a default graph?");
+         inputStream = namedGraph(gp->graphUri).second;
+      }
+      auto fuzzyOp = builder.create<gpm::FuzzyGraphPatternOp>(
+         loc, tuples::TupleStreamType::get(ctxt), inputStream, gpm::TNormAttr::get(ctxt, gpm::TNorm::product),
+         tuples::ColumnDefAttr(), mlir::FloatAttr());
+
+      auto* block = new mlir::Block;
+      block->addArgument(tuples::TupleStreamType::get(ctxt), loc);
+      fuzzyOp.getPattern().push_back(block);
+      {
+         mlir::OpBuilder::InsertionGuard guard(builder);
+         builder.setInsertionPointToStart(block);
+         mlir::Value result = buildPatternGroup(tp.patterns, block->getArgument(0));
+         if (!result)
+            throw sparql::UnsupportedFeatureError("TRUTH OF block contains no supported graph patterns");
+         builder.create<tuples::ReturnOp>(loc, result);
+      }
+      if (tp.variable) {
+         if (varDefs.count(*tp.variable))
+            throw sparql::UnsupportedFeatureError("TRUTH OF target ?" + *tp.variable + " must not be used inside its own block");
+         auto def = colMgr.createDef(currentVarScope, *tp.variable);
+         def.getColumn().type = gpm::VariableBindingType::get(ctxt);
+         varDefs[*tp.variable] = def;
+         allVars.push_back(*tp.variable);
+         fuzzyOp.setTruthDegrAttr(def);
+      } else {
+         fuzzyOp.setThresholdAttr(builder.getF32FloatAttr(*tp.threshold));
+      }
+      return fuzzyOp.getRes();
    }
 
    mlir::Value buildGroup(const sparql::GroupPattern& group, mlir::Value inputStream) {
@@ -1272,6 +1370,8 @@ class Translator {
             prevStream = buildUnion(up, prevStream);
          } else if (elemPtr->kind() == sparql::PatternElement::Kind::Group) {
             prevStream = buildGroup(static_cast<const sparql::GroupPattern&>(*elemPtr), prevStream);
+         } else if (elemPtr->kind() == sparql::PatternElement::Kind::Truth) {
+            prevStream = buildFuzzy(static_cast<const sparql::TruthPattern&>(*elemPtr), prevStream);
          }
       }
       return prevStream;
@@ -1290,6 +1390,8 @@ class Translator {
             for (const auto& branch : up.branches) preRegisterGraphs(branch);
          } else if (elemPtr->kind() == sparql::PatternElement::Kind::Group) {
             preRegisterGraphs(static_cast<const sparql::GroupPattern&>(*elemPtr).patterns);
+         } else if (elemPtr->kind() == sparql::PatternElement::Kind::Truth) {
+            preRegisterGraphs(static_cast<const sparql::TruthPattern&>(*elemPtr).patterns);
          }
       }
    }

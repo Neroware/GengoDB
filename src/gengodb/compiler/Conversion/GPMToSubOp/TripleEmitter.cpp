@@ -27,7 +27,8 @@ mlir::Value generateTupleStream(mlir::ConversionPatternRewriter& rewriter, mlir:
 }
 TripleEmitter::TripleEmitter(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& graphs, mlir::Operation* op, mlir::DictionaryAttr triple)
     : GraphEmitter(rewriter, graphs, op, mlir::cast<tuples::ColumnRefAttr>(triple.get("graphRef"))),
-    sTerm(triple.get("s")), pTerm(triple.get("p")), oTerm(triple.get("o")) {
+    sTerm(triple.get("s")), pTerm(triple.get("p")), oTerm(triple.get("o")),
+    truthDegrAttr(mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(triple.get("truthDegr"))) {
     for (auto [i, attr] : llvm::enumerate(mlir::cast<mlir::ArrayAttr>(triple.get("paramIds")))) {
         int64_t id = mlir::cast<mlir::IntegerAttr>(attr).getInt();
         if (id >= 0) paramIds[i] = static_cast<size_t>(id);
@@ -87,7 +88,7 @@ mlir::Value GraphEmitter::scanEdges(mlir::Value stream, tuples::ColumnRefAttr ed
     auto* b = new mlir::Block();
     b->addArgument(tuples::TupleType::get(ctxt), loc);
     auto edgeSetArg = b->addArgument(edgeSetType, loc);
-    edgeRefType = createEdgeRefType(ctxt, group, graph);
+    edgeRefType = createEdgeRefType(ctxt, group, graph, useEdgeWeights ? mlir::Float32Type::get(ctxt) : mlir::Type());
     auto [edgeRefColumnDef, resolvedRef] = createColumn(edgeRefType, "edges", "ref");
     nestedMapOp.getRegion().push_back(b);
     {
@@ -153,7 +154,7 @@ mlir::Value GraphEmitter::resolveEdge(mlir::Value stream, tuples::ColumnRefAttr 
     auto edgeSetArg = block->addArgument(graphData.edgeSetColumn->type, loc);
     auto variantArg = block->addArgument(edgeVariantRef.getColumn().type, loc);
     nestedMapOp.getRegion().push_back(block);
-    edgeRefType = createEdgeRefType(ctxt, group, graph);
+    edgeRefType = createEdgeRefType(ctxt, group, graph, useEdgeWeights ? mlir::Float32Type::get(ctxt) : mlir::Type());
     {
         mlir::OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(block);
@@ -214,7 +215,16 @@ mlir::Value TripleEmitter::lower(mlir::Value stream, std::optional<gpm::TripleSl
         stream = emitPredicate(stream, edgeRef, paramIds[1]);
         stream = emitTerm(stream, oTerm, edgeRefType.getToMembers().getMembers()[0], edgeRef, paramIds[2]);
     }
+    if (truthDegrAttr) {
+        stream = emitTruthDegree(stream, edgeRefType, edgeRef);
+    }
     return stream;
+}
+mlir::Value TripleEmitter::emitTruthDegree(mlir::Value stream, gsubop::EdgeRefType edgeRefType, tuples::ColumnRefAttr edgeRef) {
+    auto truthMember = edgeRefType.getPropertyMembers().getMembers()[0];
+    assert(mlir::isa<mlir::Float32Type>(memberManager.getType(truthMember)) && "edge ref must expose its payload as truth degree");
+    truthDegrAttr.getColumn().type = rewriter.getF32Type();
+    return rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(ctxt, {{truthMember, truthDegrAttr}}));
 }
 GraphEmitter::AnchorT TripleEmitter::anchorAttr(mlir::Attribute term) {
     if (auto identTerm = mlir::dyn_cast<gpm::IdentifierTermAttr>(term))

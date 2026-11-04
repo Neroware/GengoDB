@@ -114,10 +114,14 @@ bool StatementAccumulator::hasPending() const {
 }
 
 void handleLoad(EngineState& state, const std::string& sourceIri, const std::string& graphIri) {
-   // Only Turtle sources are supported for now.
-   static const std::string ttlExt = ".ttl";
-   if (sourceIri.size() < ttlExt.size() || sourceIri.compare(sourceIri.size() - ttlExt.size(), ttlExt.size(), ttlExt) != 0)
-      throw std::runtime_error("LOAD: only Turtle (.ttl) sources are supported for now: <" + sourceIri + ">");
+   auto endsWith = [&](const std::string& ext) {
+      return sourceIri.size() >= ext.size() && sourceIri.compare(sourceIri.size() - ext.size(), ext.size(), ext) == 0;
+   };
+   RDFFileFormat format;
+   if (endsWith(".ttl")) format = RDFFileFormat::TURTLE;
+   else if (endsWith(".fttl")) format = RDFFileFormat::FUZZY_TURTLE;
+   else throw std::runtime_error("LOAD: only Turtle (.ttl) and Fuzzy-Turtle (.fttl) sources are supported for now: <" + sourceIri + ">");
+   const std::string ttlExt = getRDFFileExtension(format);
    if (sourceIri.rfind("file://", 0) != 0)
       throw std::runtime_error("LOAD: only file:// source IRIs are supported for now: <" + sourceIri + ">");
 
@@ -137,7 +141,7 @@ void handleLoad(EngineState& state, const std::string& sourceIri, const std::str
       return;
    }
 
-   CreateRdfGraphDef def{name, rdf4cpp::IRI{graphIri}, RDFFileFormat::TURTLE, filename,
+   CreateRdfGraphDef def{name, rdf4cpp::IRI{graphIri}, format, filename,
       state.nodeCapacity, state.relCapacity, state.propCapacity};
    auto graphEntry = RDFGraphCatalogEntry::createFromCreateRdfGraphDef(def);
    catalog.insertEntry(graphEntry);

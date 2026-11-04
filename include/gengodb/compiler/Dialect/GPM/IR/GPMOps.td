@@ -14,20 +14,19 @@ include "gengodb/compiler/Dialect/Variant/VariantDialect.td"
 
 include "GPMInterfaces.td"
 
-//===----------------------------------------------------------------------===//
-// Base GPM operation definition.
-//===----------------------------------------------------------------------===//
-
 class GPM_Op<string mnemonic, list<Trait> traits = []> : Op<GPM_Dialect, mnemonic, traits> {
   let hasCustomAssemblyFormat = 1;
 }
 
+//===----------------------------------------------------------------------===//
 // True relational operators that can appear in a RelAlg syntax tree.
+//===----------------------------------------------------------------------===//
+
 class GPM_RelAlgOp<string mnemonic, list<Trait> traits = []> : GPM_Op<"relalg." # mnemonic, traits>;
 
 def TriplePatternOp : GPM_RelAlgOp<"triple_pattern", [Pure,GPMOperator,Operator,UnaryOperator,DeclareOpInterfaceMethods<Parameterizable>]> {
   let summary = "triple pattern";
-  let arguments = (ins TupleStream:$rel, ColumnRefAttr:$graphRef, AnyAttr:$s, AnyAttr:$p, AnyAttr:$o);
+  let arguments = (ins TupleStream:$rel, ColumnRefAttr:$graphRef, AnyAttr:$s, AnyAttr:$p, AnyAttr:$o, OptionalAttr<ColumnDefAttr>:$truthDegr);
   let results = (outs TupleStream:$res);
   let assemblyFormat = [{  $rel custom<CustRef>($graphRef) `(` custom<Term>($s) `,` custom<Term>($p) `,` custom<Term>($o) `)` attr-dict }];
   let hasVerifier = 1;
@@ -83,6 +82,10 @@ def NamedGraphOp : GPM_RelAlgOp<"named_graph", [Pure,GPMOperator,Operator]> {
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// Graph pattern types
+//===----------------------------------------------------------------------===//
+
 def BasicGraphPatternOp : GPM_Op<"basic_graph_pattern", [Pure,GPMOperator,GraphPatternOp,Operator,UnaryOperator]> {
   let summary = "basic graph pattern";
   let arguments = (ins TupleStream:$rel);
@@ -120,6 +123,29 @@ def OptionalGraphPatternOp : GPM_Op<"optional_graph_pattern", [Pure,GPMOperator,
   }];
   let hasVerifier = 1;
 }
+
+def FuzzyGraphPatternOp : GPM_Op<"fuzzy_graph_pattern", [Pure,GPMOperator,GraphPatternOp,Operator,UnaryOperator]> {
+  let summary = "fuzzy graph pattern";
+  let arguments = (ins TupleStream:$rel, GPM_TNorm:$norm, OptionalAttr<ColumnDefAttr>:$truthDegr, OptionalAttr<F32Attr>:$threshold);
+  let results = (outs TupleStream:$res);
+  let regions = (region SizedRegion<1>:$pattern);
+  let assemblyFormat = [{  $rel `norm` `:` $norm custom<CustRegion>($pattern) attr-dict  }];
+  let extraClassDeclaration = [{
+    gengodb::compiler::dialect::gpm::PatternKind getPatternKind() { return gengodb::compiler::dialect::gpm::PatternKind::fuzzy; }
+    lingodb::compiler::dialect::relalg::ColumnSet getBoundVariables() { return getUsedVariables(); }
+    lingodb::compiler::dialect::relalg::ColumnSet getCreatedVariables();
+    lingodb::compiler::dialect::relalg::ColumnSet getUsedVariables();
+    lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
+    bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
+  }];
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// Non-relational basic graph pattern matching operations
+//===----------------------------------------------------------------------===//
 
 def BagOp : GPM_Op<"bag", [Pure,GPMOperator]> {
   let summary = "graph pattern binding union bag";

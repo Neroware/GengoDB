@@ -131,12 +131,29 @@ def rows_equal_bag(actual_rows, expected_rows, max_bnode_perm=8):
     return False, "no blank-node relabeling makes the row multisets equal"
 
 
+def _num_key(value):
+    """Canonical comparison key for a ("num", ...) cell: integral values stay
+    exact (big xsd:unsignedLong etc.), fractional ones are compared at 6
+    significant digits so f32 results (e.g. fuzzy truth degrees printed as
+    0.85500002) match their decimal golden value (0.855)."""
+    d = Decimal(value)
+    if d == d.to_integral_value():
+        return str(int(d))
+    return format(float(d), '.6g')
+
+
+def _normalize_nums(row):
+    return tuple(('num', _num_key(c[1])) if c[0] == 'num' else c for c in row)
+
+
 def compare_rows(actual_raw_rows, expected_rows):
     """actual_raw_rows: list[list[str]] as returned by parse_table.
     expected_rows: list[list[tuple]] already-canonical rows (e.g. loaded
     from a golden fixture, with blank nodes pre-numbered as small ints)."""
     actual = [canonical_row(row) for row in actual_raw_rows]
     expected = [tuple(tuple(c) for c in row) for row in expected_rows]
+    actual = [_normalize_nums(row) for row in actual]
+    expected = [_normalize_nums(row) for row in expected]
     if len(actual) != len(expected):
         return False, f"row count differs: actual={len(actual)} expected={len(expected)}"
     return rows_equal_bag(actual, expected)

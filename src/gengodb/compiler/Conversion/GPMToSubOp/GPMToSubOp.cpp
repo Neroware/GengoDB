@@ -153,6 +153,7 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
       if (failed(normalized(tripleOp))) 
          return failure();
       TripleEmitter emitter(rewriter, graphs, tripleOp);
+      emitter.setUseEdgeWeights(tripleOp->hasAttr("truthDegr"));
       replaceTripleOp(tripleOp, emitter.lower(adaptor.getRel()), rewriter);
       return success();
    }
@@ -169,7 +170,7 @@ class VirtualTriplePatternLowering : public OpConversionPattern<gpm::TriplePatte
       for (auto* user : tripleOp.getRes().getUsers()) {
          if (isRelAlgOperator(user)) user->setAttr(kGraphIndexTripleAttr, triple);
       }
-      for (const auto* column : tripleOp.getCreatedColumns()) {
+      for (const auto* column : tripleOp.getCreatedVariables()) {
          const_cast<tuples::Column*>(column)->type = variant::VariantType::get(rewriter.getContext());
       }
       replaceTripleOp(tripleOp, adaptor.getRel(), rewriter);
@@ -183,8 +184,10 @@ class VirtualTriplePatternLowering : public OpConversionPattern<gpm::TriplePatte
          auto id = tripleOp.getParamId(slot);
          paramIds.push_back(b.getI64IntegerAttr(id ? static_cast<int64_t>(*id) : -1));
       }
-      return b.getDictionaryAttr({b.getNamedAttr("graphRef", tripleOp.getGraphRef()), b.getNamedAttr("s", tripleOp.getS()), 
-         b.getNamedAttr("p", tripleOp.getP()), b.getNamedAttr("o", tripleOp.getO()), b.getNamedAttr("paramIds", b.getArrayAttr(paramIds))});
+      llvm::SmallVector<mlir::NamedAttribute> entries{b.getNamedAttr("graphRef", tripleOp.getGraphRef()), b.getNamedAttr("s", tripleOp.getS()),
+         b.getNamedAttr("p", tripleOp.getP()), b.getNamedAttr("o", tripleOp.getO()), b.getNamedAttr("paramIds", b.getArrayAttr(paramIds))};
+      if (auto truthDegr = tripleOp.getTruthDegrAttr()) entries.push_back(b.getNamedAttr("truthDegr", truthDegr));
+      return b.getDictionaryAttr(entries);
    }
 };
 class NodeExpansionLowering : public OpConversionPattern<gpm::NodeExpansionOp> {

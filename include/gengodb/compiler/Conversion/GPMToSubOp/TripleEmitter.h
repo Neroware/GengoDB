@@ -36,6 +36,7 @@ struct GraphEmitter {
     mlir::Value wrapEdge(mlir::Value stream, tuples::ColumnRefAttr edgeRef, tuples::ColumnDefAttr variantDef);
     mlir::Value resolveNode(mlir::Value stream, tuples::ColumnRefAttr nodeVariantRef, gsubop::NodeRefType& nodeRefType, tuples::ColumnRefAttr& nodeRef);
     mlir::Value resolveEdge(mlir::Value stream, tuples::ColumnRefAttr edgeVariantRef, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef);
+    void setUseEdgeWeights(bool useEdgeWeights) { this->useEdgeWeights = useEdgeWeights; }
 
     protected:
     mlir::ConversionPatternRewriter& rewriter;
@@ -48,11 +49,13 @@ struct GraphEmitter {
     tuples::ColumnRefAttr graphRefAttr;
     mlir::SymbolRefAttr graphName;
     std::string group, graph;
+    bool useEdgeWeights = false;
 }; // GraphEmitter
 
 // Lowers a triple over a tuplestream that carries a graph's node/edge set columns (see NamedGraphMapper).
 class TripleEmitter : public GraphEmitter {
     mlir::Attribute sTerm, pTerm, oTerm;
+    tuples::ColumnDefAttr truthDegrAttr;
     llvm::DenseMap<const tuples::Column*, tuples::ColumnRefAttr> localTerms;
     std::array<std::optional<size_t>, 3> paramIds;
 
@@ -60,7 +63,7 @@ class TripleEmitter : public GraphEmitter {
     template<typename OpTy>
     TripleEmitter(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& graphs, OpTy op)
         : GraphEmitter(rewriter, graphs, op.getOperation(), op.getGraphRef()),
-        sTerm(op.getS()), pTerm(op.getP()), oTerm(op.getO()),
+        sTerm(op.getS()), pTerm(op.getP()), oTerm(op.getO()), truthDegrAttr(op.getTruthDegrAttr()),
         paramIds{op.getParamId(TripleSlot::subject), op.getParamId(TripleSlot::predicate), op.getParamId(TripleSlot::object)} {}
     TripleEmitter(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& graphs, mlir::Operation* op, mlir::DictionaryAttr triple);
     void bind(tuples::ColumnRefAttr anchorRef) {
@@ -77,6 +80,7 @@ class TripleEmitter : public GraphEmitter {
     mlir::Value finish(mlir::Value stream, mlir::Attribute term, tuples::ColumnRefAttr rawRef);
     mlir::Value emitPredicate(mlir::Value stream, tuples::ColumnRefAttr edgeRef, std::optional<size_t> paramId = std::nullopt);
     mlir::Value emitTerm(mlir::Value stream, mlir::Attribute term, subop::Member nodeMember, tuples::ColumnRefAttr edgeRef, std::optional<size_t> paramId = std::nullopt);
+    mlir::Value emitTruthDegree(mlir::Value stream, gsubop::EdgeRefType edgeRefType, tuples::ColumnRefAttr edgeRef);
 }; // TripleEmitter
 
 } // namespace gengodb::compiler::dialect::gpm::lowering

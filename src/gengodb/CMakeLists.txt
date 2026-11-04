@@ -2,6 +2,7 @@ add_library(gengodb
     semantics/Identifiers.cpp
     semantics/RdfGraph.cpp
     semantics/Datatypes.cpp
+    semantics/FuzzyTurtle.cpp
     catalog/CreateRdfGraphDef.cpp
     catalog/GraphCatalogEntry.cpp
     catalog/GraphNodeIndexCatalogEntry.cpp

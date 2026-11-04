@@ -1,0 +1,9 @@
+PREFIX ex: <http://example.org/>
+SELECT ?p ?x ?t
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        ?t TRUTH OF {
+            { ?p ex:eats ?x . } UNION { ?p ex:drinks ?x . }
+        }
+    }
+}

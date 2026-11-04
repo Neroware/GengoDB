@@ -1,0 +1,10 @@
+PREFIX ex: <http://example.org/>
+SELECT ?p ?d ?inner ?outer
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        ?outer TRUTH OF {
+            ?p ex:type ex:Person .
+            ?inner TRUTH OF { ?p ex:drinks ?d . }
+        }
+    }
+}

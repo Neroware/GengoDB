@@ -233,39 +233,43 @@ public:
     virtual void setRdfParseFlags(parser::ParsingFlag rdfParseFlags) {
         this->rdfParseFlags = rdfParseFlags;
     }
+    virtual void setFuzzy(bool fuzzy) {
+        this->fuzzy = fuzzy;
+    }
     static std::unique_ptr<RdfGraph> create(const std::string& name, const IRI& iri, const std::string& sourceFileName = "",
         int32_t nodeCapacity = DEFAULT_NODE_CAPACITY, int32_t relCapacity = DEFAULT_REL_CAPACITY, int32_t propCapacity = DEFAULT_PROP_CAPACITY);
     void loadTriples();
-    void addTriple(const Node& s, const Node& p, const Node& o) {
+    void addTriple(const Node& s, const Node& p, const Node& o, float truth = 1.0f) {
         if (!p.is_iri()) assert(false && "predicate must be an IRI");
         const auto& pred = p.as_iri();
+        runtime::rel_id_t rel = runtime::GRAPH_NONE;
         if (s.is_iri()) {
             const auto& subj = s.as_iri();
-            if (o.is_iri())                 addTriple(subj, pred, o.as_iri());
-            else if (o.is_blank_node())     addTriple(subj, pred, o.as_blank_node());
-            else if (o.is_literal())        addTriple(subj, pred, o.as_literal());
+            if (o.is_iri())                 rel = addTriple(subj, pred, o.as_iri());
+            else if (o.is_blank_node())     rel = addTriple(subj, pred, o.as_blank_node());
+            else if (o.is_literal())        rel = addTriple(subj, pred, o.as_literal());
             else assert(false && "triple object invalid");
-
         }
         else if (s.is_blank_node()) {
             const auto& subj = s.as_blank_node();
 
-            if (o.is_iri())                 addTriple(subj, pred, o.as_iri());
-            else if (o.is_blank_node())     addTriple(subj, pred, o.as_blank_node());
-            else if (o.is_literal())        addTriple(subj, pred, o.as_literal());
+            if (o.is_iri())                 rel = addTriple(subj, pred, o.as_iri());
+            else if (o.is_blank_node())     rel = addTriple(subj, pred, o.as_blank_node());
+            else if (o.is_literal())        rel = addTriple(subj, pred, o.as_literal());
             else assert(false && "triple object invalid");
-
         }
         else {
             assert(false && "triple subject invalid");
         }
+        setTruth(rel, fuzzy ? truth : 1.0f);
     }
-    void addTriple(const IRI& s, const IRI& p, const IRI& o);
-    void addTriple(const IRI& s, const IRI& p, const BlankNode& o);
-    void addTriple(const IRI& s, const IRI& p, const Literal& o);
-    void addTriple(const BlankNode& s, const IRI& p, const IRI& o);
-    void addTriple(const BlankNode& s, const IRI& p, const BlankNode& o);
-    void addTriple(const BlankNode& s, const IRI& p, const Literal& o);
+    runtime::rel_id_t addTriple(const IRI& s, const IRI& p, const IRI& o);
+    runtime::rel_id_t addTriple(const IRI& s, const IRI& p, const BlankNode& o);
+    runtime::rel_id_t addTriple(const IRI& s, const IRI& p, const Literal& o);
+    runtime::rel_id_t addTriple(const BlankNode& s, const IRI& p, const IRI& o);
+    runtime::rel_id_t addTriple(const BlankNode& s, const IRI& p, const BlankNode& o);
+    runtime::rel_id_t addTriple(const BlankNode& s, const IRI& p, const Literal& o);
+    void setTruth(runtime::rel_id_t rel, float degree);
     IRI getIri() const { return iri; }
     const NodeIdDict& getNodes() const { return *nodes; }
     RDFNodeType getNodeType(int32_t id) const { return nodes->get(id).type; }
@@ -281,6 +285,7 @@ private:
     std::string dbDir;
     bool loadedFromRdfFile;
     parser::ParsingFlag rdfParseFlags;
+    bool fuzzy = false;
     
     bool loaded = false;
 
