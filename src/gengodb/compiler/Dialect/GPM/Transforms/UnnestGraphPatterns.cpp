@@ -61,13 +61,27 @@ const tuples::Column* resolveThroughRemaps(const ColumnMapper& remaps, const tup
    return column;
 }
 bool isGpmStreamOp(mlir::Operation* op) {
-   return op && (mlir::isa<gpm::GraphPatternOp>(op) || mlir::isa<gpm::BagOp, gpm::TriplePatternOp, gpm::NamedGraphOp, gpm::FilterOp>(op));
+   return op && (mlir::isa<gpm::GraphPatternOp>(op) || mlir::isa<gpm::BagOp, gpm::TriplePatternOp, gpm::NamedGraphOp, gpm::FilterOp, gpm::ExtendOp>(op));
+}
+relalg::MapOp asBindMap(mlir::Operation* op) {
+   auto mapOp = mlir::dyn_cast_or_null<relalg::MapOp>(op);
+   return mapOp && mapOp->hasAttr(gpm::kBindAttr) ? mapOp : relalg::MapOp();
+}
+void insertComputedColumns(relalg::MapOp mapOp, relalg::ColumnSet& result) {
+   for (auto attr : mapOp.getComputedCols()) result.insert(mlir::cast<tuples::ColumnDefAttr>(attr).getColumnPtr().get());
 }
 bool isNestedInGraphPattern(mlir::Operation* op) {
    for (auto* parent = op->getParentOp(); parent; parent = parent->getParentOp()) {
       if (mlir::isa<gpm::GraphPatternOp>(parent)) return true;
    }
    return false;
+}
+mlir::Value createUnitRelation(mlir::OpBuilder& builder, mlir::Location loc) {
+   auto& columnManager = builder.getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+   auto unitDef = columnManager.createDef(columnManager.getUniqueScope("unit"), "unit");
+   unitDef.getColumn().type = builder.getI32Type();
+   auto row = builder.getArrayAttr({builder.getI32IntegerAttr(0)});
+   return builder.create<relalg::ConstRelationOp>(loc, builder.getArrayAttr({unitDef}), builder.getArrayAttr({row}));
 }
 
 class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass, mlir::OperationPass<mlir::ModuleOp>> {
@@ -151,6 +165,9 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       else if (auto filterOp = mlir::dyn_cast<gpm::FilterOp>(op)) {
          result = rewriteFilter(filterOp);
       }
+      else if (auto extendOp = mlir::dyn_cast<gpm::ExtendOp>(op)) {
+         result = rewriteExtend(extendOp);
+      }
       else {
          auto* savedInsertPoint = insertPoint;
          if (isNestedInGraphPattern(op)) op->moveBefore(insertPoint);
@@ -210,6 +227,19 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       selOp.getPredicate().takeBody(filterOp.getPredicate());
       propagateDegrees(rel, selOp.getResult());
       return selOp.getResult();
+   }
+   mlir::Value rewriteExtend(gpm::ExtendOp extendOp) {
+      auto* ctxt = extendOp.getContext();
+      auto loc = extendOp.getLoc();
+      mlir::OpBuilder builder(ctxt);
+      builder.setInsertionPoint(insertPoint);
+      mlir::Value rel = rewrite(extendOp.getRel());
+      if (!rel) rel = createUnitRelation(builder, loc); // seed input (named graph / pattern region entry)
+      auto mapOp = builder.create<relalg::MapOp>(loc, tuples::TupleStreamType::get(ctxt), rel, builder.getArrayAttr({extendOp.getComputed()}));
+      mapOp.getPredicate().takeBody(extendOp.getExpression());
+      mapOp->setAttr(gpm::kBindAttr, builder.getUnitAttr());
+      propagateDegrees(rel, mapOp.getResult());
+      return mapOp.getResult();
    }
    mlir::Value rewriteFuzzy(gpm::FuzzyGraphPatternOp fuzzyOp) {
       auto loc = fuzzyOp.getLoc();
@@ -472,6 +502,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          result.insert(producedColumns(antiSemiJoin.getLeft(), visited));
          return result;
       }
+      if (auto bindMap = asBindMap(op)) insertComputedColumns(bindMap, result);
       for (auto operand : op->getOperands()) {
          if (mlir::isa<tuples::TupleStreamType>(operand.getType())) {
             result.insert(producedColumns(operand, visited));
@@ -826,6 +857,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          result.insert(collectTripleVariables(outerJoin.getLeft(), visited));
          return result;
       }
+      if (auto bindMap = asBindMap(op)) insertComputedColumns(bindMap, result);
       if (auto unionOp = mlir::dyn_cast<relalg::UnionOp>(op)) {
          for (auto mappingAttr : unionOp.getMapping()) {
             result.insert(&mlir::cast<tuples::ColumnDefAttr>(mappingAttr).getColumn());

@@ -1,0 +1,13 @@
+PREFIX ex: <http://example.org/>
+
+# An expression error leaves the BIND variable unbound (the solution is kept), and so does a
+# reference to a variable that is not in scope at the BIND (?later is bound after it).
+SELECT ?s ?a ?err ?scope
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?s ex:age ?a .
+        BIND(?a + "x" AS ?err)
+        BIND(?later + 1 AS ?scope)
+        ?s ex:name ?later .
+    }
+}

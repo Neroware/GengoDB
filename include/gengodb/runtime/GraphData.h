@@ -85,6 +85,11 @@ struct GraphRefString {
     static VarLen32 fromNode(PropertyGraph::NodeEntry* node);
 }; // GraphRefString
 
+struct IRI {
+    static VarLen32 toBracketed(VarLen32 iri);
+    static int64_t hash(VarLen32 iri);
+};
+
 } // namespace lingodb::runtime
 
 #endif // GENGODB_RUNTIME_GRAPHDATA_H

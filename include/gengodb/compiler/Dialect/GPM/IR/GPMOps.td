@@ -168,6 +168,17 @@ def FilterOp : GPM_Op<"filter", [Pure,GPMOperator]> {
   let assemblyFormat = [{  $rel custom<CustRegion>($predicate) attr-dict-with-keyword }];
 }
 
+def ExtendOp : GPM_Op<"extend", [Pure,GPMOperator]> {
+  let summary = "graph pattern extension";
+  let arguments = (ins TupleStream:$rel, ColumnDefAttr:$computed);
+  let results = (outs TupleStream:$res);
+  let regions = (region SizedRegion<1>:$expression);
+  let assemblyFormat = [{  $rel `computes` `:` custom<CustDef>($computed) custom<CustRegion>($expression) attr-dict-with-keyword }];
+  let extraClassDeclaration = [{
+    lingodb::compiler::dialect::relalg::ColumnSet getCreatedVariables();
+  }];
+}
+
 def BindingsCompatibleOp : GPM_Op<"bindings_compatible", [Pure,DeclareOpInterfaceMethods<Relalg_CmpOpInterface, ["isBindingCompatiblePred"]>]> {
   let summary = "variable binding compatbility check";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);

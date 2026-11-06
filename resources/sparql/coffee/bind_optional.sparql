@@ -1,0 +1,15 @@
+PREFIX ex: <http://example.org/>
+
+# BIND inside OPTIONAL is padded with the rest of the optional part, and only sees variables of
+# its own group: ?a (bound outside the OPTIONAL) is out of scope, so ?outer stays unbound.
+SELECT ?s ?a ?label ?outer
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?s ex:age ?a .
+        OPTIONAL {
+            ?s ex:nickname ?nick
+            BIND(STR(?nick) AS ?label)
+            BIND(?a + 1 AS ?outer)
+        }
+    }
+}
