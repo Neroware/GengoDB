@@ -1,0 +1,12 @@
+PREFIX ex: <http://example.org/>
+
+# BIND extends each solution; later BINDs and FILTERs in the group see the new variable.
+SELECT ?food ?n ?twice ?next
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?food ex:portions ?n .
+        BIND(?n * 2 AS ?twice)
+        BIND(?twice + 1 AS ?next)
+        FILTER(?next > 201)
+    }
+}

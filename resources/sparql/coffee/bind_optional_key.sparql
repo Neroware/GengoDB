@@ -1,0 +1,14 @@
+PREFIX ex: <http://example.org/>
+
+# A BIND variable used as the join key of a later OPTIONAL, and a BIND-only OPTIONAL combined
+# with !BOUND().
+SELECT ?who ?drink ?temp
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?who ex:drinks ex:coffee .
+        BIND(ex:coffee AS ?drink)
+        OPTIONAL { ?drink ex:temp ?temp }
+        OPTIONAL { ?who ex:age ?age BIND(?age AS ?seen) }
+        FILTER(!BOUND(?seen))
+    }
+}
