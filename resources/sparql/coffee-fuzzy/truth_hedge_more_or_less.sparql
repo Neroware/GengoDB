@@ -1,0 +1,9 @@
+# MORE_OR_LESS(x) = x^(1/2).
+# Expected: bob 0.9487, _:cup2 0.7746, daria 0.8944
+PREFIX ex: <http://example.org/>
+SELECT ?p ?t
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH ?t OF MORE_OR_LESS { ?p ex:drinks ex:coffee . }
+    }
+}

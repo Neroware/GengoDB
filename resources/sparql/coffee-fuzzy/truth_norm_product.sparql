@@ -2,7 +2,7 @@ PREFIX ex: <http://example.org/>
 SELECT ?person ?drink ?truth
 {
     GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
-        ?truth TRUTH OF {
+        TRUTH ?truth OF {
             ?person ex:drinks ?drink .
             FUZZY_NORM <https://example.org/product_norm>
             ?person ex:type ex:Person .

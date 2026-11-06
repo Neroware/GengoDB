@@ -1,0 +1,9 @@
+# NOT(x) = 1 - x.
+# Expected: bob 0.1, _:cup2 0.4, daria 0.2
+PREFIX ex: <http://example.org/>
+SELECT ?p ?t
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH ?t OF NOT { ?p ex:drinks ex:coffee . }
+    }
+}

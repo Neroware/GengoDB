@@ -1,0 +1,9 @@
+# Expected to fail: f:SOMEWHAT is not a builtin hedge (hedges defined in the knowledge graph are not resolved yet).
+PREFIX ex: <http://example.org/>
+PREFIX f: <https://www.forsocialrobots.de/ontologies/fuzzy-rdf-syntax-ns.rdf#>
+SELECT ?p ?t
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH ?t OF f:SOMEWHAT { ?p ex:drinks ex:coffee . }
+    }
+}

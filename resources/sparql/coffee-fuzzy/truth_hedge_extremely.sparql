@@ -1,0 +1,9 @@
+# EXTREMELY(x) = x^3.
+# Expected: bob 0.729, _:cup2 0.216, daria 0.512
+PREFIX ex: <http://example.org/>
+SELECT ?p ?t
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH ?t OF EXTREMELY { ?p ex:drinks ex:coffee . }
+    }
+}

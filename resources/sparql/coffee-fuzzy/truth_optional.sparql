@@ -3,7 +3,7 @@ SELECT ?person ?drink ?truth
 {
     GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
         ?person ex:type ex:Person .
-        ?truth TRUTH OF {
+        TRUTH ?truth OF {
             OPTIONAL { ?person ex:drinks ?drink . }
         }
     }

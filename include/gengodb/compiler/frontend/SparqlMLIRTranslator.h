@@ -49,6 +49,9 @@
 
 namespace sparql {
 
+// The namespace of FuzzyRDF
+inline constexpr const char* kFuzzyRdfNamespace = "https://www.forsocialrobots.de/ontologies/fuzzy-rdf-syntax-ns.rdf#";
+
 struct Term {
    enum class Kind { Iri, Variable, BlankNode };
    Kind kind;
@@ -85,6 +88,7 @@ struct TruthPattern : PatternElement {
    std::optional<std::string> variable;
    std::optional<float> threshold;
    std::optional<std::string> normIri;
+   std::optional<std::string> hedgeIri;
    std::vector<std::unique_ptr<PatternElement>> patterns;
    Kind kind() const override { return Kind::Truth; }
 };
@@ -455,7 +459,7 @@ class Parser {
          throw std::runtime_error("Parse error at line " + std::to_string(tok.line) + ": unexpected '" + tok.value + "'");
       Token t = tok; advance(); return t;
    }
-   bool atTruthOf() {
+   bool atLegacyTruthOf() {
       if (!is(TK::Variable) && !is(TK::Number)) return false;
       Token next = tz.peek();
       return next.kind == TK::Keyword && next.value == "TRUTH";
@@ -753,7 +757,7 @@ class Parser {
       std::vector<sparql::Triple> out;
       while (!is(TK::RBrace) && !is(TK::Eof) && !kw("GRAPH") && !kw("OPTIONAL") &&
              !kw("FILTER")  && !kw("UNION")  && !kw("MINUS")  && !kw("SERVICE") &&
-             !kw("BIND")    && !kw("VALUES")  && !is(TK::LBrace) && !kw("FUZZY_NORM") && !atTruthOf()) {
+             !kw("BIND")    && !kw("VALUES")  && !is(TK::LBrace) && !kw("FUZZY_NORM") && !kw("TRUTH") && !atLegacyTruthOf()) {
          if (is(TK::Dot)) { advance(); continue; }
          sparql::Term s = parseTerm(pref);
          sparql::Term p = parseTerm(pref);
@@ -783,18 +787,45 @@ class Parser {
       while (!is(TK::RBrace) && !is(TK::Eof)) {
          if (is(TK::Dot)) { advance(); continue; }
 
-         if (atTruthOf()) {
+         if (atLegacyTruthOf()) {
+            std::string target = is(TK::Variable) ? "?" + tok.value : tok.value;
+            throw std::runtime_error("'" + target + " TRUTH OF { ... }' is no longer supported at line " + std::to_string(tok.line) +
+                                     ", write 'TRUTH " + target + " OF { ... }' (optionally with a hedge: 'TRUTH " + target + " OF VERY { ... }')");
+         }
+
+         if (kw("TRUTH")) {
+            advance();
             auto tp = std::make_unique<sparql::TruthPattern>();
             if (is(TK::Variable)) {
                tp->variable = tok.value;
-            } else {
+            } else if (is(TK::Number)) {
                tp->threshold = std::stof(tok.value);
                if (*tp->threshold < 0.0f || *tp->threshold > 1.0f)
                   throw std::runtime_error("TRUTH OF threshold must be in [0, 1] at line " + std::to_string(tok.line));
+            } else {
+               throw std::runtime_error("Expected truth variable or threshold after TRUTH at line " + std::to_string(tok.line) + ", got '" + tok.value + "'");
             }
             advance();
-            eatKw("TRUTH");
             eatKw("OF");
+            if (is(TK::Keyword)) {
+               static const std::set<std::string> builtinHedges{"VERY", "EXTREMELY", "MORE_OR_LESS", "NOT"};
+               if (!builtinHedges.count(tok.value))
+                  throw std::runtime_error("Unknown fuzzy hedge '" + tok.value + "' at line " + std::to_string(tok.line) +
+                                           " (builtin hedges: VERY, EXTREMELY, MORE_OR_LESS, NOT)");
+               tp->hedgeIri = std::string(sparql::kFuzzyRdfNamespace) + tok.value;
+               advance();
+            } else if (is(TK::IRI)) {
+               tp->hedgeIri = tok.value;
+               advance();
+            } else if (is(TK::PrefixedName)) {
+               if (!prefixes.count(tok.value.substr(0, tok.value.find(':'))))
+                  throw std::runtime_error("Undeclared prefix in fuzzy hedge '" + tok.value + "' at line " + std::to_string(tok.line));
+               tp->hedgeIri = expandPrefix(tok.value, prefixes);
+               advance();
+            }
+            if (!is(TK::LBrace))
+               throw std::runtime_error("Expected " + std::string(tp->hedgeIri ? "'{' after fuzzy hedge" : "fuzzy hedge or '{' after TRUTH ... OF") +
+                                        " at line " + std::to_string(tok.line) + ", got '" + tok.value + "'");
             parseGroup(tp->patterns, prefixes, activeGraph, &tp->normIri);
             out.push_back(std::move(tp));
             continue;
@@ -1222,12 +1253,25 @@ class Translator {
 
    static constexpr const char* kProductNormIri = "https://example.org/product_norm";
 
+   static gpm::Hedge resolveHedge(const std::string& iri) {
+      static const std::map<std::string, gpm::Hedge> builtins{
+         {std::string(sparql::kFuzzyRdfNamespace) + "VERY", gpm::Hedge::very},
+         {std::string(sparql::kFuzzyRdfNamespace) + "EXTREMELY", gpm::Hedge::extremely},
+         {std::string(sparql::kFuzzyRdfNamespace) + "MORE_OR_LESS", gpm::Hedge::more_or_less},
+         {std::string(sparql::kFuzzyRdfNamespace) + "NOT", gpm::Hedge::negation},
+      };
+      if (auto it = builtins.find(iri); it != builtins.end()) return it->second;
+      throw sparql::UnsupportedFeatureError("fuzzy hedge <" + iri + "> is not supported (builtin hedges: VERY, EXTREMELY, MORE_OR_LESS, NOT)");
+   }
+
    mlir::Value buildFuzzy(const sparql::TruthPattern& tp, mlir::Value inputStream) {
       auto loc = builder.getUnknownLoc();
       if (tp.normIri && *tp.normIri != kProductNormIri)
          throw sparql::UnsupportedFeatureError("FUZZY_NORM <" + *tp.normIri + "> is not supported (only <" + kProductNormIri + "> is implemented)");
       if (tp.variable && varDefs.count(*tp.variable))
          throw sparql::UnsupportedFeatureError("TRUTH OF target ?" + *tp.variable + " is already bound");
+      std::optional<gpm::Hedge> hedge;
+      if (tp.hedgeIri) hedge = resolveHedge(*tp.hedgeIri);
       if (!inputStream) {
          const auto* gp = firstGraphPattern(tp.patterns);
          if (!gp || gp->graphUri.empty())
@@ -1236,7 +1280,7 @@ class Translator {
       }
       auto fuzzyOp = builder.create<gpm::FuzzyGraphPatternOp>(
          loc, tuples::TupleStreamType::get(ctxt), inputStream, gpm::TNormAttr::get(ctxt, gpm::TNorm::product),
-         tuples::ColumnDefAttr(), mlir::FloatAttr());
+         tuples::ColumnDefAttr(), mlir::FloatAttr(), hedge ? gpm::HedgeAttr::get(ctxt, *hedge) : gpm::HedgeAttr());
 
       auto* block = new mlir::Block;
       block->addArgument(tuples::TupleStreamType::get(ctxt), loc);

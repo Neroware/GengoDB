@@ -1,0 +1,8 @@
+# Expected to fail: a hedge must be followed by the group graph pattern it applies to.
+PREFIX ex: <http://example.org/>
+SELECT ?p ?t
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH ?t OF VERY ?p ex:drinks ex:coffee .
+    }
+}

@@ -126,7 +126,7 @@ def OptionalGraphPatternOp : GPM_Op<"optional_graph_pattern", [Pure,GPMOperator,
 
 def FuzzyGraphPatternOp : GPM_Op<"fuzzy_graph_pattern", [Pure,GPMOperator,GraphPatternOp,Operator,UnaryOperator]> {
   let summary = "fuzzy graph pattern";
-  let arguments = (ins TupleStream:$rel, GPM_TNorm:$norm, OptionalAttr<ColumnDefAttr>:$truthDegr, OptionalAttr<F32Attr>:$threshold);
+  let arguments = (ins TupleStream:$rel, GPM_TNorm:$norm, OptionalAttr<ColumnDefAttr>:$truthDegr, OptionalAttr<F32Attr>:$threshold, OptionalAttr<GPM_Hedge>:$hedge);
   let results = (outs TupleStream:$res);
   let regions = (region SizedRegion<1>:$pattern);
   let assemblyFormat = [{  $rel `norm` `:` $norm custom<CustRegion>($pattern) attr-dict  }];
