@@ -15,6 +15,7 @@
 #include "lingodb/compiler/Dialect/util/UtilOps.h"
 #include "lingodb/compiler/runtime/StringRuntime.h"
 #include "lingodb/gengodb/runtime/Variant.h"
+#include "lingodb/gengodb/runtime/GraphData.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -454,7 +455,8 @@ Value computeFullForm(OpBuilder& b, Location loc, MLIRContext* ctxt, Value tag, 
                     auto ifIri = b2.create<scf::IfOp>(
                         l2, tp.isIri,
                         [&](OpBuilder& b3, Location l3) {
-                            b3.create<scf::YieldOp>(l3, loadTyped(b3, l3, ref, getVarlen32Type(ctxt)));
+                            Value iri = loadTyped(b3, l3, ref, getVarlen32Type(ctxt));
+                            b3.create<scf::YieldOp>(l3, rt::IRI::toBracketed(b3, l3)({iri})[0]);
                         },
                         [&](OpBuilder& b3, Location l3) {
                             auto ifEdge = b3.create<scf::IfOp>(

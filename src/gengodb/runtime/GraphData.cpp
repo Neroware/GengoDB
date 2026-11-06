@@ -274,4 +274,21 @@ VarLen32 GraphRefString::fromRel(PropertyGraph::RelEntry* rel) {
     return VarLen32::fromString(pgraph->getMetadata().get_node_name(rel->typeId));
 }
 
+
+int64_t IRI::hash(VarLen32 iri) {
+    const std::string_view value(iri.data(), iri.getLen());
+    const rdf4cpp::IRI key{value};
+    std::optional<int64_t> uid;
+    GraphStorage::forEachGraph([&](const uint8_t* graph) {
+        if (uid || BuiltinGraph::type(graph) != BuiltinGraph::BUILTIN_PROPERTY_GRAPH) return;
+        auto& metadata = const_cast<PropertyGraph*>(reinterpret_cast<const PropertyGraph*>(graph))->getMetadata();
+        const int32_t localId = metadata.node_from_iri(key);
+        if (localId >= 0) uid = static_cast<int64_t>(metadata.uid(localId));
+    });
+    return uid ? *uid : static_cast<int64_t>(std::hash<std::string_view>{}(value));
+}
+VarLen32 IRI::toBracketed(VarLen32 iri) {
+    return VarLen32::fromString("<" + std::string(iri.data(), iri.getLen()) + ">");
+}
+
 } // namespace lingodb::runtime

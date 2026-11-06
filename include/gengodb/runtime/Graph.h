@@ -244,6 +244,10 @@ private:
         assert(false && "unsupported graph type");
     }
 public:
+    template <typename F>
+    static void forEachGraph(F&& fn) {
+        for (const auto& mem : mem_) fn(std::get<2>(mem));
+    }
     static bool knowsGraph(const uint8_t* ref) {
         return std::any_of(mem_.begin(), mem_.end(), [&](const auto& tup) -> bool { return std::get<0>(tup) == ref; });
     }

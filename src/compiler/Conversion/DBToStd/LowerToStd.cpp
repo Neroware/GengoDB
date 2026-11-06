@@ -17,6 +17,7 @@
 #include "gengodb/compiler/Conversion/VariantToStd/VariantPhysicalLayout.h"
 #include "gengodb/compiler/Dialect/Variant/VariantDialect.h"
 #include "lingodb/gengodb/runtime/Variant.h"
+#include "lingodb/gengodb/runtime/GraphData.h"
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -1124,8 +1125,16 @@ class HashLowering : public ConversionPattern {
                            b3.create<mlir::scf::YieldOp>(l3, combineHashes(b3, l3, hashInteger(b3, l3, uid), totalHash));
                         },
                         [&](OpBuilder& b3, Location l3) {
-                           auto ifUnspecified = b3.create<mlir::scf::IfOp>(
-                              l3, tp.isUnspecified,
+                           auto ifIri = b3.create<mlir::scf::IfOp>(
+                              l3, tp.isIri,
+                              [&](OpBuilder& bi, Location li) {
+                                 Value iri = layout::loadTyped(bi, li, ref, varLen32Type);
+                                 Value uid = rt::IRI::hash(bi, li)({iri})[0];
+                                 bi.create<mlir::scf::YieldOp>(li, combineHashes(bi, li, hashInteger(bi, li, uid), totalHash));
+                              },
+                              [&](OpBuilder& bi, Location li) {
+                           auto ifUnspecified = bi.create<mlir::scf::IfOp>(
+                              li, tp.isUnspecified,
                               [&](OpBuilder& b4, Location l4) {
                                  Value h = totalHash ? totalHash : b4.create<arith::ConstantOp>(l4, b4.getIndexType(), b4.getIndexAttr(0));
                                  b4.create<mlir::scf::YieldOp>(l4, h);
@@ -1134,7 +1143,9 @@ class HashLowering : public ConversionPattern {
                                  Value str = rt::VariantRuntime::toStringBlobLiteral(b4, l4)({ref})[0];
                                  b4.create<mlir::scf::YieldOp>(l4, hashImpl(b4, l4, str, totalHash, varLen32Type));
                               });
-                           b3.create<mlir::scf::YieldOp>(l3, ifUnspecified.getResult(0));
+                           bi.create<mlir::scf::YieldOp>(li, ifUnspecified.getResult(0));
+                              });
+                           b3.create<mlir::scf::YieldOp>(l3, ifIri.getResult(0));
                         });
                      b2.create<mlir::scf::YieldOp>(l2, ifNode.getResult(0));
                   });
