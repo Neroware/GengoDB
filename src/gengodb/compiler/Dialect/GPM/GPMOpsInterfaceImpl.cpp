@@ -104,6 +104,7 @@ inline bool isAllowedGraphPatternBodyOp(const mlir::Operation& nested) {
         gengodb::compiler::dialect::gpm::FuzzyGraphPatternOp,
         gengodb::compiler::dialect::gpm::BagOp,
         gengodb::compiler::dialect::gpm::FilterOp,
+        gengodb::compiler::dialect::gpm::ExtendOp,
         tuples::ReturnOp>(nested);
 }
 
@@ -116,6 +117,9 @@ ColumnSet getPatternCreatedVariables(mlir::Region& pattern) {
         else if (auto fuzzy = mlir::dyn_cast<gpm::FuzzyGraphPatternOp>(nested)) {
             if (auto result = fuzzy.getTruthDegrAttr()) res.insert(result.getColumnPtr().get());
         }
+        else if (auto extend = mlir::dyn_cast<gpm::ExtendOp>(nested)) {
+            res.insert(extend.getCreatedVariables());
+        }
     });
     return res;
 }
@@ -124,7 +128,7 @@ mlir::LogicalResult verifyGraphPatternBody(mlir::Operation* op) {
     auto patternOp = mlir::cast<gpm::GraphPatternOp>(op);
     bool valid = std::all_of(patternOp.getPattern().getOps().begin(), patternOp.getPattern().getOps().end(), isAllowedGraphPatternBodyOp);
     if (!valid) {
-        return op->emitOpError("A graph pattern must only contain triples, nested graph patterns, or FILTER expressions.");
+        return op->emitOpError("A graph pattern must only contain triples, nested graph patterns, FILTER or BIND expressions.");
     }
     return mlir::success();
 }
@@ -410,6 +414,10 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::FuzzyGraphPatternOp::getAvail
 }
 bool gpm::FuzzyGraphPatternOp::canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column) {
     return lingodb::compiler::dialect::relalg::detail::canColumnReach(getOperation(), source, target, column);
+}
+
+lingodb::compiler::dialect::relalg::ColumnSet gpm::ExtendOp::getCreatedVariables() {
+    return lingodb::compiler::dialect::relalg::ColumnSet::from(getComputed().getColumnPtr().get());
 }
 
 lingodb::compiler::dialect::relalg::ColumnSet gpm::BagOp::getCreatedVariables() {
