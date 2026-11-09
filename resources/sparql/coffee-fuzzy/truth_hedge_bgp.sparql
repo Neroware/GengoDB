@@ -1,0 +1,9 @@
+# Hedge on a multi-triple block: applied once, to the t-norm of the whole block.
+# Expected (VERY of drinks * Person): e.g. bob/coffee (0.9*0.95)^2 = 0.731, bob/tea (0.4*0.95)^2 = 0.1444
+PREFIX ex: <http://example.org/>
+SELECT ?person ?drink ?truth
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH ?truth OF VERY { ?person ex:drinks ?drink . ?person ex:type ex:Person . }
+    }
+}

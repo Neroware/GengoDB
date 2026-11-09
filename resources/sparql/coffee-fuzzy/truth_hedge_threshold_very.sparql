@@ -1,0 +1,9 @@
+# Threshold on the hedged degree: keeps rows with VERY(x) = x^2 >= 0.36, i.e. x >= 0.6 (boundary row _:cup2 0.6 included).
+# Expected 7 rows: truth_threshold.sparql's 8 rows minus bob/beer (0.5).
+PREFIX ex: <http://example.org/>
+SELECT ?p ?d
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH 0.36 OF VERY { ?p ex:drinks ?d . }
+    }
+}

@@ -1,0 +1,8 @@
+# Expected to fail: f: is not predefined; write the keyword VERY or declare PREFIX f: to use f:VERY.
+PREFIX ex: <http://example.org/>
+SELECT ?p ?t
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH ?t OF f:VERY { ?p ex:drinks ex:coffee . }
+    }
+}

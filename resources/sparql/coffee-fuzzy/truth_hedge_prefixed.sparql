@@ -1,0 +1,10 @@
+# A builtin hedge given as a prefixed name: f: must be declared like any other prefix, and f:VERY
+# then resolves to the builtin VERY. Same result as truth_hedge_very.sparql.
+PREFIX ex: <http://example.org/>
+PREFIX f: <https://www.forsocialrobots.de/ontologies/fuzzy-rdf-syntax-ns.rdf#>
+SELECT ?p ?t
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH ?t OF f:VERY { ?p ex:drinks ex:coffee . }
+    }
+}

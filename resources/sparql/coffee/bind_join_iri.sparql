@@ -1,0 +1,12 @@
+PREFIX ex: <http://example.org/>
+
+# A BIND variable joins with later triple patterns; a constant IRI must match (and hash like) the
+# graph node with that IRI.
+SELECT ?who ?cup
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ex:bob ex:cup ?cup .
+        BIND(ex:coffee AS ?drink)
+        ?who ex:drinks ?drink .
+    }
+}

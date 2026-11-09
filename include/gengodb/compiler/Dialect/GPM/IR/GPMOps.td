@@ -126,7 +126,7 @@ def OptionalGraphPatternOp : GPM_Op<"optional_graph_pattern", [Pure,GPMOperator,
 
 def FuzzyGraphPatternOp : GPM_Op<"fuzzy_graph_pattern", [Pure,GPMOperator,GraphPatternOp,Operator,UnaryOperator]> {
   let summary = "fuzzy graph pattern";
-  let arguments = (ins TupleStream:$rel, GPM_TNorm:$norm, OptionalAttr<ColumnDefAttr>:$truthDegr, OptionalAttr<F32Attr>:$threshold);
+  let arguments = (ins TupleStream:$rel, GPM_TNorm:$norm, OptionalAttr<ColumnDefAttr>:$truthDegr, OptionalAttr<F32Attr>:$threshold, OptionalAttr<GPM_Hedge>:$hedge);
   let results = (outs TupleStream:$res);
   let regions = (region SizedRegion<1>:$pattern);
   let assemblyFormat = [{  $rel `norm` `:` $norm custom<CustRegion>($pattern) attr-dict  }];
@@ -166,6 +166,17 @@ def FilterOp : GPM_Op<"filter", [Pure,GPMOperator]> {
   let results = (outs TupleStream:$res);
   let regions = (region SizedRegion<1>:$predicate);
   let assemblyFormat = [{  $rel custom<CustRegion>($predicate) attr-dict-with-keyword }];
+}
+
+def ExtendOp : GPM_Op<"extend", [Pure,GPMOperator]> {
+  let summary = "graph pattern extension";
+  let arguments = (ins TupleStream:$rel, ColumnDefAttr:$computed);
+  let results = (outs TupleStream:$res);
+  let regions = (region SizedRegion<1>:$expression);
+  let assemblyFormat = [{  $rel `computes` `:` custom<CustDef>($computed) custom<CustRegion>($expression) attr-dict-with-keyword }];
+  let extraClassDeclaration = [{
+    lingodb::compiler::dialect::relalg::ColumnSet getCreatedVariables();
+  }];
 }
 
 def BindingsCompatibleOp : GPM_Op<"bindings_compatible", [Pure,DeclareOpInterfaceMethods<Relalg_CmpOpInterface, ["isBindingCompatiblePred"]>]> {

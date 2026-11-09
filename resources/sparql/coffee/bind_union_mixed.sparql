@@ -1,0 +1,12 @@
+PREFIX ex: <http://example.org/>
+
+# A UNION of a triple-pattern branch and a BIND-only branch, unioned onto earlier patterns of the
+# group. The BIND branch does not see ?s (out of scope inside the branch), so ?x stays unbound there
+# and the branch joins with every ?s.
+SELECT ?s ?a ?x ?y
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?s ex:drinks ex:coffee .
+        { ?s ex:age ?a } UNION { BIND(?s AS ?x) BIND(1 AS ?y) }
+    }
+}

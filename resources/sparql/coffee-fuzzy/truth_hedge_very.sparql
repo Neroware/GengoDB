@@ -1,0 +1,9 @@
+# VERY(x) = x^2. Builtin hedge, written as a keyword.
+# Expected: bob 0.81, _:cup2 0.36, daria 0.64
+PREFIX ex: <http://example.org/>
+SELECT ?p ?t
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH ?t OF VERY { ?p ex:drinks ex:coffee . }
+    }
+}

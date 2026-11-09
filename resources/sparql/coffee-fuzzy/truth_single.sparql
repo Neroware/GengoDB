@@ -2,6 +2,6 @@ PREFIX ex: <http://example.org/>
 SELECT ?p ?t
 {
     GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
-        ?t TRUTH OF { ?p ex:drinks ex:coffee . }
+        TRUTH ?t OF { ?p ex:drinks ex:coffee . }
     }
 }

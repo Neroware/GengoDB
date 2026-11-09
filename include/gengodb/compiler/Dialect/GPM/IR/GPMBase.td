@@ -60,6 +60,16 @@ def GPM_TNorm : I64EnumAttr<"TNorm", "fuzzy graph pattern t-norm",
     let cppNamespace = "::gengodb::compiler::dialect::gpm";
 }
 
+def GPM_Hedge_VERY         : I64EnumAttrCase<"very", 0>;            // f:VERY         x^2
+def GPM_Hedge_EXTREMELY    : I64EnumAttrCase<"extremely", 1>;       // f:EXTREMELY    x^3
+def GPM_Hedge_MORE_OR_LESS : I64EnumAttrCase<"more_or_less", 2>;    // f:MORE_OR_LESS x^(1/2)
+def GPM_Hedge_NOT          : I64EnumAttrCase<"negation", 3, "not">; // f:NOT        1 - x
+
+def GPM_Hedge : I64EnumAttr<"Hedge", "fuzzy hedge transforming a fuzzy graph pattern's truth degree",
+        [GPM_Hedge_VERY,GPM_Hedge_EXTREMELY,GPM_Hedge_MORE_OR_LESS,GPM_Hedge_NOT]> {
+    let cppNamespace = "::gengodb::compiler::dialect::gpm";
+}
+
 def GPM_TripleSlot_SUBJECT : I64EnumAttrCase<"subject", 0>;
 def GPM_TripleSlot_PREDICATE : I64EnumAttrCase<"predicate", 1>;
 def GPM_TripleSlot_OBJECT : I64EnumAttrCase<"object", 2>;

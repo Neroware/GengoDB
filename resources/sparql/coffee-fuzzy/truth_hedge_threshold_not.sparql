@@ -1,0 +1,10 @@
+# Threshold with a decreasing hedge: NOT(x) = 1 - x >= 0.5, i.e. x <= 0.5.
+# Partial degrees must not be pruned early here (ex:type ex:Person 0.95 alone would fail x <= 0.5).
+# Expected 4 rows: bob with tea (0.38), soda (0.19), beer (0.475), miso (0.0).
+PREFIX ex: <http://example.org/>
+SELECT ?p ?d
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH 0.5 OF NOT { ?p ex:drinks ?d . ?p ex:type ex:Person . }
+    }
+}

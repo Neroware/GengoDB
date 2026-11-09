@@ -1,0 +1,12 @@
+PREFIX ex: <http://example.org/>
+
+# BIND in UNION branches (one branch binds ?v by a triple pattern, the other by BIND), and a
+# union of BIND-only branches joined with a later triple pattern.
+SELECT ?s ?v ?who
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        { ?s ex:age ?v } UNION { ?s ex:temp ?t BIND(?t * 10 AS ?v) }
+        { BIND(ex:coffee AS ?d) } UNION { BIND(ex:tea AS ?d) }
+        ?who ex:drinks ?d .
+    }
+}

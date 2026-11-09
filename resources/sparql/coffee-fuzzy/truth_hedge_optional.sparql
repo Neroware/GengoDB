@@ -1,0 +1,12 @@
+# Hedge on a nullable degree: a person without any drink keeps an unbound ?truth (NOT is not applied to 'unbound').
+# Same rows as truth_optional.sparql; bound truths become 1 - x.
+PREFIX ex: <http://example.org/>
+SELECT ?person ?drink ?truth
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        ?person ex:type ex:Person .
+        TRUTH ?truth OF NOT {
+            OPTIONAL { ?person ex:drinks ?drink . }
+        }
+    }
+}

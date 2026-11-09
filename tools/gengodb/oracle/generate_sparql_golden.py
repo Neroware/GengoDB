@@ -22,7 +22,7 @@ return RDF triples, not the row-of-bindings table check_result.py compares,
 and run-sparql rejects both forms outright ("not yet supported"), so there's
 nothing to check either way yet.
 
-Queries using the GengoDB-specific fuzzy `?t TRUTH OF { ... }` extension
+Queries using the GengoDB-specific fuzzy `TRUTH ?t OF [hedge] { ... }` extension
 (e.g. coffee/truth_crisp.sparql) are skipped too: rdflib can't parse that
 non-standard construct, so there's no independent oracle for them.
 
@@ -53,7 +53,7 @@ SKIP = {"bsbm/9.sparql", "bsbm/12.sparql"}  # DESCRIBE / CONSTRUCT not yet suppo
 # list of exclusions, due to rdflib issues
 SKIP_RDFLIB = {"coffee/agg_expr_arg_error.sparql", "coffee/agg_group_by_expr_noalias.sparql",
                "coffee/agg_computed_alias_chain.sparql"}
-TRUTH_OF_RE = re.compile(r"\bTRUTH\s+OF\b", re.IGNORECASE)  # fuzzy extension, not standard SPARQL
+TRUTH_OF_RE = re.compile(r"\bTRUTH\s+\S+\s+OF\b", re.IGNORECASE)  # fuzzy extension, not standard SPARQL
 UNORDERED_CONCAT_RE = re.compile(r'^#\s*oracle:\s*unordered-concat\s+\?(\w+)\s+"((?:[^"\\]|\\.)*)"\s*$', re.MULTILINE)
 
 

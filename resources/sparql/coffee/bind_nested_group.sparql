@@ -1,0 +1,11 @@
+PREFIX ex: <http://example.org/>
+
+# A BIND inside a nested group joins with the outer group on a variable it defines.
+SELECT ?s ?d ?t
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?s ex:age ?a .
+        { ?s ex:drinks ?d BIND(?d AS ?e) }
+        ?e ex:temp ?t .
+    }
+}

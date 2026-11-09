@@ -16,6 +16,7 @@
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOps.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOpsAttributes.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOpsTypes.h"
+#include "gengodb/compiler/Dialect/GPM/Transforms/Passes.h"
 #include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOpDialect.h"
 #include "gengodb/compiler/Dialect/Variant/VariantDialect.h"
 #include "gengodb/compiler/Dialect/Variant/VariantOps.h"
@@ -49,6 +50,9 @@
 
 namespace sparql {
 
+// The namespace of FuzzyRDF
+inline constexpr const char* kFuzzyRdfNamespace = "https://www.forsocialrobots.de/ontologies/fuzzy-rdf-syntax-ns.rdf#";
+
 struct Term {
    enum class Kind { Iri, Variable, BlankNode };
    Kind kind;
@@ -60,7 +64,7 @@ struct Triple {
 };
 
 struct PatternElement {
-   enum class Kind { Graph, Optional, Filter, Union, Group, Truth };
+   enum class Kind { Graph, Optional, Filter, Union, Group, Truth, Bind };
    virtual ~PatternElement() = default;
    virtual Kind kind() const = 0;
 };
@@ -85,6 +89,7 @@ struct TruthPattern : PatternElement {
    std::optional<std::string> variable;
    std::optional<float> threshold;
    std::optional<std::string> normIri;
+   std::optional<std::string> hedgeIri;
    std::vector<std::unique_ptr<PatternElement>> patterns;
    Kind kind() const override { return Kind::Truth; }
 };
@@ -260,6 +265,41 @@ struct FilterPattern : PatternElement {
    std::unique_ptr<Expr> expr;
    Kind kind() const override { return Kind::Filter; }
 };
+
+struct BindPattern : PatternElement {
+   std::unique_ptr<Expr> expr;
+   std::string var;
+   size_t line{0};
+   Kind kind() const override { return Kind::Bind; }
+};
+
+inline void collectInScopeVariables(const PatternElement& e, std::set<std::string>& out);
+inline void collectInScopeVariables(const std::vector<std::unique_ptr<PatternElement>>& patterns, std::set<std::string>& out) {
+   for (const auto& p : patterns) collectInScopeVariables(*p, out);
+}
+inline void collectInScopeVariables(const PatternElement& e, std::set<std::string>& out) {
+   switch (e.kind()) {
+      case PatternElement::Kind::Graph:
+         for (const auto& t : static_cast<const GraphPattern&>(e).triples) {
+            for (const Term* term : {&t.s, &t.p, &t.o})
+               if (term->kind == Term::Kind::Variable) out.insert(term->value);
+         }
+         return;
+      case PatternElement::Kind::Group: collectInScopeVariables(static_cast<const GroupPattern&>(e).patterns, out); return;
+      case PatternElement::Kind::Optional: collectInScopeVariables(static_cast<const OptionalPattern&>(e).patterns, out); return;
+      case PatternElement::Kind::Union:
+         for (const auto& branch : static_cast<const UnionPattern&>(e).branches) collectInScopeVariables(branch, out);
+         return;
+      case PatternElement::Kind::Truth: {
+         const auto& tp = static_cast<const TruthPattern&>(e);
+         collectInScopeVariables(tp.patterns, out);
+         if (tp.variable) out.insert(*tp.variable);
+         return;
+      }
+      case PatternElement::Kind::Bind: out.insert(static_cast<const BindPattern&>(e).var); return;
+      case PatternElement::Kind::Filter: return;
+   }
+}
 
 struct Query {
    std::map<std::string, std::string> prefixes;
@@ -455,7 +495,7 @@ class Parser {
          throw std::runtime_error("Parse error at line " + std::to_string(tok.line) + ": unexpected '" + tok.value + "'");
       Token t = tok; advance(); return t;
    }
-   bool atTruthOf() {
+   bool atLegacyTruthOf() {
       if (!is(TK::Variable) && !is(TK::Number)) return false;
       Token next = tz.peek();
       return next.kind == TK::Keyword && next.value == "TRUTH";
@@ -753,7 +793,7 @@ class Parser {
       std::vector<sparql::Triple> out;
       while (!is(TK::RBrace) && !is(TK::Eof) && !kw("GRAPH") && !kw("OPTIONAL") &&
              !kw("FILTER")  && !kw("UNION")  && !kw("MINUS")  && !kw("SERVICE") &&
-             !kw("BIND")    && !kw("VALUES")  && !is(TK::LBrace) && !kw("FUZZY_NORM") && !atTruthOf()) {
+             !kw("BIND")    && !kw("VALUES")  && !is(TK::LBrace) && !kw("FUZZY_NORM") && !kw("TRUTH") && !atLegacyTruthOf()) {
          if (is(TK::Dot)) { advance(); continue; }
          sparql::Term s = parseTerm(pref);
          sparql::Term p = parseTerm(pref);
@@ -783,18 +823,45 @@ class Parser {
       while (!is(TK::RBrace) && !is(TK::Eof)) {
          if (is(TK::Dot)) { advance(); continue; }
 
-         if (atTruthOf()) {
+         if (atLegacyTruthOf()) {
+            std::string target = is(TK::Variable) ? "?" + tok.value : tok.value;
+            throw std::runtime_error("'" + target + " TRUTH OF { ... }' is no longer supported at line " + std::to_string(tok.line) +
+                                     ", write 'TRUTH " + target + " OF { ... }' (optionally with a hedge: 'TRUTH " + target + " OF VERY { ... }')");
+         }
+
+         if (kw("TRUTH")) {
+            advance();
             auto tp = std::make_unique<sparql::TruthPattern>();
             if (is(TK::Variable)) {
                tp->variable = tok.value;
-            } else {
+            } else if (is(TK::Number)) {
                tp->threshold = std::stof(tok.value);
                if (*tp->threshold < 0.0f || *tp->threshold > 1.0f)
                   throw std::runtime_error("TRUTH OF threshold must be in [0, 1] at line " + std::to_string(tok.line));
+            } else {
+               throw std::runtime_error("Expected truth variable or threshold after TRUTH at line " + std::to_string(tok.line) + ", got '" + tok.value + "'");
             }
             advance();
-            eatKw("TRUTH");
             eatKw("OF");
+            if (is(TK::Keyword)) {
+               static const std::set<std::string> builtinHedges{"VERY", "EXTREMELY", "MORE_OR_LESS", "NOT"};
+               if (!builtinHedges.count(tok.value))
+                  throw std::runtime_error("Unknown fuzzy hedge '" + tok.value + "' at line " + std::to_string(tok.line) +
+                                           " (builtin hedges: VERY, EXTREMELY, MORE_OR_LESS, NOT)");
+               tp->hedgeIri = std::string(sparql::kFuzzyRdfNamespace) + tok.value;
+               advance();
+            } else if (is(TK::IRI)) {
+               tp->hedgeIri = tok.value;
+               advance();
+            } else if (is(TK::PrefixedName)) {
+               if (!prefixes.count(tok.value.substr(0, tok.value.find(':'))))
+                  throw std::runtime_error("Undeclared prefix in fuzzy hedge '" + tok.value + "' at line " + std::to_string(tok.line));
+               tp->hedgeIri = expandPrefix(tok.value, prefixes);
+               advance();
+            }
+            if (!is(TK::LBrace))
+               throw std::runtime_error("Expected " + std::string(tp->hedgeIri ? "'{' after fuzzy hedge" : "fuzzy hedge or '{' after TRUTH ... OF") +
+                                        " at line " + std::to_string(tok.line) + ", got '" + tok.value + "'");
             parseGroup(tp->patterns, prefixes, activeGraph, &tp->normIri);
             out.push_back(std::move(tp));
             continue;
@@ -841,7 +908,26 @@ class Parser {
             continue;
          }
 
-         for (const char* op : {"MINUS","SERVICE","BIND","VALUES"}) {
+         if (kw("BIND")) {
+            size_t line = tok.line;
+            advance();
+            eat(TK::LeftParen);
+            auto bp = std::make_unique<sparql::BindPattern>();
+            bp->line = line;
+            bp->expr = parseFilterExpr(prefixes);
+            if (!kw("AS"))
+               throw std::runtime_error("Expected AS in BIND at line " + std::to_string(tok.line) + ", got '" + tok.value + "'");
+            advance();
+            if (!is(TK::Variable))
+               throw std::runtime_error("Expected variable after AS in BIND at line " + std::to_string(tok.line) + ", got '" + tok.value + "'");
+            bp->var = tok.value;
+            advance();
+            eat(TK::RightParen);
+            out.push_back(std::move(bp));
+            continue;
+         }
+
+         for (const char* op : {"MINUS","SERVICE","VALUES"}) {
             if (kw(op)) throw sparql::UnsupportedFeatureError(std::string(op) + " is not yet supported");
          }
 
@@ -1109,6 +1195,7 @@ class Translator {
 
    std::string currentVarScope{"vars"};
    std::map<std::string, tuples::ColumnDefAttr> aggCols;
+   std::set<std::string> unboundVars;
 
    std::pair<std::string, mlir::Value> namedGraph(const std::string& uri) {
       auto it = graphInfo.find(uri);
@@ -1222,12 +1309,25 @@ class Translator {
 
    static constexpr const char* kProductNormIri = "https://example.org/product_norm";
 
+   static gpm::Hedge resolveHedge(const std::string& iri) {
+      static const std::map<std::string, gpm::Hedge> builtins{
+         {std::string(sparql::kFuzzyRdfNamespace) + "VERY", gpm::Hedge::very},
+         {std::string(sparql::kFuzzyRdfNamespace) + "EXTREMELY", gpm::Hedge::extremely},
+         {std::string(sparql::kFuzzyRdfNamespace) + "MORE_OR_LESS", gpm::Hedge::more_or_less},
+         {std::string(sparql::kFuzzyRdfNamespace) + "NOT", gpm::Hedge::negation},
+      };
+      if (auto it = builtins.find(iri); it != builtins.end()) return it->second;
+      throw sparql::UnsupportedFeatureError("fuzzy hedge <" + iri + "> is not supported (builtin hedges: VERY, EXTREMELY, MORE_OR_LESS, NOT)");
+   }
+
    mlir::Value buildFuzzy(const sparql::TruthPattern& tp, mlir::Value inputStream) {
       auto loc = builder.getUnknownLoc();
       if (tp.normIri && *tp.normIri != kProductNormIri)
          throw sparql::UnsupportedFeatureError("FUZZY_NORM <" + *tp.normIri + "> is not supported (only <" + kProductNormIri + "> is implemented)");
       if (tp.variable && varDefs.count(*tp.variable))
          throw sparql::UnsupportedFeatureError("TRUTH OF target ?" + *tp.variable + " is already bound");
+      std::optional<gpm::Hedge> hedge;
+      if (tp.hedgeIri) hedge = resolveHedge(*tp.hedgeIri);
       if (!inputStream) {
          const auto* gp = firstGraphPattern(tp.patterns);
          if (!gp || gp->graphUri.empty())
@@ -1236,7 +1336,7 @@ class Translator {
       }
       auto fuzzyOp = builder.create<gpm::FuzzyGraphPatternOp>(
          loc, tuples::TupleStreamType::get(ctxt), inputStream, gpm::TNormAttr::get(ctxt, gpm::TNorm::product),
-         tuples::ColumnDefAttr(), mlir::FloatAttr());
+         tuples::ColumnDefAttr(), mlir::FloatAttr(), hedge ? gpm::HedgeAttr::get(ctxt, *hedge) : gpm::HedgeAttr());
 
       auto* block = new mlir::Block;
       block->addArgument(tuples::TupleStreamType::get(ctxt), loc);
@@ -1417,6 +1517,12 @@ class Translator {
       mlir::Value isUnspec = builder.create<variant::VariantIsAOp>(loc, builder.getI1Type(), v, unspecTag);
       return builder.create<db::AsNullableOp>(loc, nullableVariantType, v, isUnspec);
    }
+   mlir::Value unboundTerm() {
+      auto loc = builder.getUnknownLoc();
+      mlir::Value placeholder = builder.create<variant::CreateScalarOp>(loc, variant::VariantType::get(ctxt), builder.create<mlir::arith::ConstantIntOp>(loc, 0, 64));
+      mlir::Value always = builder.create<mlir::arith::ConstantIntOp>(loc, 1, 1);
+      return builder.create<variant::UnspecifiedIfOp>(loc, variant::VariantType::get(ctxt), always, placeholder);
+   }
    tuples::ColumnRefAttr varRef(const std::string& name) {
       auto it = varDefs.find(name);
       if (it == varDefs.end())
@@ -1468,7 +1574,9 @@ class Translator {
       auto variantType = variant::VariantType::get(ctxt);
       switch (expr.kind()) {
          case sparql::Expr::Kind::Variable: {
-            return readTerm(varRef(static_cast<const sparql::VariableExpr&>(expr).name), tupleArg);
+            const auto& name = static_cast<const sparql::VariableExpr&>(expr).name;
+            if (unboundVars.count(name)) return unboundTerm();
+            return readTerm(varRef(name), tupleArg);
          }
          case sparql::Expr::Kind::Literal: {
             const auto& lit = static_cast<const sparql::LiteralExpr&>(expr);
@@ -1600,6 +1708,59 @@ class Translator {
       return selOp.getRes();
    }
 
+   static mlir::Value createUnitRelation(mlir::OpBuilder& builder, mlir::Location loc) {
+      auto& columnManager = builder.getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      auto unitDef = columnManager.createDef(columnManager.getUniqueScope("unit"), "unit");
+      unitDef.getColumn().type = builder.getI32Type();
+      auto row = builder.getArrayAttr({builder.getI32IntegerAttr(0)});
+      return builder.create<relalg::ConstRelationOp>(loc, builder.getArrayAttr({unitDef}), builder.getArrayAttr({row}));
+   }
+
+   mlir::Value buildBind(const sparql::BindPattern& bp, mlir::Value inputStream, const std::set<std::string>& groupScope) {
+      auto loc = builder.getUnknownLoc();
+      if (groupScope.count(bp.var))
+         throw std::runtime_error("BIND target ?" + bp.var + " at line " + std::to_string(bp.line) + " is already in scope in its group graph pattern");
+      if (varDefs.count(bp.var))
+         throw sparql::UnsupportedFeatureError("BIND target ?" + bp.var + " at line " + std::to_string(bp.line) +
+                                               " is also bound outside of its group graph pattern (not yet supported)");
+      if (!inputStream) inputStream = createUnitRelation(builder, loc);
+
+      auto def = colMgr.createDef(colMgr.getUniqueScope("bind"), bp.var);
+      def.getColumn().type = db::NullableType::get(ctxt, variant::VariantType::get(ctxt));
+      auto extendOp = builder.create<gpm::ExtendOp>(loc, tuples::TupleStreamType::get(ctxt), inputStream, def);
+      auto* block = new mlir::Block;
+      auto tupleArg = block->addArgument(tuples::TupleType::get(ctxt), loc);
+      extendOp.getExpression().push_back(block);
+      {
+         mlir::OpBuilder::InsertionGuard guard(builder);
+         builder.setInsertionPointToStart(block);
+         auto savedUnbound = unboundVars;
+         sparql::forEachFreeVariable(*bp.expr, [&](const std::string& v) {
+            if (!groupScope.count(v)) unboundVars.insert(v);
+         });
+         mlir::Value value = termOrNull(translateArithExpr(*bp.expr, tupleArg));
+         unboundVars = savedUnbound;
+         builder.create<tuples::ReturnOp>(loc, value);
+      }
+      varDefs[bp.var] = def;
+      allVars.push_back(bp.var);
+      return extendOp.getRes();
+   }
+
+   mlir::Value buildLeadingBind(const sparql::BindPattern& bp, mlir::Value outerStream) {
+      auto loc = builder.getUnknownLoc();
+      auto groupOp = builder.create<gpm::BasicGraphPatternOp>(loc, tuples::TupleStreamType::get(ctxt), outerStream);
+      auto* block = new mlir::Block;
+      block->addArgument(tuples::TupleStreamType::get(ctxt), loc);
+      groupOp.getPattern().push_back(block);
+      {
+         mlir::OpBuilder::InsertionGuard guard(builder);
+         builder.setInsertionPointToStart(block);
+         builder.create<tuples::ReturnOp>(loc, buildBind(bp, block->getArgument(0), {}));
+      }
+      return groupOp.getRes();
+   }
+
    mlir::Value buildOrderByMap(const std::vector<sparql::Query::OrderKey>& orderBy, mlir::Value inputStream,
                                llvm::SmallVector<tuples::ColumnRefAttr>& outRefs) {
       auto loc = builder.getUnknownLoc();
@@ -1647,6 +1808,7 @@ class Translator {
          return buildPatternGroup(static_cast<const sparql::GroupPattern&>(*patterns.front()).patterns, externalInput);
 
       mlir::Value prevStream = externalInput;
+      std::set<std::string> groupScope;
       for (const auto& elemPtr : patterns) {
          if (elemPtr->kind() == sparql::PatternElement::Kind::Graph) {
             const auto& gp = static_cast<const sparql::GraphPattern&>(*elemPtr);
@@ -1675,7 +1837,14 @@ class Translator {
             prevStream = buildGroup(static_cast<const sparql::GroupPattern&>(*elemPtr), prevStream);
          } else if (elemPtr->kind() == sparql::PatternElement::Kind::Truth) {
             prevStream = buildFuzzy(static_cast<const sparql::TruthPattern&>(*elemPtr), prevStream);
+         } else if (elemPtr->kind() == sparql::PatternElement::Kind::Bind) {
+            const auto& bp = static_cast<const sparql::BindPattern&>(*elemPtr);
+            if (prevStream && prevStream == externalInput && prevStream.getDefiningOp())
+               prevStream = buildLeadingBind(bp, prevStream);
+            else
+               prevStream = buildBind(bp, prevStream, groupScope);
          }
+         sparql::collectInScopeVariables(*elemPtr, groupScope);
       }
       return prevStream;
    }

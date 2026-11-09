@@ -18,6 +18,8 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringMap.h"
 
+#include <cmath>
+
 namespace {
 using namespace gengodb::compiler::dialect;
 using namespace lingodb::compiler::dialect;
@@ -59,13 +61,27 @@ const tuples::Column* resolveThroughRemaps(const ColumnMapper& remaps, const tup
    return column;
 }
 bool isGpmStreamOp(mlir::Operation* op) {
-   return op && (mlir::isa<gpm::GraphPatternOp>(op) || mlir::isa<gpm::BagOp, gpm::TriplePatternOp, gpm::NamedGraphOp, gpm::FilterOp>(op));
+   return op && (mlir::isa<gpm::GraphPatternOp>(op) || mlir::isa<gpm::BagOp, gpm::TriplePatternOp, gpm::NamedGraphOp, gpm::FilterOp, gpm::ExtendOp>(op));
+}
+relalg::MapOp asBindMap(mlir::Operation* op) {
+   auto mapOp = mlir::dyn_cast_or_null<relalg::MapOp>(op);
+   return mapOp && mapOp->hasAttr(gpm::kBindAttr) ? mapOp : relalg::MapOp();
+}
+void insertComputedColumns(relalg::MapOp mapOp, relalg::ColumnSet& result) {
+   for (auto attr : mapOp.getComputedCols()) result.insert(mlir::cast<tuples::ColumnDefAttr>(attr).getColumnPtr().get());
 }
 bool isNestedInGraphPattern(mlir::Operation* op) {
    for (auto* parent = op->getParentOp(); parent; parent = parent->getParentOp()) {
       if (mlir::isa<gpm::GraphPatternOp>(parent)) return true;
    }
    return false;
+}
+mlir::Value createUnitRelation(mlir::OpBuilder& builder, mlir::Location loc) {
+   auto& columnManager = builder.getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+   auto unitDef = columnManager.createDef(columnManager.getUniqueScope("unit"), "unit");
+   unitDef.getColumn().type = builder.getI32Type();
+   auto row = builder.getArrayAttr({builder.getI32IntegerAttr(0)});
+   return builder.create<relalg::ConstRelationOp>(loc, builder.getArrayAttr({unitDef}), builder.getArrayAttr({row}));
 }
 
 class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass, mlir::OperationPass<mlir::ModuleOp>> {
@@ -149,6 +165,9 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       else if (auto filterOp = mlir::dyn_cast<gpm::FilterOp>(op)) {
          result = rewriteFilter(filterOp);
       }
+      else if (auto extendOp = mlir::dyn_cast<gpm::ExtendOp>(op)) {
+         result = rewriteExtend(extendOp);
+      }
       else {
          auto* savedInsertPoint = insertPoint;
          if (isNestedInGraphPattern(op)) op->moveBefore(insertPoint);
@@ -209,14 +228,28 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       propagateDegrees(rel, selOp.getResult());
       return selOp.getResult();
    }
+   mlir::Value rewriteExtend(gpm::ExtendOp extendOp) {
+      auto* ctxt = extendOp.getContext();
+      auto loc = extendOp.getLoc();
+      mlir::OpBuilder builder(ctxt);
+      builder.setInsertionPoint(insertPoint);
+      mlir::Value rel = rewrite(extendOp.getRel());
+      if (!rel) rel = createUnitRelation(builder, loc); // seed input (named graph / pattern region entry)
+      auto mapOp = builder.create<relalg::MapOp>(loc, tuples::TupleStreamType::get(ctxt), rel, builder.getArrayAttr({extendOp.getComputed()}));
+      mapOp.getPredicate().takeBody(extendOp.getExpression());
+      mapOp->setAttr(gpm::kBindAttr, builder.getUnitAttr());
+      propagateDegrees(rel, mapOp.getResult());
+      return mapOp.getResult();
+   }
    mlir::Value rewriteFuzzy(gpm::FuzzyGraphPatternOp fuzzyOp) {
       auto loc = fuzzyOp.getLoc();
       mlir::Value accumulator = rewrite(fuzzyOp.getRel());
       mlir::Value blockArg = fuzzyOp.getPattern().front().getArgument(0);
       rewritten[blockArg] = accumulator;
-      std::optional<float> threshold;
-      if (auto attr = fuzzyOp.getThreshold()) threshold = attr->convertToFloat();
-      fuzzyScopes.emplace_back().threshold = threshold;
+      std::optional<gpm::Hedge> hedge = fuzzyOp.getHedge();
+      std::optional<DegreeBound> bound;
+      if (auto attr = fuzzyOp.getThreshold()) bound = boundOnRawDegree(attr->convertToFloat(), hedge);
+      fuzzyScopes.emplace_back().threshold = bound && !bound->upper ? std::optional<float>(bound->value) : std::nullopt;
       mlir::Value result = rewriteRegion(fuzzyOp.getPattern());
       FuzzyScope scope = fuzzyScopes.pop_back_val();
       rewritten.erase(blockArg);
@@ -228,17 +261,84 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          return {};
       }
       mlir::Value finalStream;
-      if (!threshold) {
-         finalStream = bindTruthDegree(result, degree, fuzzyOp.getTruthDegrAttr(), loc);
+      if (!bound) {
+         mlir::Value degreeStream = result;
+         if (hedge) std::tie(degreeStream, degree) = buildHedge(result, degree, *hedge, loc);
+         finalStream = bindTruthDegree(degreeStream, degree, fuzzyOp.getTruthDegrAttr(), loc);
       }
-      else if (scope.pruned.contains(result)) {
+      else if (!bound->upper && scope.pruned.contains(result)) {
          finalStream = result;
       }
       else {
-         finalStream = buildThresholdSelection(result, degree, *threshold, /*keepUnbound=*/false, loc);
+         auto predicate = bound->upper ? mlir::arith::CmpFPredicate::OLE : mlir::arith::CmpFPredicate::OGE;
+         finalStream = buildThresholdSelection(result, degree, bound->value, /*keepUnbound=*/false, loc, predicate);
       }
       propagateDegrees(result, finalStream);
       return finalStream;
+   }
+   struct DegreeBound {
+      float value;
+      bool upper;
+   };
+   static DegreeBound boundOnRawDegree(float threshold, std::optional<gpm::Hedge> hedge) {
+      double t = threshold;
+      if (!hedge) return {threshold, false};
+      switch (*hedge) {
+         case gpm::Hedge::very: return {static_cast<float>(std::sqrt(t)), false};
+         case gpm::Hedge::extremely: return {static_cast<float>(std::cbrt(t)), false};
+         case gpm::Hedge::more_or_less: return {static_cast<float>(t * t), false};
+         case gpm::Hedge::negation: return {static_cast<float>(1.0 - t), true};
+      }
+      llvm_unreachable("unknown fuzzy hedge");
+   }
+   std::pair<mlir::Value, const tuples::Column*> buildHedge(mlir::Value stream, const tuples::Column* degree, gpm::Hedge hedge, mlir::Location loc) {
+      auto* ctxt = stream.getContext();
+      auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      mlir::Type f32 = mlir::Float32Type::get(ctxt);
+      mlir::Type f64 = mlir::Float64Type::get(ctxt);
+      bool nullable = mlir::isa<db::NullableType>(degree->type);
+      auto hedgedDef = columnManager.createDef(columnManager.getUniqueScope("fuzzy"), "hedged");
+      hedgedDef.getColumn().type = degree->type;
+      mlir::OpBuilder builder(ctxt);
+      builder.setInsertionPoint(insertPoint);
+      auto* block = new mlir::Block;
+      mlir::Value tuple = block->addArgument(tuples::TupleType::get(ctxt), loc);
+      {
+         mlir::OpBuilder::InsertionGuard guard(builder);
+         builder.setInsertionPointToStart(block);
+         mlir::Value value = builder.create<tuples::GetColumnOp>(loc, degree->type, columnManager.createRef(degree), tuple);
+         mlir::Value isNull;
+         mlir::Value x = value;
+         if (nullable) {
+            isNull = builder.create<db::IsNullOp>(loc, value);
+            x = builder.create<db::NullableGetVal>(loc, value);
+         }
+         mlir::Value hedged;
+         switch (hedge) {
+            case gpm::Hedge::very:
+               hedged = builder.create<mlir::arith::MulFOp>(loc, x, x);
+               break;
+            case gpm::Hedge::extremely:
+               hedged = builder.create<mlir::arith::MulFOp>(loc, builder.create<mlir::arith::MulFOp>(loc, x, x), x);
+               break;
+            case gpm::Hedge::more_or_less: {
+               mlir::Value wide = builder.create<mlir::arith::ExtFOp>(loc, f64, x);
+               mlir::Value root = builder.create<db::RuntimeCall>(loc, f64, "Sqrt", mlir::ValueRange({wide})).getRes();
+               hedged = builder.create<mlir::arith::TruncFOp>(loc, f32, root);
+               break;
+            }
+            case gpm::Hedge::negation: {
+               mlir::Value one = builder.create<mlir::arith::ConstantOp>(loc, f32, builder.getF32FloatAttr(1.0f));
+               hedged = builder.create<mlir::arith::SubFOp>(loc, one, x);
+               break;
+            }
+         }
+         if (nullable) hedged = builder.create<db::AsNullableOp>(loc, degree->type, hedged, isNull);
+         builder.create<tuples::ReturnOp>(loc, hedged);
+      }
+      auto mapOp = builder.create<relalg::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, builder.getArrayAttr({hedgedDef}));
+      mapOp.getPredicate().push_back(block);
+      return {mapOp.getResult(), &hedgedDef.getColumn()};
    }
    mlir::Value rewritePattern(gpm::GraphPatternOp patternOp) {
       if (auto fuzzyOp = mlir::dyn_cast<gpm::FuzzyGraphPatternOp>(patternOp.getOperation())) return rewriteFuzzy(fuzzyOp);
@@ -402,6 +502,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          result.insert(producedColumns(antiSemiJoin.getLeft(), visited));
          return result;
       }
+      if (auto bindMap = asBindMap(op)) insertComputedColumns(bindMap, result);
       for (auto operand : op->getOperands()) {
          if (mlir::isa<tuples::TupleStreamType>(operand.getType())) {
             result.insert(producedColumns(operand, visited));
@@ -669,7 +770,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       mapOp.getPredicate().push_back(block);
       return {mapOp.getResult(), &accDef.getColumn()};
    }
-   mlir::Value buildThresholdSelection(mlir::Value stream, const tuples::Column* degree, float threshold, bool keepUnbound, mlir::Location loc) {
+   mlir::Value buildThresholdSelection(mlir::Value stream, const tuples::Column* degree, float threshold, bool keepUnbound, mlir::Location loc, mlir::arith::CmpFPredicate predicate = mlir::arith::CmpFPredicate::OGE) {
       auto* ctxt = stream.getContext();
       auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
       mlir::OpBuilder builder(ctxt);
@@ -686,12 +787,12 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       if (mlir::isa<db::NullableType>(degree->type)) {
          mlir::Value null = builder.create<db::IsNullOp>(loc, value);
          mlir::Value raw = builder.create<db::NullableGetVal>(loc, value);
-         mlir::Value reached = builder.create<mlir::arith::CmpFOp>(loc, mlir::arith::CmpFPredicate::OGE, raw, bound);
+         mlir::Value reached = builder.create<mlir::arith::CmpFOp>(loc, predicate, raw, bound);
          mlir::Value unboundResult = builder.create<mlir::arith::ConstantIntOp>(loc, keepUnbound ? 1 : 0, 1);
          pred = builder.create<mlir::arith::SelectOp>(loc, null, unboundResult, reached);
       }
       else {
-         pred = builder.create<mlir::arith::CmpFOp>(loc, mlir::arith::CmpFPredicate::OGE, value, bound);
+         pred = builder.create<mlir::arith::CmpFOp>(loc, predicate, value, bound);
       }
       builder.create<tuples::ReturnOp>(loc, pred);
       return selOp.getResult();
@@ -756,6 +857,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          result.insert(collectTripleVariables(outerJoin.getLeft(), visited));
          return result;
       }
+      if (auto bindMap = asBindMap(op)) insertComputedColumns(bindMap, result);
       if (auto unionOp = mlir::dyn_cast<relalg::UnionOp>(op)) {
          for (auto mappingAttr : unionOp.getMapping()) {
             result.insert(&mlir::cast<tuples::ColumnDefAttr>(mappingAttr).getColumn());

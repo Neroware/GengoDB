@@ -1,0 +1,8 @@
+# Expected to fail: SOMEWHAT is not a builtin hedge keyword (VERY, EXTREMELY, MORE_OR_LESS, NOT).
+PREFIX ex: <http://example.org/>
+SELECT ?p ?t
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH ?t OF SOMEWHAT { ?p ex:drinks ex:coffee . }
+    }
+}

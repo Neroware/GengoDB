@@ -1,0 +1,12 @@
+PREFIX ex: <http://example.org/>
+
+# BIND as the first element of a group extends the single empty solution; without any graph
+# pattern at all the query returns exactly one row.
+SELECT ?who ?age ?one
+WHERE {
+    BIND(1 AS ?one)
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        BIND(ex:bob AS ?who)
+        ?who ex:age ?age .
+    }
+}

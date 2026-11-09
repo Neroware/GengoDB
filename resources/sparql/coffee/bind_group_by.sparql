@@ -1,0 +1,13 @@
+PREFIX ex: <http://example.org/>
+
+# BIND variables as GROUP BY key, aggregate argument and ORDER BY key.
+SELECT ?eater (COUNT(*) AS ?n) (SUM(?w) AS ?total)
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ?who ex:eats ?food .
+        BIND(STR(?who) AS ?eater)
+        BIND(2 AS ?w)
+    }
+}
+GROUP BY ?eater
+ORDER BY DESC(?n) ?eater
