@@ -550,7 +550,22 @@ class SubOpRewriter {
          types.push_back(input.getType());
       }
       auto tupleType = mlir::TupleType::get(getContext(), types);
-      mlir::Value contextPtr = create<util::AllocaOp>(builder.getUnknownLoc(), util::RefType::get(getContext(), tupleType), mlir::Value());
+      // ====================================================================================================
+      // Allocate step context at the function's entry point, otherwise it might get generated in a loop.
+      // util::AllocaOp does NOT free stack memory, which leads to a stack overflow for large datasets.
+      // ----------------------------------------------------------------------------------------------------
+      mlir::Value contextPtr;
+      mlir::Operation* parentOp = builder.getInsertionBlock() ? builder.getInsertionBlock()->getParentOp() : nullptr;
+      auto funcOp = parentOp ? (mlir::isa<mlir::func::FuncOp>(parentOp) ? mlir::cast<mlir::func::FuncOp>(parentOp) : parentOp->getParentOfType<mlir::func::FuncOp>()) : mlir::func::FuncOp();
+      if (funcOp && !funcOp.getBody().empty()) {
+         mlir::OpBuilder::InsertionGuard guard(builder);
+         builder.setInsertionPointToStart(&funcOp.getBody().front());
+         contextPtr = create<util::AllocaOp>(builder.getUnknownLoc(), util::RefType::get(getContext(), tupleType), mlir::Value());
+      } 
+      else {
+         contextPtr = create<util::AllocaOp>(builder.getUnknownLoc(), util::RefType::get(getContext(), tupleType), mlir::Value());
+      }
+      // ====================================================================================================
       size_t offset = 0;
       for (auto [param, arg, isThreadLocal] : llvm::zip(executionStep.getInputs(), executionStep.getSubOps().front().getArguments(), executionStep.getIsThreadLocal())) {
          if (exclude && arg == exclude && arg.hasOneUse()) continue;
