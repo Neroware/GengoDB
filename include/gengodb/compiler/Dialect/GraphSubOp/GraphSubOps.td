@@ -189,4 +189,15 @@ def GraphRefToStringOp : GraphSubOp_Op<"ref_to_str", [Pure,SubOperator]> {
     }];
 }
 
+//===----------------------------------------------------------------------===//
+// Miscellaneous
+//===----------------------------------------------------------------------===//
+
+def GraphIndexExpandOp : GraphSubOp_Op<"graph_index_expand", []> {
+    let summary = "placeholder for graph index expansions";
+    let arguments = (ins TupleStream : $rel, DictionaryAttr : $triple, I64Attr : $ident);
+    let results = (outs TupleStream : $res);
+    let assemblyFormat = [{ $rel attr-dict }];
+}
+
 #endif // GENGODB_DIALECT_GRAPHSUBOP_OPS

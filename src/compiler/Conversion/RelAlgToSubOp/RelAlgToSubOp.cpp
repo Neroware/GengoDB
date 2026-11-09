@@ -1477,30 +1477,38 @@ static mlir::Value translateINLJ(mlir::Value left, mlir::Value right, mlir::Arra
    return nestedMapOp.getRes();
 }
 static mlir::Value translateGINLJBindingCompatible(mlir::Value left, mlir::Value right, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, mlir::ConversionPatternRewriter& rewriter, mlir::Operation* op, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn, int graphIndexPosition, mlir::ArrayAttr bindingCompatible) {
+   (void) graphIndexPosition; // TODO remove later!
    auto loc = op->getLoc();
    auto* ctxt = rewriter.getContext();
    auto& colManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-   auto triple = op->getAttrOfType<mlir::DictionaryAttr>(gpm::lowering::kGraphIndexTripleAttr);
-   if (!triple) assert(false && "expected virtual graph index triple description");
-   auto inFlight = op->getOperand(graphIndexPosition).getDefiningOp<relalg::InFlightOp>();
-   if (!inFlight) assert(false && "should not happen");
-   gsubop::ScanGraphOp scanGraph;
-   for (mlir::Value stream = inFlight.getStream();;) {
-      auto* streamOp = stream.getDefiningOp();
-      if (!streamOp) assert(false && "GINLJ consumed stream must begin with a graph scan");
-      scanGraph = mlir::dyn_cast<gsubop::ScanGraphOp>(streamOp);
-      if (scanGraph) break;
-      auto streamOperands = llvm::make_filter_range(streamOp->getOperands(), [](mlir::Value v) { return mlir::isa<tuples::TupleStreamType>(v.getType()); });
-      if (!llvm::hasSingleElement(streamOperands)) assert(false && "GINLJ only supports triple operators consuming linear streams");
-      stream = *streamOperands.begin();
-   }
-   // Weird parameter flip. Wtf?
-   if (left == inFlight.getStream()) {
+   auto idAttr = op->getAttrOfType<mlir::IntegerAttr>(gpm::lowering::kGraphIdxExpId);
+   if (!idAttr) assert(false && "GINLJ is not linked to a virtual triple (no graph index expansion)");
+   
+   static auto findInsertionPoint = [](mlir::Value stream, uint64_t id) -> gsubop::GraphIndexExpandOp {
+      llvm::SmallVector<mlir::Value> worklist{stream};
+      llvm::SmallPtrSet<mlir::Operation*, 16> visited;
+      while (!worklist.empty()) {
+         auto* op = worklist.pop_back_val().getDefiningOp();
+         if (!op || !visited.insert(op).second) continue;
+         if (auto placeholder = mlir::dyn_cast<gsubop::GraphIndexExpandOp>(op)) {
+            if (placeholder.getIdent() == id) return placeholder;
+         }
+         for (mlir::Value operand : op->getOperands()) {
+            if (mlir::isa<tuples::TupleStreamType>(operand.getType())) worklist.push_back(operand);
+         }
+      }
+      return {};
+   };
+   auto inOp = findInsertionPoint(right, idAttr.getInt());
+   if (!inOp) {
+      inOp = findInsertionPoint(left, idAttr.getInt());
       std::swap(left, right);
       std::swap(hashLeft, hashRight);
    }
-   mlir::Value graph = scanGraph.getGraph();
+   if (!inOp) assert(false && "failed to find insertion point for graph index expansion");
+   auto triple = inOp.getTriple();
 
+   // find anchor of graph expansion based on triple pattern annotation
    static auto findAnchor = [](mlir::DictionaryAttr triple, mlir::ArrayAttr hashRight) -> std::optional<std::pair<size_t, gpm::TripleSlot>> {
       std::array<std::pair<gpm::TripleSlot, mlir::Attribute>, 2> slots{{{gpm::TripleSlot::subject, triple.get("s")}, {gpm::TripleSlot::object, triple.get("o")}}};
       for (auto [slot, term] : slots) {
@@ -1519,11 +1527,68 @@ static mlir::Value translateGINLJBindingCompatible(mlir::Value left, mlir::Value
    auto tripleAnchorRef = mlir::cast<tuples::ColumnRefAttr>(hashRight[anchorIdx]);
    auto isFlagged = [&](size_t i) { return mlir::cast<mlir::IntegerAttr>(bindingCompatible[i]).getInt() != 0; };
 
-   mlir::Value boundStream = left;
+   // the index side stream of a GINLJ needs to start with a graph scan (i.e. the graph index)
+   gsubop::ScanGraphOp scanGraph;
+   for (mlir::Value stream = inOp.getRel();;) {
+      auto* streamOp = stream.getDefiningOp();
+      if (!streamOp) assert(false && "GINLJ placeholder must consume a graph scan");
+      scanGraph = mlir::dyn_cast<gsubop::ScanGraphOp>(streamOp);
+      if (scanGraph) break;
+      auto streamOperands = llvm::make_filter_range(streamOp->getOperands(), [](mlir::Value v) { return mlir::isa<tuples::TupleStreamType>(v.getType()); });
+      if (!llvm::hasSingleElement(streamOperands)) assert(false && "GINLJ placeholder must consume a linear stream starting at a graph scan");
+      stream = *streamOperands.begin();
+   }
+   mlir::Value graph = scanGraph.getGraph();
+
+   // move the pipeline (i.e. index side) down to the join behind the probe side
+   auto joinPosition = rewriter.saveInsertionPoint();
+   llvm::DenseMap<mlir::Operation*, bool> consumers;
+   std::function<bool(mlir::Operation*)> visit = [&](mlir::Operation* op) -> bool {
+      if (!op) return false;
+      if (auto it = consumers.find(op); it != consumers.end()) return it->second;
+      consumers[op] = false;
+      bool depends = op == inOp.getOperation();
+      if (!depends) {
+         for (mlir::Value operand : op->getOperands()) {
+            if (mlir::isa<tuples::TupleStreamType>(operand.getType())) depends |= visit(operand.getDefiningOp());
+         }
+      }
+      return consumers[op] = depends;
+   };
+   visit(right.getDefiningOp());
+   llvm::SmallVector<mlir::Operation*> pipeline;
+   for (auto [op, depends] : consumers) {
+      if (!depends) continue;
+      assert(op->getBlock() == inOp->getBlock() && "GINLJ: correlated pipeline must reside in a single block");
+      pipeline.push_back(op);
+   }
+   llvm::sort(pipeline, [](mlir::Operation* a, mlir::Operation* b) { return a->isBeforeInBlock(b); });
+   for (auto* op : pipeline) {
+      rewriter.moveOpBefore(op, rewriter.getInsertionBlock(), rewriter.getInsertionPoint());
+   }
+   
+   // emit expansion at position of inOp
+   mlir::OpBuilder::InsertionGuard guard(rewriter);
+   rewriter.setInsertionPoint(inOp);
+   auto [nodeSetDef, nodeSetRef] = createColumn(scanGraph.getNodeSet().getColumn().type, "graphindex", "vx");
+   auto [edgeSetDef, edgeSetRef] = createColumn(scanGraph.getEdgeSet().getColumn().type, "graphindex", "ex");
+   auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), left, rewriter.getArrayAttr({}));
+   {
+      auto* b = new Block;
+      mlir::Value tuple = b->addArgument(tuples::TupleType::get(ctxt), loc);
+      nestedMapOp.getRegion().push_back(b);
+      mlir::OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(b);
+      mlir::Value scan = rewriter.create<gsubop::ScanGraphOp>(loc, graph, nodeSetDef, edgeSetDef);
+      rewriter.create<tuples::ReturnOp>(loc, rewriter.create<subop::CombineTupleOp>(loc, scan, tuple).getResult());
+   }
+   // expand anchor
+   mlir::Value combined = nestedMapOp.getRes();
+   mlir::Value boundStream = combined;
    mlir::Value unboundStream;
    if (mlir::isa<db::NullableType>(anchorRef.getColumn().type)) {
       auto [markerDef, markerRef] = createColumn(rewriter.getI1Type(), "graphindex", "unbound");
-      mlir::Value marked = map(left, rewriter, loc, rewriter.getArrayAttr(markerDef), [&](mlir::ConversionPatternRewriter& rewriter, subop::MapCreationHelper& helper, mlir::Location loc) -> std::vector<mlir::Value> {
+      mlir::Value marked = map(combined, rewriter, loc, rewriter.getArrayAttr(markerDef), [&](mlir::ConversionPatternRewriter& rewriter, subop::MapCreationHelper& helper, mlir::Location loc) -> std::vector<mlir::Value> {
          return {rewriter.create<db::IsNullOp>(loc, rewriter.getI1Type(), helper.access(anchorRef, loc))};
       });
       boundStream = rewriter.create<subop::FilterOp>(loc, marked, subop::FilterSemantic::none_true, rewriter.getArrayAttr(markerRef));
@@ -1531,23 +1596,9 @@ static mlir::Value translateGINLJBindingCompatible(mlir::Value left, mlir::Value
          unboundStream = rewriter.create<subop::FilterOp>(loc, marked, subop::FilterSemantic::all_true, rewriter.getArrayAttr(markerRef));
       }
    }
-
-   auto expand = [&](mlir::Value stream, bool bound) -> mlir::Value {
-      auto [nodeSetDef, nodeSetRef] = createColumn(scanGraph.getNodeSet().getColumn().type, "graphindex", "vx");
-      auto [edgeSetDef, edgeSetRef] = createColumn(scanGraph.getEdgeSet().getColumn().type, "graphindex", "ex");
-      auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({}));
-      auto* b = new Block;
-      mlir::Value tuple = b->addArgument(tuples::TupleType::get(ctxt), loc);
-      nestedMapOp.getRegion().push_back(b);
-      {
-         mlir::OpBuilder::InsertionGuard guard(rewriter);
-         rewriter.setInsertionPointToStart(b);
-         mlir::Value scan = rewriter.create<gsubop::ScanGraphOp>(loc, graph, nodeSetDef, edgeSetDef);
-         rewriter.create<tuples::ReturnOp>(loc, rewriter.create<subop::CombineTupleOp>(loc, scan, tuple).getResult());
-      }
-      mlir::Value expanded = nestedMapOp.getRes();
-      gpm::lowering::NamedGraphMapper graphs;
-      graphs.insert({mlir::cast<tuples::ColumnRefAttr>(triple.get("graphRef")).getName(), {mlir::cast<gsubop::GraphType>(graph.getType()), &nodeSetDef.getColumn(), &edgeSetDef.getColumn(), graph}});
+   gpm::lowering::NamedGraphMapper graphs;
+   graphs.insert({mlir::cast<tuples::ColumnRefAttr>(triple.get("graphRef")).getName(), {mlir::cast<gsubop::GraphType>(graph.getType()), &nodeSetDef.getColumn(), &edgeSetDef.getColumn(), graph}});
+   auto expand = [&](mlir::Value expanded, bool bound) -> mlir::Value {
       gpm::lowering::TripleEmitter emitter(rewriter, graphs, op, triple);
       if (bound) {
          tuples::ColumnRefAttr anchorValueRef = anchorRef;
@@ -1564,21 +1615,23 @@ static mlir::Value translateGINLJBindingCompatible(mlir::Value left, mlir::Value
          expanded = map(expanded, rewriter, loc, rewriter.getArrayAttr(colManager.createDef(&tripleAnchorRef.getColumn())), [&](mlir::ConversionPatternRewriter&, subop::MapCreationHelper& helper, mlir::Location loc) -> std::vector<mlir::Value> {
             return {helper.access(anchorValueRef, loc)};
          });
-      } else {
+      } 
+      else {
          expanded = emitter.lower(expanded);
          expanded = map(expanded, rewriter, loc, rewriter.getArrayAttr(colManager.createDef(&anchorRef.getColumn())), [&](mlir::ConversionPatternRewriter& rewriter, subop::MapCreationHelper& helper, mlir::Location loc) -> std::vector<mlir::Value> {
             return {rewriter.create<db::AsNullableOp>(loc, anchorRef.getColumn().type, helper.access(tripleAnchorRef, loc))};
          });
       }
-      expanded = fn(expanded, rewriter);
       return expanded;
    };
-
-   mlir::Value result = expand(boundStream, true);
+   mlir::Value expanded = expand(boundStream, true);
    if (unboundStream) {
-      result = rewriter.create<subop::UnionOp>(loc, mlir::ValueRange{result, expand(unboundStream, false)});
+      expanded = rewriter.create<subop::UnionOp>(loc, mlir::ValueRange{expanded, expand(unboundStream, false)});
    }
-   return result;
+   if (right == inOp.getRes()) right = expanded;
+   rewriter.replaceOp(inOp, expanded);
+   rewriter.restoreInsertionPoint(joinPosition);
+   return fn(right, rewriter);
 }
 static mlir::Value translateNL(mlir::Value left, mlir::Value right, bool useHash, bool useIndexNestedLoop, bool useGraphIndexNestedLoop, bool useBindingCompatible, mlir::ArrayAttr nullsEqual, mlir::ArrayAttr hashLeft, mlir::ArrayAttr hashRight, relalg::ColumnSet columns, mlir::ConversionPatternRewriter& rewriter, mlir::Operation* op, std::function<mlir::Value(mlir::Value, mlir::ConversionPatternRewriter& rewriter)> fn, int graphIndexPosition = -1, mlir::ArrayAttr bindingCompatible = mlir::ArrayAttr()) {
    if (useHash) {

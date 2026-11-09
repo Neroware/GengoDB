@@ -160,23 +160,37 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
 };
 class VirtualTriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
    public:
-   using OpConversionPattern<gpm::TriplePatternOp>::OpConversionPattern;
+   VirtualTriplePatternLowering(TypeConverter& typeConverter, MLIRContext* context, int64_t& nextIdent)
+      : OpConversionPattern<gpm::TriplePatternOp>(typeConverter, context), nextIdent(nextIdent) {}
    LogicalResult matchAndRewrite(gpm::TriplePatternOp tripleOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
-      if (!tripleOp->hasAttr("virtual")) 
+      if (!tripleOp->hasAttr("virtual"))
          return failure();
-      if (failed(normalized(tripleOp))) 
+      if (failed(normalized(tripleOp)))
          return failure();
-      auto triple = asDictAttr(tripleOp);
-      for (auto* user : tripleOp.getRes().getUsers()) {
-         if (isRelAlgOperator(user)) user->setAttr(kGraphIndexTripleAttr, triple);
-      }
+      mlir::Operation* join = findGraphIndexJoin(tripleOp);
+      if (!join)
+         return tripleOp.emitOpError("virtual triple pattern is not consumed by a graph index join (useGraphIndex)");
+      int64_t id = nextIdent++;
+      auto idAttr = rewriter.getI64IntegerAttr(id);
+      rewriter.modifyOpInPlace(join, [&]() { join->setAttr(kGraphIdxExpId, idAttr); });
       for (const auto* column : tripleOp.getCreatedVariables()) {
          const_cast<tuples::Column*>(column)->type = variant::VariantType::get(rewriter.getContext());
       }
-      replaceTripleOp(tripleOp, adaptor.getRel(), rewriter);
+      mlir::Value placeholder = rewriter.create<gsubop::GraphIndexExpandOp>(tripleOp.getLoc(), tuples::TupleStreamType::get(rewriter.getContext()), adaptor.getRel(), asDictAttr(tripleOp), idAttr);
+      replaceTripleOp(tripleOp, placeholder, rewriter);
       return success();
    }
    private:
+   static mlir::Operation* findGraphIndexJoin(gpm::TriplePatternOp tripleOp) {
+      mlir::Value current = tripleOp.getRes();
+      while (true) {
+         if (!current.hasOneUse()) return nullptr;
+         mlir::Operation* user = *current.getUsers().begin();
+         if (user->hasAttr("useGraphIndex")) return user;
+         if (user->getNumResults() != 1 || !mlir::isa<tuples::TupleStreamType>(user->getResult(0).getType())) return nullptr;
+         current = user->getResult(0);
+      }
+   }
    static mlir::DictionaryAttr asDictAttr(gpm::TriplePatternOp tripleOp) {
       mlir::Builder b(tripleOp.getContext());
       llvm::SmallVector<mlir::Attribute> paramIds;
@@ -189,6 +203,8 @@ class VirtualTriplePatternLowering : public OpConversionPattern<gpm::TriplePatte
       if (auto truthDegr = tripleOp.getTruthDegrAttr()) entries.push_back(b.getNamedAttr("truthDegr", truthDegr));
       return b.getDictionaryAttr(entries);
    }
+   private:
+   int64_t& nextIdent;
 };
 class NodeExpansionLowering : public OpConversionPattern<gpm::NodeExpansionOp> {
    NamedGraphMapper& graphs;
@@ -386,6 +402,7 @@ void GPMToSubOpLoweringPass::runOnOperation() {
 
    NamedGraphMapper graphs;
    ExternalGraphMapper externalGraphs;
+   int64_t graphIdxExpandIds = 0;
 
    ConversionTarget target(getContext());
    addCommonLegalDialects(target);
@@ -395,7 +412,7 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    RewritePatternSet patterns(ctxt);
    patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs, externalGraphs);
    patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs);
-   patterns.insert<VirtualTriplePatternLowering>(typeConverter, ctxt);
+   patterns.insert<VirtualTriplePatternLowering>(typeConverter, ctxt, graphIdxExpandIds);
    patterns.insert<NodeExpansionLowering>(typeConverter, ctxt, graphs);
    patterns.insert<EdgeExpansionLowering>(typeConverter, ctxt, graphs);
 
