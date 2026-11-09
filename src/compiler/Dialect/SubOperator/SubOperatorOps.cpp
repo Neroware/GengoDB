@@ -1145,6 +1145,17 @@ void subop::GenerateOp::print(OpAsmPrinter& p) {
 llvm::SmallVector<subop::Member> subop::ScanOp::getReadMembers() {
    return getMapping().getMembers();
 }
+// The produced references depend on the scanned statem even if no members are gathered afterwards.
+// Can cause wrong ordering in dependency analysis otherwise!
+llvm::SmallVector<subop::Member> subop::ScanRefsOp::getReadMembers() {
+   llvm::SmallVector<subop::Member> res;
+   if (auto state = mlir::dyn_cast<subop::State>(getState().getType())) {
+      for (auto member : state.getMembers().getMembers()) {
+         res.push_back(member);
+      }
+   }
+   return res;
+}
 llvm::SmallVector<subop::Member> subop::MaterializeOp::getWrittenMembers() {
    return getMapping().getMembers();
 }

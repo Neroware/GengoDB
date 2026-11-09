@@ -104,6 +104,7 @@ def ScanRefsOp : SubOperator_Op<"scan_refs", [Pure,SubOperator,ReferenceProducer
     let assemblyFormat = [{  $state `:` type($state) custom<CustDef>($ref) attr-dict }];
     let extraClassDeclaration = [{
         dialect::tuples::ColumnDefAttr getProducedReference(){ return getRef(); }
+        llvm::SmallVector<Member> getReadMembers();
         mlir::Operation* cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, lingodb::compiler::dialect::subop::ColumnMapping& columnMapping);
     }];
 }
