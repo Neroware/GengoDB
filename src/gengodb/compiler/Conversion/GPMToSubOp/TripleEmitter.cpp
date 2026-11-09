@@ -198,7 +198,7 @@ mlir::Value TripleEmitter::lower(mlir::Value stream, std::optional<gpm::TripleSl
     gsubop::EdgeRefType edgeRefType;
     tuples::ColumnRefAttr edgeRef;
     bool anchorSubject = anchor.has_value() ? *anchor == gpm::TripleSlot::subject : mlir::isa<gpm::IdentifierTermAttr>(sTerm);
-    bool anchorObject = anchor.has_value() ? *anchor == gpm::TripleSlot::object : !anchorSubject && mlir::isa<gpm::IdentifierTermAttr>(sTerm);
+    bool anchorObject = anchor.has_value() ? *anchor == gpm::TripleSlot::object : !anchorSubject && mlir::isa<gpm::IdentifierTermAttr>(oTerm);
     if (anchorSubject) {
         stream = emitNodeToEdge(stream, anchorAttr(sTerm), EdgeDirection::Outgoing, edgeRefType, edgeRef, paramIds[0]);
         stream = emitPredicate(stream, edgeRef, paramIds[1]);
