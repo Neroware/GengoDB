@@ -1,4 +1,5 @@
 #include "lingodb/compiler/Dialect/RelAlg/Passes.h"
+#include "gengodb/compiler/Dialect/GPM/Transforms/Passes.h"
 #include "lingodb/compiler/Dialect/RelAlg/Transforms/QueryParameters.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/PassManager.h"
@@ -11,6 +12,7 @@ namespace {
 std::shared_ptr<lingodb::catalog::Catalog> staticCatalog = {};
 } // end anonymous namespace
 using namespace lingodb::compiler::dialect;
+using namespace gengodb::compiler::dialect;
 void relalg::setStaticCatalog(std::shared_ptr<lingodb::catalog::Catalog> catalog) {
    std::cerr << "Warning: setting static catalog, should only be used in combination with mlir-db-opt" << std::endl;
    staticCatalog = catalog;
@@ -40,6 +42,7 @@ void relalg::createQueryOptPipeline(mlir::OpPassManager& pm, lingodb::catalog::C
 
    pm.addNestedPass<mlir::func::FuncOp>(relalg::createCombinePredicatesPass());
    pm.addNestedPass<mlir::func::FuncOp>(relalg::createEliminateNullableTypesPass());
+   pm.addNestedPass<mlir::func::FuncOp>(gpm::createOptimizeGpmJoinsPass());
    pm.addNestedPass<mlir::func::FuncOp>(relalg::createOptimizeImplementationsPass());
    if (catalog) {
       pm.addNestedPass<mlir::func::FuncOp>(relalg::createDetachMetaDataPass());

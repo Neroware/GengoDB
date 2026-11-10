@@ -7,6 +7,7 @@ namespace gpm {
 constexpr const char* kMergedColumnsAttr = "gpm.merge";
 constexpr const char* kBindAttr = "gpm.bind";
 std::unique_ptr<mlir::Pass> createUnnestGraphPatternsPass();
+std::unique_ptr<mlir::Pass> createOptimizeGpmJoinsPass();
 void registerGpmTransformations();
 } // end namespace subop
 } // end namespace lingodb::compiler::dialect
