@@ -69,6 +69,21 @@ def EdgeExpansionOp : GPM_RelAlgOp<"edge_expansion", [Pure,GPMOperator,Operator,
   }];
 }
 
+def PathExpansionOp : GPM_RelAlgOp<"path_expansion", [Pure,GPMOperator,Operator,UnaryOperator,DeclareOpInterfaceMethods<Parameterizable>]> {
+  let summary = "graph path expansion";
+  let arguments = (ins TupleStream:$rel, ColumnRefAttr:$graphRef, AnyAttr:$anchorTerm, AnyAttr:$target, ArrayAttr:$predicates, I64Attr:$minLength, GPM_ExpansionDirection:$anchor);
+  let results = (outs TupleStream:$res);
+  let assemblyFormat = [{  $rel custom<CustRef>($graphRef) `(` custom<Term>($anchorTerm) `->` custom<Term>($target) `)` `step` `:` custom<PredicateList>($predicates) `min` `:` $minLength `anchor` `:` $anchor attr-dict }];
+  let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
+    bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
+    std::optional<size_t> getParamId();
+  }];
+}
+
 def NamedGraphOp : GPM_RelAlgOp<"named_graph", [Pure,GPMOperator,Operator]> {
   let summary = "named graph";
   let arguments = (ins ColumnDefAttr:$def);

@@ -105,6 +105,7 @@ inline bool isAllowedGraphPatternBodyOp(const mlir::Operation& nested) {
         gengodb::compiler::dialect::gpm::BagOp,
         gengodb::compiler::dialect::gpm::FilterOp,
         gengodb::compiler::dialect::gpm::ExtendOp,
+        gengodb::compiler::dialect::gpm::PathExpansionOp,
         tuples::ReturnOp>(nested);
 }
 
@@ -119,6 +120,9 @@ ColumnSet getPatternCreatedVariables(mlir::Region& pattern) {
         }
         else if (auto extend = mlir::dyn_cast<gpm::ExtendOp>(nested)) {
             res.insert(extend.getCreatedVariables());
+        }
+        else if (auto pathOp = mlir::dyn_cast<gpm::PathExpansionOp>(nested)) {
+            res.insert(pathOp.getCreatedVariables());
         }
     });
     return res;
@@ -288,6 +292,35 @@ std::optional<size_t> gpm::EdgeExpansionOp::getParamId() {
     return paramIdForSlot(getOperation(), {getAnchorTerm()}, 0);
 }
 void gpm::EdgeExpansionOp::maskParameters() {
+    if (mlir::isa<gpm::IdentifierTermAttr>(getAnchorTerm())) {
+        setAnchorTermAttr(gpm::IdentifierTermAttr::get(getContext(), mlir::StringAttr::get(getContext(), "")));
+    }
+}
+
+lingodb::compiler::dialect::relalg::ColumnSet gpm::PathExpansionOp::getCreatedColumns() {
+    return getCreatedVariables();
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::PathExpansionOp::getUsedColumns() {
+    return getBoundVariables();
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::PathExpansionOp::getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache) {
+    lingodb::compiler::dialect::relalg::ColumnSet columns;
+    if (auto child = mlir::dyn_cast_or_null<Operator>(getRel().getDefiningOp())) {
+        columns.insert(cache.getAvailableColumnsFor(child));
+    }
+    columns.insert(getCreatedColumns());
+    return columns;
+}
+bool gpm::PathExpansionOp::canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column) {
+    return lingodb::compiler::dialect::relalg::detail::canColumnReach(getOperation(), source, target, column);
+}
+std::vector<relalg::QueryParamLiteral> gpm::PathExpansionOp::getParamLiterals() {
+    return paramLiterals({getAnchorTerm()});
+}
+std::optional<size_t> gpm::PathExpansionOp::getParamId() {
+    return paramIdForSlot(getOperation(), {getAnchorTerm()}, 0);
+}
+void gpm::PathExpansionOp::maskParameters() {
     if (mlir::isa<gpm::IdentifierTermAttr>(getAnchorTerm())) {
         setAnchorTermAttr(gpm::IdentifierTermAttr::get(getContext(), mlir::StringAttr::get(getContext(), "")));
     }
