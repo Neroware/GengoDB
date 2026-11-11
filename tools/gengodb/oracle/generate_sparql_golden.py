@@ -51,8 +51,10 @@ GOLDEN_DIR = os.path.join(os.path.dirname(__file__), "golden")
 COFFEE_GRAPH_IRI = "file://resources/ttl/coffee/coffee.ttl#rdf"
 SKIP = {"bsbm/9.sparql", "bsbm/12.sparql"}  # DESCRIBE / CONSTRUCT not yet supported
 # list of exclusions, due to rdflib issues
+# coffee/path_duplicate_anchors.sparql: rdflib's p* yields the start node twice when a cycle leads back
+# to it (ex:coffee ex:asksForMore ex:coffee); the spec's ALP keeps a visited set (Oxigraph: 9 rows, as ours)
 SKIP_RDFLIB = {"coffee/agg_expr_arg_error.sparql", "coffee/agg_group_by_expr_noalias.sparql",
-               "coffee/agg_computed_alias_chain.sparql"}
+               "coffee/agg_computed_alias_chain.sparql", "coffee/path_duplicate_anchors.sparql"}
 TRUTH_OF_RE = re.compile(r"\bTRUTH\s+\S+\s+OF\b", re.IGNORECASE)  # fuzzy extension, not standard SPARQL
 UNORDERED_CONCAT_RE = re.compile(r'^#\s*oracle:\s*unordered-concat\s+\?(\w+)\s+"((?:[^"\\]|\\.)*)"\s*$', re.MULTILINE)
 

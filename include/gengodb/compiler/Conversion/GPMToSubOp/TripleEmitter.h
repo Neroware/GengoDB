@@ -2,6 +2,7 @@
 #define GENGODB_COMPILER_CONVERSION_GPMTOSUBOP_TRIPLEEMITTER_H
 
 #include "gengodb/compiler/Conversion/GPMToSubOp/helpers.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
 
 namespace gengodb::compiler::dialect::gpm::lowering {
 using namespace lingodb::compiler::dialect;
@@ -12,6 +13,37 @@ struct NamedGraph {
     mlir::Value externalGraph;
 };
 using NamedGraphMapper = llvm::DenseMap<mlir::SymbolRefAttr, NamedGraph>;
+// One gsubop.get_external_graph per (graph name, global id), shared by all lowerings of the pass.
+struct ExternalGraph {
+    gsubop::GraphType graphType;
+    gsubop::NodeSetType nodeSetType;
+    gsubop::EdgeSetType edgeSetType;
+    mlir::Value externalGraph;
+};
+using GraphIdentity = std::pair<mlir::StringAttr, mlir::StringAttr>;
+using ExternalGraphMapper = llvm::DenseMap<GraphIdentity, ExternalGraph>;
+// Returns the cached external graph state, creating it at the start of `insertionBlock` on first use.
+// The block must dominate every later user (i.e. the query's top-level block, not a loop body).
+template<typename ColumnAttrT>
+ExternalGraph& getOrCreateExternalGraph(mlir::OpBuilder& builder, mlir::Location loc, ColumnAttrT graphAttr, ExternalGraphMapper& externalGraphs, mlir::Block* insertionBlock) {
+    auto* ctxt = builder.getContext();
+    auto [graphGroup, graphName] = helpers::splitGraphRef(graphAttr);
+    auto graphRefType = mlir::cast<gpm::GraphReferenceType>(graphAttr.getColumn().type);
+    GraphIdentity identity{graphRefType.getName(), graphRefType.getGlobalId()};
+    auto idIt = externalGraphs.find(identity);
+    if (idIt == externalGraphs.end()) {
+        auto nodeSetType = helpers::createGraphSetType<gsubop::NodeSetType>(ctxt, graphGroup, graphName, "vx");
+        auto edgeSetType = helpers::createGraphSetType<gsubop::EdgeSetType>(ctxt, graphGroup, graphName, "ex");
+        auto nodeSetMember = helpers::createMember(ctxt, helpers::memberName(graphName, graphGroup, "vx"), nodeSetType);
+        auto edgeSetMember = helpers::createMember(ctxt, helpers::memberName(graphName, graphGroup, "ex"), edgeSetType);
+        auto graphType = gsubop::GraphType::get(ctxt, helpers::createStateMembersAttr(ctxt, {nodeSetMember}), helpers::createStateMembersAttr(ctxt, {edgeSetMember}));
+        mlir::OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPointToStart(insertionBlock);
+        auto externalGraph = builder.create<gsubop::GetExternalGraphOp>(loc, graphType, graphRefType.getName(), graphRefType.getGlobalId());
+        idIt = externalGraphs.insert({identity, ExternalGraph{graphType, nodeSetType, edgeSetType, externalGraph}}).first;
+    }
+    return idIt->second;
+}
 constexpr llvm::StringLiteral kGraphIdxExpId = "graphIndexExpand";
 
 struct GraphEmitter {

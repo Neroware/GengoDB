@@ -206,12 +206,19 @@ void printTerm(OpAsmPrinter& p, mlir::Operation* op, mlir::Attribute attr) {
             p << "}";
         });
 }
-void printPredicateTerm(OpAsmPrinter& p, mlir::Operation* op, mlir::Attribute attr) {
-    auto list = mlir::dyn_cast<mlir::ArrayAttr>(attr);
-    if (!list) {
-        printTerm(p, op, attr);
-        return;
-    }
+ParseResult parsePredicateList(OpAsmParser& parser, mlir::ArrayAttr& attr) {
+    llvm::SmallVector<mlir::Attribute> terms;
+    auto parseElement = [&]() -> ParseResult {
+        mlir::Attribute term;
+        if (parseTerm(parser, term)) return failure();
+        terms.push_back(term);
+        return success();
+    };
+    if (parser.parseCommaSeparatedList(OpAsmParser::Delimiter::Square, parseElement)) return failure();
+    attr = parser.getBuilder().getArrayAttr(terms);
+    return success();
+}
+void printPredicateList(OpAsmPrinter& p, mlir::Operation* op, mlir::ArrayAttr list) {
     p << "[";
     llvm::interleaveComma(list, p, [&](mlir::Attribute term) { printTerm(p, op, term); });
     p << "]";
@@ -297,6 +304,31 @@ mlir::LogicalResult verifyExpansionTerms(mlir::Operation* op, mlir::Attribute an
 }
 ::mlir::LogicalResult gpm::EdgeExpansionOp::verify() {
     return verifyExpansionTerms(getOperation(), getAnchorTerm(), getTarget());
+}
+::mlir::LogicalResult gpm::PathExpansionOp::verify() {
+    auto anchorVar = mlir::dyn_cast<gpm::VariableTermAttr>(getAnchorTerm());
+    if (!(anchorVar && anchorVar.hasBinding()) && !mlir::isa<gpm::IdentifierTermAttr>(getAnchorTerm())) {
+        return emitOpError("anchor must be a bound variable reference or an identifier");
+    }
+    if (!mlir::isa<gpm::VariableTermAttr>(getTarget())) {
+        return emitOpError("target must be a variable (fresh definition or bound reference)");
+    }
+    if (getPredicates().empty()) {
+        return emitOpError("step predicate list must not be empty");
+    }
+    llvm::SmallPtrSet<mlir::Attribute, 4> seen;
+    for (auto predicate : getPredicates()) {
+        if (!mlir::isa<gpm::IdentifierTermAttr>(predicate)) {
+            return emitOpError("step predicates must be identifiers");
+        }
+        if (!seen.insert(predicate).second) {
+            return emitOpError("step predicate list contains duplicates");
+        }
+    }
+    if (getMinLength() != 0 && getMinLength() != 1) {
+        return emitOpError("min must be 0 (p*) or 1 (p+)");
+    }
+    return mlir::success();
 }
 ::mlir::LogicalResult gpm::BasicGraphPatternOp::verify() {
     return gpm::detail::verifyGraphPatternBody(getOperation());

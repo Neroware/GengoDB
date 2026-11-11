@@ -11,20 +11,6 @@ namespace gengodb::compiler::dialect::gpm::lowering {
 using namespace lingodb::compiler::dialect;
 using namespace helpers;
 
-template <typename BuildIdentFn>
-mlir::Value generateTupleStream(mlir::ConversionPatternRewriter& rewriter, mlir::Location loc, tuples::ColumnDefAttr def, BuildIdentFn buildIdent) {
-    auto ctxt = rewriter.getContext();
-    auto generateOp = rewriter.create<subop::GenerateOp>(loc, std::vector<mlir::Type>{
-        tuples::TupleStreamType::get(ctxt), tuples::TupleStreamType::get(ctxt)}, rewriter.getArrayAttr({def}));
-    auto* generateBlock = new mlir::Block;
-    mlir::OpBuilder::InsertionGuard guard(rewriter);
-    generateOp.getRegion().push_back(generateBlock);
-    rewriter.setInsertionPointToStart(generateBlock);
-    mlir::Value identValue = buildIdent(rewriter);
-    rewriter.create<subop::GenerateEmitOp>(loc, mlir::ValueRange{identValue});
-    rewriter.create<tuples::ReturnOp>(loc);
-    return generateOp.getRes();
-}
 TripleEmitter::TripleEmitter(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& graphs, mlir::Operation* op, mlir::DictionaryAttr triple)
     : GraphEmitter(rewriter, graphs, op, mlir::cast<tuples::ColumnRefAttr>(triple.get("graphRef"))),
     sTerm(triple.get("s")), pTerm(triple.get("p")), oTerm(triple.get("o")),
@@ -103,7 +89,7 @@ mlir::Value GraphEmitter::scanEdges(mlir::Value stream, tuples::ColumnRefAttr ed
 mlir::Value GraphEmitter::filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr ref, IdentifierTermAttr ident, std::optional<size_t> paramId) {
     auto identOp = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, ident.getIdent());
     if (paramId) relalg::forwardParameter(op, *paramId, identOp.getOperation());
-    return rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, ref, identOp);
+    return rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, ref, mlir::ValueRange{identOp});
 }
 mlir::Value GraphEmitter::filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr identRef) {
     subop::MapCreationHelper helper(ctxt);

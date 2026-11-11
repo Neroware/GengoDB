@@ -209,4 +209,23 @@ SELECT ?who ?what {
     UNION
     { ?who ex:age ?what }
 }""",
+
+# --- property paths (gpm.relalg.path_expansion) ---
+"path/rel_plus.mlir": EX + "SELECT ?x ?y ?z WHERE { ?x ex:rel ?y . ?x ex:rel+ ?z }",
+"path/const_anchor_list.mlir": EX + "SELECT ?z WHERE { ex:bob (ex:cup|ex:contains)+ ?z }",
+# anchor: incoming = the path's object is the anchor
+"path/incoming_const.mlir": EX + "SELECT ?z WHERE { ?z (ex:cup|ex:contains)+ ex:coffee }",
+"path/self_loop.mlir": EX + "SELECT ?z WHERE { ex:coffee ex:asksForMore+ ?z }",
+"path/both_bound.mlir": EX + "SELECT ?x ?y WHERE { ?x ex:rel ?y . ?y ex:rel+ ?x }",
+"path/both_bound_none.mlir": EX + "SELECT ?x ?y WHERE { ?x ex:cup ?y . ?y ex:cup+ ?x }",
+"path/chained.mlir": EX + "SELECT ?y ?z WHERE { ex:anna (ex:cup|ex:drinks)+ ?y . ?y ex:asksForMore+ ?z }",
+# path/star_self_loop.mlir (ex:coffee ex:asksForMore* ?z) has no entry: rdflib's p* yields the start
+# node twice when a cycle leads back to it; the spec's ALP (and Oxigraph) give ex:coffee once.
+"path/star_const.mlir": EX + "SELECT ?z WHERE { ex:bob ex:cup* ?z }",
+# zero-length path from a constant that is not a node of the graph (spec: still matches itself)
+"path/star_const_not_in_graph.mlir": EX + "SELECT ?z WHERE { ex:nothere ex:rel* ?z }",
+"path/star_zero_only.mlir": EX + "SELECT ?x ?y ?z WHERE { ?x ex:rel ?y . ?y ex:cup* ?z }",
+"path/star_both_bound.mlir": EX + "SELECT ?x ?y WHERE { ?x ex:rel ?y . ?x ex:cup* ?y }",
+# the snippet computes ?v with relalg.map (variant.create_scalar of an IRI) = BIND
+"path/star_var_not_in_graph.mlir": EX + "SELECT ?v ?z WHERE { BIND(ex:nothere AS ?v) ?v ex:rel* ?z }",
 }

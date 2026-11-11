@@ -61,7 +61,7 @@ const tuples::Column* resolveThroughRemaps(const ColumnMapper& remaps, const tup
    return column;
 }
 bool isGpmStreamOp(mlir::Operation* op) {
-   return op && (mlir::isa<gpm::GraphPatternOp>(op) || mlir::isa<gpm::BagOp, gpm::TriplePatternOp, gpm::NamedGraphOp, gpm::FilterOp, gpm::ExtendOp>(op));
+   return op && (mlir::isa<gpm::GraphPatternOp>(op) || mlir::isa<gpm::BagOp, gpm::TriplePatternOp, gpm::NamedGraphOp, gpm::FilterOp, gpm::ExtendOp, gpm::PathExpansionOp>(op));
 }
 relalg::MapOp asBindMap(mlir::Operation* op) {
    auto mapOp = mlir::dyn_cast_or_null<relalg::MapOp>(op);
@@ -155,6 +155,11 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          rewritten[v] = result;
          return result;
       }
+      if (auto pathOp = mlir::dyn_cast<gpm::PathExpansionOp>(op)) {
+         auto result = rewritePath(pathOp);
+         rewritten[v] = result;
+         return result;
+      }
       mlir::Value result;
       if (auto patternOp = mlir::dyn_cast<gpm::GraphPatternOp>(op)) {
          result = rewritePattern(patternOp);
@@ -217,6 +222,22 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       for (auto& scope : fuzzyScopes) {
          if (const auto* degree = scope.degreeOf.lookup(from)) scope.degreeOf[to] = degree;
       }
+   }
+   // A path expansion is a unary op on the unnested stream (R ⋈ closure, computed by the op itself):
+   // hoist it out of the pattern region and feed it the rewritten input.
+   mlir::Value rewritePath(gpm::PathExpansionOp pathOp) {
+      mlir::Value rel = rewrite(pathOp.getRel());
+      if (!rel) {
+         // seed input (named graph / pattern region entry): only possible with a constant anchor
+         mlir::OpBuilder builder(pathOp.getContext());
+         builder.setInsertionPoint(insertPoint);
+         rel = createUnitRelation(builder, pathOp.getLoc());
+      }
+      // the rewritten input is created at insertPoint, so the path op has to follow it
+      pathOp->moveBefore(insertPoint);
+      pathOp.getRelMutable().assign(rel);
+      propagateDegrees(rel, pathOp.getRes());
+      return pathOp.getRes();
    }
    mlir::Value rewriteFilter(gpm::FilterOp filterOp) {
       mlir::Value newRel = rewrite(filterOp.getRel());
@@ -401,6 +422,28 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
             createdVars.insert(&freshDef.getColumn());
          }
       }
+      llvm::SmallVector<gpm::PathExpansionOp> paths;
+      {
+         llvm::SmallPtrSet<mlir::Operation*, 16> visited;
+         collectPaths(elementStream, visited, paths);
+      }
+      for (auto pathOp : paths) {
+         auto varTerm = mlir::cast<gpm::VariableTermAttr>(pathOp.getTarget());
+         if (!varTerm.hasBinding()) continue;
+         const auto* column = &varTerm.getBindingReference().getColumn();
+         if (leftVars.contains(column) || elementProduced.contains(column)) continue;
+         if (splits.contains(column)) {
+            pathOp.emitOpError("unsupported: variable ?") << columnManager.getName(column).second << " is bound more than once inside an independently evaluated pattern";
+            signalPassFailure();
+            return false;
+         }
+         auto freshDef = columnManager.createDef(columnManager.getUniqueScope("vars"), columnManager.getName(column).second);
+         freshDef.getColumn().type = column->type;
+         pathOp.setTargetAttr(gpm::VariableTermAttr::get(ctxt, freshDef));
+         splits[column] = &freshDef.getColumn();
+         splitOrigin[&freshDef.getColumn()] = column;
+         createdVars.insert(&freshDef.getColumn());
+      }
       if (!splits.empty()) {
          llvm::SmallPtrSet<mlir::Operation*, 32> elementOps;
          collectSubtreeOps(elementStream, elementOps);
@@ -503,6 +546,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          return result;
       }
       if (auto bindMap = asBindMap(op)) insertComputedColumns(bindMap, result);
+      if (auto pathOp = mlir::dyn_cast<gpm::PathExpansionOp>(op)) result.insert(pathOp.getCreatedColumns());
       for (auto operand : op->getOperands()) {
          if (mlir::isa<tuples::TupleStreamType>(operand.getType())) {
             result.insert(producedColumns(operand, visited));
@@ -858,6 +902,13 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          return result;
       }
       if (auto bindMap = asBindMap(op)) insertComputedColumns(bindMap, result);
+      if (auto pathOp = mlir::dyn_cast<gpm::PathExpansionOp>(op)) {
+         for (auto term : {pathOp.getAnchorTerm(), pathOp.getTarget()}) {
+            auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term);
+            if (!varTerm) continue;
+            result.insert(varTerm.hasBinding() ? &varTerm.getBindingReference().getColumn() : &varTerm.getProducedBinding().getColumn());
+         }
+      }
       if (auto unionOp = mlir::dyn_cast<relalg::UnionOp>(op)) {
          for (auto mappingAttr : unionOp.getMapping()) {
             result.insert(&mlir::cast<tuples::ColumnDefAttr>(mappingAttr).getColumn());
@@ -883,6 +934,20 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       }
       for (auto operand : op->getOperands()) {
          collectTriples(operand, visited, result);
+      }
+   }
+   void collectPaths(mlir::Value v, llvm::SmallPtrSet<mlir::Operation*, 16>& visited, llvm::SmallVectorImpl<gpm::PathExpansionOp>& result) {
+      auto* op = v.getDefiningOp();
+      if (!op || !visited.insert(op).second) return;
+      if (auto pathOp = mlir::dyn_cast<gpm::PathExpansionOp>(op)) {
+         result.push_back(pathOp);
+      }
+      if (auto outerJoin = mlir::dyn_cast<relalg::OuterJoinOp>(op)) {
+         collectPaths(outerJoin.getLeft(), visited, result);
+         return;
+      }
+      for (auto operand : op->getOperands()) {
+         collectPaths(operand, visited, result);
       }
    }
    struct BindingPair {
@@ -928,6 +993,29 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
             }
             result.push_back({outerRef, newRef});
          }
+      }
+      llvm::SmallPtrSet<mlir::Operation*, 16> visitedPaths;
+      llvm::SmallVector<gpm::PathExpansionOp> rightPaths;
+      collectPaths(right, visitedPaths, rightPaths);
+      for (auto pathOp : rightPaths) {
+         auto varTerm = mlir::cast<gpm::VariableTermAttr>(pathOp.getTarget());
+         auto existingSource = bindingSource(varTerm);
+         auto outerRef = existingSource ? existingSource : varTerm.getBindingReference();
+         if (!outerRef) continue;
+         const auto* column = &outerRef.getColumn();
+         if (!needsBindings(column)) continue;
+         tuples::ColumnRefAttr newRef;
+         if (existingSource) {
+            newRef = columnManager.createRef(varTerm.getProducedBinding().getColumnPtr().get());
+         } else {
+            auto newDef = columnManager.createDef(columnManager.getUniqueScope("bindings"), "path_target", mlir::ArrayAttr::get(ctxt, {outerRef}));
+            newDef.getColumn().type = column->type;
+            newRef = columnManager.createRef(newDef.getColumnPtr().get());
+            pathOp.setTargetAttr(gpm::VariableTermAttr::get(ctxt, newDef));
+            llvm::SmallPtrSet<mlir::Operation*, 16> visitedStale;
+            fixStaleTripleColumnReferences(right, column, newRef, visitedStale);
+         }
+         result.push_back({outerRef, newRef});
       }
       return result;
    }
@@ -1051,6 +1139,15 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
             getColumnOp.setAttrAttr(newRef);
          }
       });
+      if (auto pathOp = mlir::dyn_cast<gpm::PathExpansionOp>(op)) {
+         auto remapped = [&](mlir::Attribute term) -> mlir::Attribute {
+            auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term);
+            if (varTerm && varTerm.hasBinding() && &varTerm.getBindingReference().getColumn() == oldColumn) return gpm::VariableTermAttr::get(op->getContext(), newRef);
+            return term;
+         };
+         pathOp.setAnchorTermAttr(remapped(pathOp.getAnchorTerm()));
+         pathOp.setTargetAttr(remapped(pathOp.getTarget()));
+      }
       for (auto operand : op->getOperands()) {
          fixStaleTripleColumnReferences(operand, oldColumn, newRef, visited);
       }

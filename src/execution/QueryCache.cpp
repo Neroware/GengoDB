@@ -128,6 +128,10 @@ std::vector<uint8_t> lingodb::execution::buildQueryParamBuffer(mlir::ModuleOp ma
          writeExpansionParam(expansion);
          return;
       }
+      if (auto expansion = mlir::dyn_cast<gpm::PathExpansionOp>(op.getOperation())) {
+         writeExpansionParam(expansion);
+         return;
+      }
       auto literals = op.getParamLiterals();
       assert(literals.size() == paramsAttr.size() && "buildQueryParamBuffer: predicate region shape changed unexpectedly since marking");
       for (auto [i, entry] : llvm::enumerate(paramsAttr)) {
