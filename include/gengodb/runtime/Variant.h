@@ -66,6 +66,9 @@ struct VariantRuntime {
     // xsd:string language tag filter
     static int8_t langMatches(int64_t payload, int32_t tag, VarLen32 langRange);
 
+    // SPARQL STRSTARTS(arg1, arg2)
+    static int8_t strStarts(int64_t payload, int32_t tag, int64_t prefixPayload, int32_t prefixTag);
+
     // resolve a node's graph-local id
     static int32_t resolveNode(uint8_t* graph, int32_t tag, int64_t payload);
 

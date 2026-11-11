@@ -1,0 +1,12 @@
+PREFIX ex: <http://example.org/factory/>
+SELECT ?machine ?sensor ?serialNumber
+WHERE {
+   ?machine ex:hasSensor ?sensor .
+   ?sensor ex:measures ex:Temperature .
+   ?sensor ex:locatedIn ex:Hall43 .
+   OPTIONAL { ?machine ex:serialNumber ?serialNumber . }
+   FILTER(
+      !BOUND(?serialNumber) ||
+      STRSTARTS(STR(?serialNumber), "M-10"))
+}
+ORDER BY ?machine

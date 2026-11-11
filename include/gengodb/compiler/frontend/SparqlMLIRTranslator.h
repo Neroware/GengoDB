@@ -1650,7 +1650,7 @@ class Translator {
             throw std::runtime_error("BOUND() requires exactly one variable argument, e.g. BOUND(?x)");
          mlir::Value var = translateArithExpr(*fc.args[0], tupleArg);
          auto pred = builder.getArrayAttr({builder.getStringAttr("BOUND")});
-         return builder.create<variant::PredicateOp>(loc, resType, var, pred);
+         return builder.create<variant::PredicateOp>(loc, resType, var, mlir::ValueRange{}, pred);
       }
       if (fc.name == "LANGMATCHES") {
          if (fc.args.size() != 2)
@@ -1662,7 +1662,15 @@ class Translator {
          if (rangeLit.xsdType != gengodb::semantics::xsd::Type::String)
             throw std::runtime_error("LANGMATCHES()'s second argument must be a string literal language range");
          auto pred = builder.getArrayAttr({builder.getStringAttr("LANGMATCHES"), builder.getStringAttr(rangeLit.lexicalForm)});
-         return builder.create<variant::PredicateOp>(loc, resType, var, pred);
+         return builder.create<variant::PredicateOp>(loc, resType, var, mlir::ValueRange{}, pred);
+      }
+      if (fc.name == "STRSTARTS") {
+         if (fc.args.size() != 2)
+            throw std::runtime_error("STRSTARTS() requires exactly two arguments, e.g. STRSTARTS(STR(?x), \"abc\")");
+         mlir::Value str = translateArithExpr(*fc.args[0], tupleArg);
+         mlir::Value prefix = translateArithExpr(*fc.args[1], tupleArg);
+         auto pred = builder.getArrayAttr({builder.getStringAttr("STRSTARTS")});
+         return builder.create<variant::PredicateOp>(loc, resType, str, mlir::ValueRange{prefix}, pred);
       }
       throw sparql::UnsupportedFeatureError("Unsupported FILTER function '" + fc.name + "'");
    }
@@ -1690,7 +1698,7 @@ class Translator {
          case sparql::Expr::Kind::FunctionCall:
             return translatePredicateCall(static_cast<const sparql::FunctionCallExpr&>(expr), tupleArg);
          default:
-            throw sparql::UnsupportedFeatureError("Unsupported FILTER expression (only comparisons, &&, ||, !, arithmetic +-*/, and BOUND()/LANGMATCHES() are implemented)");
+            throw sparql::UnsupportedFeatureError("Unsupported FILTER expression (only comparisons, &&, ||, !, arithmetic +-*/, and BOUND()/LANGMATCHES()/STRSTARTS() are implemented)");
       }
    }
    mlir::Value buildFilter(const sparql::FilterPattern& fp, mlir::Value inputStream) {

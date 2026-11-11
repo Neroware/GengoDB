@@ -212,9 +212,9 @@ def ConcatOp : Variant_Op<"concat", [Pure]> {
 
 def PredicateOp : Variant_Op<"predicate", [Pure]> {
     let summary = "a tri-booled predicate";
-    let arguments = (ins Variant:$var, ArrayAttr:$pred);
+    let arguments = (ins Variant:$var, Variadic<Variant>:$args, ArrayAttr:$pred);
     let results = (outs AnyType:$result);
-    let assemblyFormat = [{ $var `pred` `:` $pred `->` type($result) attr-dict }];
+    let assemblyFormat = [{ $var (`,` $args^)? `pred` `:` $pred `->` type($result) attr-dict }];
 }
 
 #endif // GENGODB_DIALECT_VARIANT_OPS

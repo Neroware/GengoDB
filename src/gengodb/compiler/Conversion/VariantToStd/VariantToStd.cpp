@@ -762,6 +762,15 @@ class PredicateOpLowering : public OpConversionPattern<variant::PredicateOp> {
             rewriter.replaceOp(op, packFromTriBool(rewriter, loc, resultType, raw));
             return success();
         }
+        if (fn == "STRSTARTS") {
+            if (predArr.size() != 1 || adaptor.getArgs().size() != 1) return rewriter.notifyMatchFailure(op, "variant.predicate STRSTARTS requires exactly one variant argument (the prefix)");
+            auto [prefixTag, prefixRef] = unpackVariant(rewriter, loc, adaptor.getArgs()[0]);
+            Value payload = rewriter.create<util::PtrToIntOp>(loc, rewriter.getI64Type(), ref);
+            Value prefixPayload = rewriter.create<util::PtrToIntOp>(loc, rewriter.getI64Type(), prefixRef);
+            Value raw = rt::VariantRuntime::strStarts(rewriter, loc)({payload, tag, prefixPayload, prefixTag})[0];
+            rewriter.replaceOp(op, packFromTriBool(rewriter, loc, resultType, raw));
+            return success();
+        }
         return rewriter.notifyMatchFailure(op, llvm::Twine("variant.predicate: unsupported predicate function '") + fn + "'");
     }
 };
