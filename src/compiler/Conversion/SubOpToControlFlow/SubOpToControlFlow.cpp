@@ -5256,7 +5256,6 @@ class FilterByIdentifierLowering : public SubOpTupleStreamConsumerConversionPatt
       refType = propRefType ? getPropertyEntryType(propRefType, *typeConverter) : refType;
       auto ptr = mapping.resolve(filterOp, filterOp.getRef());
       auto ref = rewriter.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, refType), ptr);
-      auto identI32 = adaptor.getIdent();
       mlir::Value typeI32;
       if (nodeRefType) {
          typeI32 = rt::GraphStorage::nodeId(rewriter, loc)({ptr})[0];
@@ -5269,7 +5268,11 @@ class FilterByIdentifierLowering : public SubOpTupleStreamConsumerConversionPatt
          auto typeI32Ref = rewriter.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, rewriter.getI32Type()), ref, gsubop::PROPERTY_ENTRY_PROPERTY_KEY_PTR);
          typeI32 = rewriter.create<util::LoadOp>(loc, typeI32Ref);
       }
-      auto eq = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, identI32, typeI32);
+      mlir::Value eq;
+      for (mlir::Value identI32 : adaptor.getIdent()) {
+         mlir::Value identEq = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, identI32, typeI32);
+         eq = eq ? rewriter.create<arith::OrIOp>(loc, eq, identEq).getResult() : identEq;
+      }
       auto ifOp = rewriter.create<mlir::scf::IfOp>(loc, mlir::TypeRange{}, eq);
       ifOp.ensureTerminator(ifOp.getThenRegion(), rewriter, loc);
       rewriter.atStartOf(&ifOp.getThenRegion().front(), [&](SubOpRewriter& rewriter) {

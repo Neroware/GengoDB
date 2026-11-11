@@ -103,7 +103,7 @@ mlir::Value GraphEmitter::scanEdges(mlir::Value stream, tuples::ColumnRefAttr ed
 mlir::Value GraphEmitter::filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr ref, IdentifierTermAttr ident, std::optional<size_t> paramId) {
     auto identOp = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, ident.getIdent());
     if (paramId) relalg::forwardParameter(op, *paramId, identOp.getOperation());
-    return rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, ref, identOp);
+    return rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, ref, mlir::ValueRange{identOp});
 }
 mlir::Value GraphEmitter::filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr identRef) {
     subop::MapCreationHelper helper(ctxt);

@@ -136,7 +136,7 @@ def CreateIdentifierOp : GraphSubOp_Op<"create_identifier", [Pure]> {
 
 def FilterByIdentifierOp : GraphSubOp_Op<"filter_by_identifier", [Pure,SubOperator]> {
     let summary = "filter graph ref by identifier";
-    let arguments = (ins TupleStream : $stream, ColumnRefAttr : $ref, Identifier : $ident);
+    let arguments = (ins TupleStream : $stream, ColumnRefAttr : $ref, Variadic<Identifier> : $ident);
     let results = (outs TupleStream : $res);
     let assemblyFormat = [{  $stream custom<CustRef>($ref) `[` $ident `]` attr-dict }];
     let extraClassDeclaration = [{
