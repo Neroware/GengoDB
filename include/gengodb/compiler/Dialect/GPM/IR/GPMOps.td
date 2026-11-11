@@ -203,9 +203,9 @@ def BindingsCompatibleOp : GPM_Op<"bindings_compatible", [Pure,DeclareOpInterfac
 
 def GetBindingOp : GPM_Op<"get_binding", [Pure]> {
   let summary = "cast binding to variant";
-  let arguments = (ins VariableBinding:$var);
+  let arguments = (ins AnyType:$var);
   let results = (outs Variant:$result);
-  let assemblyFormat = [{ $var `->` type($result) attr-dict }];
+  let assemblyFormat = [{ $var custom<BindingType>(type($var)) `->` type($result) attr-dict }];
 }
 
 #endif // GENGODB_DIALECT_GPM_IR_GPMOPS

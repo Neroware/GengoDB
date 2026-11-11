@@ -3,6 +3,7 @@
 #include "lingodb/compiler/Dialect/TupleStream/Column.h"
 #include "lingodb/compiler/Dialect/TupleStream/ColumnManager.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamDialect.h"
+#include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/DenseMap.h"
@@ -18,6 +19,7 @@ class BindingColumnTransformer {
     void remapColumnsOf(mlir::Operation* op, const ColumnMapper& colMap);
     void remapColumnsIn(const llvm::SmallPtrSetImpl<mlir::Operation*>& ops, const ColumnMapper& colMap);
     void remapColumnsEverywhere(mlir::Operation* op, mlir::Operation* skip, const ColumnMapper& colMap, const llvm::SmallPtrSetImpl<mlir::Operation*>* exclude = nullptr);
+    static void remapBindingReadType(tuples::GetColumnOp getColumnOp);
 }; // END class BindingColumnTransformer
 
 } // namespace gengodb::compiler::dialect::gpm

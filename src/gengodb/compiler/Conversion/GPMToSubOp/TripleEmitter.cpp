@@ -223,7 +223,7 @@ mlir::Value TripleEmitter::lower(mlir::Value stream, std::optional<gpm::TripleSl
 mlir::Value TripleEmitter::emitTruthDegree(mlir::Value stream, gsubop::EdgeRefType edgeRefType, tuples::ColumnRefAttr edgeRef) {
     auto truthMember = edgeRefType.getPropertyMembers().getMembers()[0];
     assert(mlir::isa<mlir::Float32Type>(memberManager.getType(truthMember)) && "edge ref must expose its payload as truth degree");
-    truthDegrAttr.getColumn().type = rewriter.getF32Type();
+    assert(mlir::isa<mlir::Float32Type>(truthDegrAttr.getColumn().type) && "truth degree columns need type f32");
     return rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(ctxt, {{truthMember, truthDegrAttr}}));
 }
 GraphEmitter::AnchorT TripleEmitter::anchorAttr(mlir::Attribute term) {
@@ -261,7 +261,7 @@ mlir::Value TripleEmitter::finish(mlir::Value stream, mlir::Attribute term, tupl
         return filterVariantsEqual(stream, tmpRef, it->second);
     }
     auto variantDef = columnManager.createDef(column);
-    variantDef.getColumn().type = variant::VariantType::get(ctxt);
+    assert(mlir::isa<variant::VariantType>(variantDef.getColumn().type) && "column type needs to be variant");
     stream = wrapNode(stream, rawRef, variantDef);
     localTerms[column] = columnManager.createRef(column);
     return stream;

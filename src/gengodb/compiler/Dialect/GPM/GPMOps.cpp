@@ -20,6 +20,14 @@ using namespace lingodb::compiler::dialect;
 tuples::ColumnManager& getColumnManager(::mlir::OpAsmParser& parser) {
     return parser.getBuilder().getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
 }
+ParseResult parseBindingType(OpAsmParser& parser, mlir::Type& type) {
+    if (succeeded(parser.parseOptionalColon())) return parser.parseType(type);
+    type = gpm::VariableBindingType::get(parser.getContext());
+    return success();
+}
+void printBindingType(OpAsmPrinter& p, mlir::Operation* op, mlir::Type type) {
+    if (!mlir::isa<gpm::VariableBindingType>(type)) p << " : " << type;
+}
 ParseResult parseCustRef(OpAsmParser& parser, tuples::ColumnRefAttr& attr) {
     ::mlir::SymbolRefAttr parsedSymbolRefAttr;
     if (parser.parseAttribute(parsedSymbolRefAttr, parser.getBuilder().getType<::mlir::NoneType>())) { return failure(); }
