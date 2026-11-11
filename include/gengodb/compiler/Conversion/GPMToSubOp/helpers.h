@@ -82,6 +82,21 @@ inline gsubop::EdgeRefType createEdgeRefType(mlir::MLIRContext* ctxt, std::strin
     );
 }
 
+template <typename BuildIdentFn>
+mlir::Value generateTupleStream(mlir::ConversionPatternRewriter& rewriter, mlir::Location loc, tuples::ColumnDefAttr def, BuildIdentFn buildIdent) {
+    auto ctxt = rewriter.getContext();
+    auto generateOp = rewriter.create<subop::GenerateOp>(loc, std::vector<mlir::Type>{
+        tuples::TupleStreamType::get(ctxt), tuples::TupleStreamType::get(ctxt)}, rewriter.getArrayAttr({def}));
+    auto* generateBlock = new mlir::Block;
+    mlir::OpBuilder::InsertionGuard guard(rewriter);
+    generateOp.getRegion().push_back(generateBlock);
+    rewriter.setInsertionPointToStart(generateBlock);
+    mlir::Value identValue = buildIdent(rewriter);
+    rewriter.create<subop::GenerateEmitOp>(loc, mlir::ValueRange{identValue});
+    rewriter.create<tuples::ReturnOp>(loc);
+    return generateOp.getRes();
+}
+
 } // helpers
 } // end namespace gengodb::compiler::dialect::gpm::lowering
 

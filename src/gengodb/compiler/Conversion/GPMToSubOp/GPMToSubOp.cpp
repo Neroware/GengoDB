@@ -15,6 +15,7 @@
 #include "lingodb/compiler/Dialect/util/UtilOps.h"
 #include "lingodb/compiler/Conversion/RelAlgToSubOp/OrderedAttributes.h"
 #include "gengodb/compiler/Conversion/GPMToSubOp/TripleEmitter.h"
+#include "gengodb/compiler/Conversion/GPMToSubOp/PathExpansionLowering.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -44,14 +45,6 @@ using namespace gengodb::compiler::dialect::gpm::lowering;
 using namespace gengodb::compiler::dialect::gpm::lowering::helpers;
 using Member = subop::Member;
 using DefMappingCollector = llvm::SmallVector<subop::DefMappingPairT>;
-struct ExternalGraph {
-   gsubop::GraphType graphType;
-   gsubop::NodeSetType nodeSetType;
-   gsubop::EdgeSetType edgeSetType;
-   mlir::Value externalGraph;
-};
-using GraphIdentity = std::pair<mlir::StringAttr, mlir::StringAttr>;
-using ExternalGraphMapper = llvm::DenseMap<GraphIdentity, ExternalGraph>;
 struct GPMToSubOpLoweringPass
    : public PassWrapper<GPMToSubOpLoweringPass, OperationPass<ModuleOp>> {
    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(GPMToSubOpLoweringPass)
@@ -70,22 +63,7 @@ mlir::Value scanNamedGraph(ConversionPatternRewriter& rewriter, mlir::Location l
    auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
    auto graphRef = graphAttr.getName();
    auto [graphGroup, graphName] = splitGraphRef(graphAttr);
-   auto graphRefType = mlir::cast<gpm::GraphReferenceType>(graphAttr.getColumn().type);
-   auto graphNameAttr = graphRefType.getName();
-   GraphIdentity identity{graphNameAttr, graphRefType.getGlobalId()};
-   auto idIt = externalGraphs.find(identity);
-   if (idIt == externalGraphs.end()) {
-      auto nodeSetType = createGraphSetType<gsubop::NodeSetType>(ctxt, graphGroup, graphName, "vx");
-      auto edgeSetType = createGraphSetType<gsubop::EdgeSetType>(ctxt, graphGroup, graphName, "ex");
-      auto nodeSetMember = createMember(ctxt, memberName(graphName, graphGroup, "vx"), nodeSetType);
-      auto edgeSetMember = createMember(ctxt, memberName(graphName, graphGroup, "ex"), edgeSetType);
-      auto graphType = gsubop::GraphType::get(ctxt, createStateMembersAttr(ctxt, {nodeSetMember}), createStateMembersAttr(ctxt, {edgeSetMember}));
-      mlir::OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(rewriter.getInsertionBlock());
-      auto externalGraph = rewriter.create<gsubop::GetExternalGraphOp>(loc, graphType, graphNameAttr, graphRefType.getGlobalId());
-      idIt = externalGraphs.insert({identity, ExternalGraph{graphType, nodeSetType, edgeSetType, externalGraph}}).first;
-   }
-   auto& data = idIt->second;
+   auto& data = getOrCreateExternalGraph(rewriter, loc, graphAttr, externalGraphs, rewriter.getInsertionBlock());
    auto nodeSetDef = createDef(columnManager, graphGroup, graphName + "_vx", data.nodeSetType, uniqueScope);
    auto edgeSetDef = createDef(columnManager, graphGroup, graphName + "_ex", data.edgeSetType, uniqueScope);
    graphs.insert({graphRef, NamedGraph{data.graphType, &nodeSetDef.getColumn(), &edgeSetDef.getColumn(), data.externalGraph}});
@@ -420,11 +398,13 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    NamedGraphMapper graphs;
    ExternalGraphMapper externalGraphs;
    int64_t graphIdxExpandIds = 0;
+   // analysis only: a path expansion materializes its input, so its lowering needs the input's
+   // column set, which a lowered subop stream no longer reports (see PathExpansionLowering.h)
+   PathInputColumns pathInputColumns = collectPathInputColumns(module);
 
    ConversionTarget target(getContext());
    addCommonLegalDialects(target);
    target.addIllegalDialect<gpm::GPMDialect>();
-   target.addLegalOp<gpm::PathExpansionOp>();
    target.addDynamicallyLegalOp<relalg::OuterJoinOp>([](relalg::OuterJoinOp join) { return !join->hasAttr(gpm::kMergedColumnsAttr); });
 
    RewritePatternSet patterns(ctxt);
@@ -436,6 +416,7 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    patterns.insert<GpmBindingsCompatibleLowering>(typeConverter, ctxt);
    patterns.insert<GetBindingOpLowering>(typeConverter, ctxt);
    patterns.insert<MergedColumnsLowering>(typeConverter, ctxt);
+   populatePathExpansionLoweringPatterns(patterns, typeConverter, graphs, externalGraphs, pathInputColumns);
 
    if (failed(applyFullConversion(module, target, std::move(patterns)))) {
       signalPassFailure();
