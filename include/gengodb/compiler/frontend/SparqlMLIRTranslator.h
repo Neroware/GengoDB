@@ -59,8 +59,15 @@ struct Term {
    std::string value;
 };
 
+struct PathStep {
+   std::vector<std::string> iris;
+   bool inverse = false;
+   int64_t minLength = 1;
+};
+
 struct Triple {
    Term s, p, o;
+   std::optional<PathStep> path;
 };
 
 struct PatternElement {
@@ -337,7 +344,7 @@ enum class TK {
    Keyword, LBrace, RBrace, Dot, Comma, Semicolon,
    Star, LeftParen, RightParen, StringLit, Colon, Unknown,
    Number, Eq, Neq, Lt, Lte, Gt, Gte, AndAnd, OrOr, Bang, DoubleCaret,
-   Plus, Minus, Slash
+   Plus, Minus, Slash, Pipe, Caret, Question
 };
 
 struct Token { TK kind; std::string value; size_t line{1}; };
@@ -432,6 +439,7 @@ class Tokenizer {
          adv();
          std::string n;
          while (pos < src.size() && (std::isalnum(static_cast<unsigned char>(cur())) || cur() == '_')) n += adv();
+         if (n.empty() && c == '?') return {TK::Question, "?", line};
          return {TK::Variable, n, line};
       }
       if (c == '_' && la() == ':') {
@@ -463,6 +471,8 @@ class Tokenizer {
       if (c == '&' && la() == '&') { adv(); adv(); return {TK::AndAnd, "&&", line}; }
       if (c == '|' && la() == '|') { adv(); adv(); return {TK::OrOr, "||", line}; }
       if (c == '^' && la() == '^') { adv(); adv(); return {TK::DoubleCaret, "^^", line}; }
+      if (c == '|') { adv(); return {TK::Pipe, "|", line}; }
+      if (c == '^') { adv(); return {TK::Caret, "^", line}; }
       if (c == '+') { adv(); return {TK::Plus,  "+", line}; }
       if (c == '-') { adv(); return {TK::Minus, "-", line}; }
       if (c == '/') { adv(); return {TK::Slash, "/", line}; }
@@ -789,6 +799,53 @@ class Parser {
       throw std::runtime_error("Expected RDF term at line " + std::to_string(tok.line) + ", got '" + tok.value + "'");
    }
 
+   struct Verb {
+      sparql::Term term;
+      std::optional<sparql::PathStep> path;
+   };
+   [[noreturn]] void unsupportedPath(const std::string& what, size_t line) {
+      throw sparql::UnsupportedFeatureError("Property path " + what + " is not supported at line " + std::to_string(line) +
+                                            " (supported: p+, p*, (p1|p2)+, (^p)+ and their * forms)");
+   }
+   Verb parseVerb(const std::map<std::string, std::string>& pref) {
+      if (is(TK::Variable) || is(TK::BlankNode)) return {parseTerm(pref), std::nullopt};
+      size_t line = tok.line;
+      std::vector<std::string> iris;
+      std::optional<bool> inverse;
+      bool composite = false;
+      auto parseElt = [&]() {
+         bool inv = false;
+         if (is(TK::Caret)) { advance(); inv = true; composite = true; }
+         if (is(TK::Bang)) unsupportedPath("'!' (negated property set)", line);
+         if (is(TK::LeftParen)) unsupportedPath("nesting", line);
+         sparql::Term t = parseTerm(pref);
+         if (t.kind != sparql::Term::Kind::Iri) unsupportedPath("element that is not an IRI", line);
+         if (inverse && *inverse != inv) unsupportedPath("alternative mixing ^p and p", line);
+         inverse = inv;
+         if (std::find(iris.begin(), iris.end(), t.value) == iris.end()) iris.push_back(t.value);
+      };
+      if (is(TK::LeftParen)) {
+         advance();
+         composite = true;
+         parseElt();
+         while (is(TK::Pipe)) { advance(); parseElt(); }
+         if (!is(TK::RightParen)) unsupportedPath("syntax (expected ')')", line);
+         advance();
+      } else {
+         parseElt();
+      }
+      if (is(TK::Slash) || (is(TK::Colon) && iris.back().find('/') != std::string::npos)) unsupportedPath("sequence '/'", line);
+      if (is(TK::Question)) unsupportedPath("'?'", line);
+      if (is(TK::Pipe)) unsupportedPath("alternative '|' outside of (...)+ / (...)*", line);
+      if (is(TK::Plus) || is(TK::Star)) {
+         int64_t minLength = is(TK::Star) ? 0 : 1;
+         advance();
+         return {{sparql::Term::Kind::Iri, iris.front()}, sparql::PathStep{iris, *inverse, minLength}};
+      }
+      if (composite) unsupportedPath("'^p' / '(...)' without + or *", line);
+      return {{sparql::Term::Kind::Iri, iris.front()}, std::nullopt};
+   }
+
    std::vector<sparql::Triple> parseTriples(const std::map<std::string, std::string>& pref) {
       std::vector<sparql::Triple> out;
       while (!is(TK::RBrace) && !is(TK::Eof) && !kw("GRAPH") && !kw("OPTIONAL") &&
@@ -796,19 +853,19 @@ class Parser {
              !kw("BIND")    && !kw("VALUES")  && !is(TK::LBrace) && !kw("FUZZY_NORM") && !kw("TRUTH") && !atLegacyTruthOf()) {
          if (is(TK::Dot)) { advance(); continue; }
          sparql::Term s = parseTerm(pref);
-         sparql::Term p = parseTerm(pref);
+         Verb verb = parseVerb(pref);
          sparql::Term o = parseTerm(pref);
-         out.push_back({s, p, o});
+         out.push_back({s, verb.term, o, verb.path});
          while (is(TK::Semicolon)) {
             advance();
             if (is(TK::Dot) || is(TK::RBrace) || is(TK::Eof)) break;
-            sparql::Term p2 = parseTerm(pref);
+            verb = parseVerb(pref);
             sparql::Term o2 = parseTerm(pref);
-            out.push_back({s, p2, o2});
+            out.push_back({s, verb.term, o2, verb.path});
          }
          while (is(TK::Comma)) {
             advance();
-            out.push_back({s, p, parseTerm(pref)});
+            out.push_back({s, verb.term, parseTerm(pref), verb.path});
          }
          if (is(TK::Dot)) advance();
       }
@@ -1192,6 +1249,7 @@ class Translator {
 
    std::vector<std::string> allVars;
    std::map<std::string, tuples::ColumnDefAttr> varDefs;
+   int truthDepth = 0; // > 0 while translating the body of a TRUTH OF block
 
    std::string currentVarScope{"vars"};
    std::map<std::string, tuples::ColumnDefAttr> aggCols;
@@ -1251,6 +1309,7 @@ class Translator {
          builder.setInsertionPointToStart(block);
          mlir::Value cur = block->getArgument(0);
          for (const auto& triple : gp.triples) {
+            if (triple.path) continue;
             auto s = termAttr(triple.s);
             auto p = termAttr(triple.p);
             auto o = termAttr(triple.o);
@@ -1260,6 +1319,69 @@ class Translator {
          builder.create<tuples::ReturnOp>(loc, cur);
       }
       return bgpOp.getRes();
+   }
+
+   std::optional<bool> pathAnchor(const sparql::Triple& t, const std::set<std::string>& boundHere) {
+      auto isConst = [](const sparql::Term& term) { return term.kind == sparql::Term::Kind::Iri; };
+      auto isBound = [&](const sparql::Term& term) { return term.kind == sparql::Term::Kind::Variable && boundHere.count(term.value); };
+      if (isConst(t.s)) return true;
+      if (isConst(t.o)) return false;
+      if (isBound(t.s)) return true;
+      if (isBound(t.o)) return false;
+      return std::nullopt;
+   }
+   static std::string termString(const sparql::Term& term) {
+      switch (term.kind) {
+         case sparql::Term::Kind::Iri: return "<" + term.value + ">";
+         case sparql::Term::Kind::Variable: return "?" + term.value;
+         case sparql::Term::Kind::BlankNode: return "_:" + term.value;
+      }
+      return term.value;
+   }
+   mlir::Value buildPaths(const sparql::GraphPattern& gp, mlir::Value input, tuples::ColumnRefAttr graphRef, const std::set<std::string>& groupScope) {
+      std::set<std::string> boundHere = groupScope;
+      std::vector<const sparql::Triple*> paths;
+      for (const auto& triple : gp.triples) {
+         if (triple.path) {
+            if (triple.s.kind == sparql::Term::Kind::BlankNode || triple.o.kind == sparql::Term::Kind::BlankNode)
+               throw sparql::UnsupportedFeatureError("Blank nodes as property path ends are not supported");
+            if (triple.s.kind == sparql::Term::Kind::Iri && triple.o.kind == sparql::Term::Kind::Iri)
+               throw sparql::UnsupportedFeatureError("Property paths with two constant ends are not supported");
+            paths.push_back(&triple);
+            continue;
+         }
+         for (const auto* term : {&triple.s, &triple.p, &triple.o})
+            if (term->kind == sparql::Term::Kind::Variable) boundHere.insert(term->value);
+      }
+      while (!paths.empty()) {
+         auto ready = std::find_if(paths.begin(), paths.end(), [&](const sparql::Triple* t) { return pathAnchor(*t, boundHere).has_value(); });
+         if (ready == paths.end()) {
+            const auto& t = *paths.front();
+            throw sparql::UnsupportedFeatureError("Property path between " + termString(t.s) + " and " + termString(t.o) +
+                                                  " needs a constant end or an end bound earlier in the same group (a path inside OPTIONAL/{...} cannot use a variable bound outside of it)");
+         }
+         input = buildPath(**ready, input, graphRef, boundHere);
+         paths.erase(ready);
+      }
+      return input;
+   }
+   mlir::Value buildPath(const sparql::Triple& t, mlir::Value input, tuples::ColumnRefAttr graphRef, std::set<std::string>& boundHere) {
+      auto loc = builder.getUnknownLoc();
+      if (truthDepth > 0)
+         throw sparql::UnsupportedFeatureError("Property paths inside TRUTH OF blocks are not supported");
+      bool atSubject = *pathAnchor(t, boundHere);
+      const auto& anchor = atSubject ? t.s : t.o;
+      const auto& target = atSubject ? t.o : t.s;
+      bool outgoing = atSubject != t.path->inverse;
+      llvm::SmallVector<mlir::Attribute> predicates;
+      for (const auto& iri : t.path->iris) predicates.push_back(gpm::IdentifierTermAttr::get(ctxt, builder.getStringAttr(iri)));
+      auto anchorAttr = termAttr(anchor);
+      auto targetAttr = termAttr(target); // fresh def, or a ref (bound here: reachability check; bound outside: split by gpm-unnest-patterns)
+      auto direction = gpm::ExpansionDirectionAttr::get(ctxt, outgoing ? gpm::ExpansionDirection::outgoing : gpm::ExpansionDirection::incoming);
+      auto pathOp = builder.create<gpm::PathExpansionOp>(loc, tuples::TupleStreamType::get(ctxt), input, graphRef, anchorAttr, targetAttr,
+                                                         builder.getArrayAttr(predicates), builder.getI64IntegerAttr(t.path->minLength), direction);
+      boundHere.insert(target.value);
+      return pathOp.getRes();
    }
 
    mlir::Value buildOptional(const sparql::OptionalPattern& opt, mlir::Value inputStream) {
@@ -1344,7 +1466,9 @@ class Translator {
       {
          mlir::OpBuilder::InsertionGuard guard(builder);
          builder.setInsertionPointToStart(block);
+         ++truthDepth;
          mlir::Value result = buildPatternGroup(tp.patterns, block->getArgument(0));
+         --truthDepth;
          if (!result)
             throw sparql::UnsupportedFeatureError("TRUTH OF block contains no supported graph patterns");
          builder.create<tuples::ReturnOp>(loc, result);
@@ -1827,7 +1951,10 @@ class Translator {
             auto graphRef = colMgr.createRef("graphs", alias);
 
             mlir::Value input = prevStream ? prevStream : graphStream;
-            prevStream = buildBGP(gp, input, graphRef);
+            bool hasPaths = std::any_of(gp.triples.begin(), gp.triples.end(), [](const sparql::Triple& t) { return t.path.has_value(); });
+            bool hasTriples = std::any_of(gp.triples.begin(), gp.triples.end(), [](const sparql::Triple& t) { return !t.path.has_value(); });
+            prevStream = hasTriples || !hasPaths ? buildBGP(gp, input, graphRef) : input;
+            if (hasPaths) prevStream = buildPaths(gp, prevStream, graphRef, groupScope);
          } else if (elemPtr->kind() == sparql::PatternElement::Kind::Optional) {
             const auto& opt = static_cast<const sparql::OptionalPattern&>(*elemPtr);
             if (!prevStream)
