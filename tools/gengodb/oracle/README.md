@@ -8,10 +8,10 @@ real `.sparql` query files under `resources/sparql/`, run against `resources/ttl
 
 - `gpm_queries.py` — a hand-written standard-SPARQL translation of each GPM MLIR snippet's query
 - `generate_golden.py` — needs `pip install rdflib`. Runs each translated query through rdflib (an independent SPARQL engine) against `coffee.ttl` and writes the result as a JSON fixture under `golden/`. Only needs to be re-run by hand if `coffee.ttl` or a snippet's semantics change.
-- `generate_sparql_golden.py` — needs `pip install rdflib`. Runs the *actual* `.sparql` query text under `resources/sparql/coffee/` and `resources/sparql/bsbm/` (unmodified, no hand-translation) through rdflib against `coffee.ttl` / `product.ttl` respectively, and writes fixtures under `golden/`. Coffee queries wrap their pattern in a `GRAPH <file://...#rdf>` block, so `coffee.ttl` is loaded into an rdflib `Dataset` under that exact graph IRI; bsbm queries have no `GRAPH` clause and are run against a plain `rdflib.Graph`. Skips `bsbm/9.sparql` (`DESCRIBE`) and `bsbm/12.sparql` (`CONSTRUCT`); those return triples, not a row-of-bindings table, and `run-sparql` doesn't implement either form yet anyway.
+- `generate_sparql_golden.py` — needs `pip install rdflib`. Runs the *actual* `.sparql` query text under `resources/sparql/coffee/` (grouped into subdirectories `agg/`, `bind/`, `join/`, `path/`, `union/`, `misc/`) and `resources/sparql/bsbm/` (unmodified, no hand-translation) through rdflib against `coffee.ttl` / `product.ttl` respectively, and writes fixtures under `golden/`. Coffee queries wrap their pattern in a `GRAPH <file://...#rdf>` block, so `coffee.ttl` is loaded into an rdflib `Dataset` under that exact graph IRI; bsbm queries have no `GRAPH` clause and are run against a plain `rdflib.Graph`. Skips `bsbm/9.sparql` (`DESCRIBE`) and `bsbm/12.sparql` (`CONSTRUCT`); those return triples, not a row-of-bindings table, and `run-sparql` doesn't implement either form yet anyway.
 - `rdflib_golden.py` — shared helpers (`term_key`, `normalize_rows`, `write_golden`) used by both generator scripts to turn rdflib query results into the same typed-JSON fixture shape.
 - `oracle_lib.py` / `check_result.py` — stdlib-only. Parse the pipe-table `run-mlir`/`run-sparql` prints on stdout into typed cells (IRI / blank node / literal, with numeric datatypes compared by value, not lexical form) and compare them against a `golden/*.json` fixture as **multisets of rows**, allowing a consistent relabeling of blank nodes (their labels are arbitrary; the fixture and LingoDB's blank node labels don't need to match, just play the same structural role).
-- `mlir-oracle.sh` / `sparql-oracle.sh` — invoke `check_result.py` automatically for any snippet/query that has a matching `golden/<category>__<name>.json` file (name includes the `.mlir`/`.sparql` extension), in addition to their existing crash check. A snippet/query can now fail two ways: `FAIL` (non-zero exit / crash) or `MISMATCH` (ran fine, wrong rows). Each takes one directory (plus a matching ttl-dir) at a time.
+- `mlir-oracle.sh` / `sparql-oracle.sh` — invoke `check_result.py` automatically for any snippet/query that has a matching `golden/<category>__<name>.json` file (name includes the `.mlir`/`.sparql` extension; for `.sparql` queries the key is the path relative to `resources/sparql/` with `/` → `__`, e.g. `coffee/agg/agg_sample.sparql` → `coffee__agg__agg_sample.sparql.json`), in addition to their existing crash check. A snippet/query can now fail two ways: `FAIL` (non-zero exit / crash) or `MISMATCH` (ran fine, wrong rows). Each takes one directory (plus a matching ttl-dir) at a time; `sparql-oracle.sh` also descends into its subdirectories, skipping any named `errors/` (expected-failure queries).
 - `all-oracle.sh` — the "run everything" entry point. Auto-discovers every leaf directory under `test/gengodb/` holding `.mlir` files and every dataset directory under `resources/sparql/`, runs both oracles over all of them, and prints an aggregate pass/fail/mismatch total (exit code = total failures across every directory).
 
 ### GROUP_CONCAT and engine-defined order
@@ -38,12 +38,12 @@ concatenating very large groups.)
 the oracle; `sparql-oracle.sh` only crash-checks them. Their expected results are written
 in the query file's header comment.
 
-- `coffee/agg_expr_arg_error.sparql` — rdflib crashes on SUM over an argument expression
+- `coffee/agg/agg_expr_arg_error.sparql` — rdflib crashes on SUM over an argument expression
   that errors for some rows, and its COUNT counts errors. GengoDB follows the spec instead:
   COUNT/MIN/MAX/SAMPLE/GROUP_CONCAT skip errors, and an error poisons SUM/AVG (unbound result).
-- `coffee/agg_group_by_expr_noalias.sparql` — rdflib crashes on an unaliased GROUP BY
+- `coffee/agg/agg_group_by_expr_noalias.sparql` — rdflib crashes on an unaliased GROUP BY
   expression such as `GROUP BY (?v * 0)`.
-- `coffee/agg_computed_alias_chain.sparql` — rdflib leaves `(?c * 2 AS ?d)` unbound when
+- `coffee/agg/agg_computed_alias_chain.sparql` — rdflib leaves `(?c * 2 AS ?d)` unbound when
   `?c` is an aggregate alias defined earlier in the same SELECT. Per spec, SELECT
   expressions are evaluated left to right.
 
@@ -70,7 +70,7 @@ recurs.
 
 `sparql-oracle.sh resources/sparql/coffee resources/ttl/coffee` reports one `MISMATCH`:
 
-- `coffee/triangles.sparql` — the query dedupes triangle permutations via
+- `coffee/misc/triangles.sparql` — the query dedupes triangle permutations via
   `FILTER(... && ?a < ?b && ?a < ?c && ?b < ?c)`, an ordering comparison between IRIs.
   Per the SPARQL spec, `<` is only defined between same-typed numerics/strings/booleans/
   dateTimes — comparing IRIs with it is a type error, so a spec-strict engine (rdflib
