@@ -95,6 +95,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
    }
 
    void runOnOperation() override {
+      resolveBindingTypes();
       llvm::SmallVector<std::pair<mlir::Operation*, unsigned>> entries;
       getOperation()->walk([&](mlir::Operation* op) {
          if (isGpmStreamOp(op) || isNestedInGraphPattern(op)) return;
@@ -129,6 +130,54 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
    }
 
    private:
+   static mlir::Type resolvedBindingType(mlir::Type type) {
+      auto* ctxt = type.getContext();
+      if (mlir::isa<gpm::VariableBindingType>(type)) return variant::VariantType::get(ctxt);
+      if (auto nullableType = mlir::dyn_cast<db::NullableType>(type)) {
+         if (mlir::isa<gpm::VariableBindingType>(nullableType.getType())) return db::NullableType::get(ctxt, variant::VariantType::get(ctxt));
+      }
+      return type;
+   }
+   static void resolveColumnType(tuples::Column& column) {
+      if (column.type) column.type = resolvedBindingType(column.type);
+   }
+   void resolveBindingTypes() {
+      getOperation()->walk([&](mlir::Operation* op) {
+         op->getAttrDictionary().walk([&](mlir::Attribute attr) {
+            if (auto def = mlir::dyn_cast<tuples::ColumnDefAttr>(attr)) resolveColumnType(def.getColumn());
+            else if (auto ref = mlir::dyn_cast<tuples::ColumnRefAttr>(attr)) resolveColumnType(ref.getColumn());
+         });
+      });
+      getOperation()->walk([&](tuples::GetColumnOp getColumnOp) { syncResultType(getColumnOp); });
+   }
+   static mlir::Type producedBindingType(mlir::Type type) {
+      if (auto nullableType = mlir::dyn_cast<db::NullableType>(type)) return nullableType.getType();
+      return type;
+   }
+   static mlir::Type unionMappingType(mlir::ArrayAttr fromExisting) {
+      bool nullable = false;
+      mlir::Type mergedType;
+      for (mlir::Attribute side : fromExisting) {
+         auto sourceRef = mlir::dyn_cast<tuples::ColumnRefAttr>(side);
+         if (!sourceRef) {
+            nullable = true;
+            continue;
+         }
+         mlir::Type sideType = sourceRef.getColumn().type;
+         if (auto nullableType = mlir::dyn_cast<db::NullableType>(sideType)) {
+            nullable = true;
+            sideType = nullableType.getType();
+         }
+         if (!mergedType) mergedType = sideType;
+      }
+      if (!mergedType) return {};
+      return nullable ? static_cast<mlir::Type>(db::NullableType::get(fromExisting.getContext(), mergedType)) : mergedType;
+   }
+   static void syncResultType(tuples::GetColumnOp getColumnOp) {
+      mlir::Type liveType = getColumnOp.getAttr().getColumn().type;
+      if (getColumnOp.getResult().getType() != liveType) getColumnOp.getResult().setType(liveType);
+   }
+
    llvm::DenseMap<mlir::Value, mlir::Value> rewritten;
    mlir::Operation* insertPoint = nullptr;
    llvm::StringMap<tuples::ColumnRefAttr>* bnodeScope = nullptr;
@@ -394,7 +443,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
                return false;
             }
             auto freshDef = columnManager.createDef(columnManager.getUniqueScope("vars"), columnManager.getName(column).second);
-            freshDef.getColumn().type = column->type;
+            freshDef.getColumn().type = producedBindingType(column->type);
             setSlot(triple, slot, gpm::VariableTermAttr::get(ctxt, freshDef));
             splits[column] = &freshDef.getColumn();
             splitOrigin[&freshDef.getColumn()] = column;
@@ -616,6 +665,10 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          unionDegrees.emplace_back(&scope, &degreeDef.getColumn());
       }
 
+      for (auto attr : mappingEntries) {
+         auto def = mlir::cast<tuples::ColumnDefAttr>(attr);
+         if (auto type = unionMappingType(mlir::cast<mlir::ArrayAttr>(def.getFromExisting()))) def.getColumn().type = type;
+      }
       mlir::OpBuilder builder(ctxt);
       builder.setInsertionPoint(insertPoint);
       auto relUnion = builder.create<relalg::UnionOp>(loc, relalg::SetSemanticAttr::get(ctxt, relalg::SetSemantic::all), leftStream, rightStream, mlir::ArrayAttr::get(ctxt, mappingEntries));
@@ -804,6 +857,9 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       bool nullable = mlir::isa<db::NullableType>(degree->type);
       auto truthDef = columnManager.createDef(&resultDef.getColumn());
       truthDef.getColumn().type = nullable ? static_cast<mlir::Type>(db::NullableType::get(ctxt, variantType)) : variantType;
+      getOperation()->walk([&](tuples::GetColumnOp getColumnOp) {
+         if (&getColumnOp.getAttr().getColumn() == &truthDef.getColumn()) gpm::BindingColumnTransformer::remapBindingReadType(getColumnOp);
+      });
       mlir::OpBuilder builder(ctxt);
       builder.setInsertionPoint(insertPoint);
       auto* block = new mlir::Block;
@@ -919,7 +975,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
             else {
                auto fromExisting = mlir::ArrayAttr::get(ctxt, {outerRef});
                auto newDef = columnManager.createDef(columnManager.getUniqueScope("bindings"), slotName(slot), fromExisting);
-               newDef.getColumn().type = column->type;
+               newDef.getColumn().type = producedBindingType(column->type);
                newRef = columnManager.createRef(newDef.getColumnPtr().get());
                setSlot(triple, slot, gpm::VariableTermAttr::get(ctxt, newDef));
                llvm::SmallPtrSet<mlir::Operation*, 16> visitedStale;
@@ -1049,6 +1105,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       op->walk([&](tuples::GetColumnOp getColumnOp) {
          if (&getColumnOp.getAttr().getColumn() == oldColumn) {
             getColumnOp.setAttrAttr(newRef);
+            gpm::BindingColumnTransformer::remapBindingReadType(getColumnOp);
          }
       });
       for (auto operand : op->getOperands()) {
@@ -1105,7 +1162,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          mlir::Attribute binding;
          if (it == scope.end()) {
             auto def = columnManager.createDef(columnManager.getUniqueScope("bnode"), localId);
-            def.getColumn().type = gpm::VariableBindingType::get(ctxt);
+            def.getColumn().type = variant::VariantType::get(ctxt);
             scope[localId] = columnManager.createRef(def.getColumnPtr().get());
             binding = def;
          }

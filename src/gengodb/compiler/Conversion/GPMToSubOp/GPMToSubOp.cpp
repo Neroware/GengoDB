@@ -63,17 +63,6 @@ struct GPMToSubOpLoweringPass
    }
    void runOnOperation() final;
 };
-struct GPMScalarToSubOpLoweringPass
-   : public PassWrapper<GPMScalarToSubOpLoweringPass, OperationPass<ModuleOp>> {
-   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(GPMScalarToSubOpLoweringPass)
-   virtual llvm::StringRef getArgument() const override { return "to-graph-subop-scalars"; }
-
-   GPMScalarToSubOpLoweringPass() {}
-   void getDependentDialects(DialectRegistry& registry) const override {
-      registry.insert<LLVM::LLVMDialect, db::DBDialect, scf::SCFDialect, mlir::cf::ControlFlowDialect, util::UtilDialect, memref::MemRefDialect, arith::ArithDialect, gpm::GPMDialect, subop::SubOperatorDialect, gsubop::GraphSubOpDialect, variant::VariantDialect>();
-   }
-   void runOnOperation() final;
-};
 
 template<typename ColumnAttrT>
 mlir::Value scanNamedGraph(ConversionPatternRewriter& rewriter, mlir::Location loc, ColumnAttrT graphAttr, NamedGraphMapper& graphs, ExternalGraphMapper& externalGraphs, bool uniqueScope = false) {
@@ -148,9 +137,9 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
    TriplePatternLowering(TypeConverter& typeConverter, MLIRContext* context, NamedGraphMapper& graphs)
       : OpConversionPattern<gpm::TriplePatternOp>(typeConverter, context), graphs(graphs) {}
    LogicalResult matchAndRewrite(gpm::TriplePatternOp tripleOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
-      if (tripleOp->hasAttr("virtual")) 
+      if (tripleOp->hasAttr("virtual"))
          return failure();
-      if (failed(normalized(tripleOp))) 
+      if (failed(normalized(tripleOp)))
          return failure();
       TripleEmitter emitter(rewriter, graphs, tripleOp);
       emitter.setUseEdgeWeights(tripleOp->hasAttr("truthDegr"));
@@ -174,7 +163,8 @@ class VirtualTriplePatternLowering : public OpConversionPattern<gpm::TriplePatte
       auto idAttr = rewriter.getI64IntegerAttr(id);
       rewriter.modifyOpInPlace(join, [&]() { join->setAttr(kGraphIdxExpId, idAttr); });
       for (const auto* column : tripleOp.getCreatedVariables()) {
-         const_cast<tuples::Column*>(column)->type = variant::VariantType::get(rewriter.getContext());
+         assert(mlir::isa<variant::VariantType>(column->type) && "column not a variant");
+         (void) column;
       }
       mlir::Value placeholder = rewriter.create<gsubop::GraphIndexExpandOp>(tripleOp.getLoc(), tuples::TupleStreamType::get(rewriter.getContext()), adaptor.getRel(), asDictAttr(tripleOp), idAttr);
       replaceTripleOp(tripleOp, placeholder, rewriter);
@@ -223,7 +213,7 @@ class NodeExpansionLowering : public OpConversionPattern<gpm::NodeExpansionOp> {
       }
       auto direction = expansionOp.getAnchor() == gpm::ExpansionDirection::outgoing ? GraphEmitter::Outgoing : GraphEmitter::Incoming;
       auto targetDef = mlir::cast<gpm::VariableTermAttr>(expansionOp.getTarget()).getProducedBinding();
-      targetDef.getColumn().type = variant::VariantType::get(getContext());
+      assert(mlir::isa<variant::VariantType>(targetDef.getColumn().type) && "column not a variant");
       GraphEmitter emitter(rewriter, graphs, expansionOp, expansionOp.getGraphRef());
       gsubop::EdgeRefType edgeRefType;
       tuples::ColumnRefAttr edgeRef;
@@ -240,7 +230,7 @@ class EdgeExpansionLowering : public OpConversionPattern<gpm::EdgeExpansionOp> {
       : OpConversionPattern<gpm::EdgeExpansionOp>(typeConverter, context), graphs(graphs) {}
    LogicalResult matchAndRewrite(gpm::EdgeExpansionOp expansionOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
       auto targetDef = mlir::cast<gpm::VariableTermAttr>(expansionOp.getTarget()).getProducedBinding();
-      targetDef.getColumn().type = variant::VariantType::get(getContext());
+      assert(mlir::isa<variant::VariantType>(targetDef.getColumn().type) && "column not a variant");
       GraphEmitter emitter(rewriter, graphs, expansionOp, expansionOp.getGraphRef());
       gsubop::EdgeRefType edgeRefType;
       tuples::ColumnRefAttr edgeRef;
@@ -263,21 +253,14 @@ class EdgeExpansionLowering : public OpConversionPattern<gpm::EdgeExpansionOp> {
    }
 };
 
-static mlir::Value refreshStaleRefOperand(mlir::Value operand, ConversionPatternRewriter& rewriter) {
-   auto getColOp = mlir::dyn_cast_or_null<tuples::GetColumnOp>(operand.getDefiningOp());
-   if (!getColOp) return operand;
-   mlir::Type liveType = getColOp.getAttr().getColumn().type;
-   if (liveType == operand.getType()) return operand;
-   return rewriter.create<tuples::GetColumnOp>(getColOp.getLoc(), liveType, getColOp.getAttr(), getColOp.getTuple());
-}
 class GpmBindingsCompatibleLowering : public OpConversionPattern<gpm::BindingsCompatibleOp> {
    public:
    using OpConversionPattern<gpm::BindingsCompatibleOp>::OpConversionPattern;
    LogicalResult matchAndRewrite(gpm::BindingsCompatibleOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
       auto* ctxt = rewriter.getContext();
       auto loc = op.getLoc();
-      mlir::Value lhs = refreshStaleRefOperand(adaptor.getLhs(), rewriter);
-      mlir::Value rhs = refreshStaleRefOperand(adaptor.getRhs(), rewriter);
+      mlir::Value lhs = adaptor.getLhs();
+      mlir::Value rhs = adaptor.getRhs();
       mlir::Value anyNull;
       mlir::Value lhsRaw = lhs;
       mlir::Value rhsRaw = rhs;
@@ -313,7 +296,7 @@ class GetBindingOpLowering : public OpConversionPattern<gpm::GetBindingOp> {
    public:
    using OpConversionPattern<gpm::GetBindingOp>::OpConversionPattern;
    LogicalResult matchAndRewrite(gpm::GetBindingOp op, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
-      mlir::Value binding = refreshStaleRefOperand(adaptor.getVar(), rewriter);
+      mlir::Value binding = adaptor.getVar();
       if (mlir::isa<db::NullableType>(binding.getType())) {
          auto loc = op.getLoc();
          mlir::Value isNull = rewriter.create<db::IsNullOp>(loc, binding);
@@ -324,119 +307,21 @@ class GetBindingOpLowering : public OpConversionPattern<gpm::GetBindingOp> {
       return success();
    }
 };
-static void refreshOuterJoinMappingTypes(relalg::OuterJoinOp outerJoinOp) {
-   for (mlir::Attribute attr : outerJoinOp.getMapping()) {
-      auto defAttr = mlir::cast<tuples::ColumnDefAttr>(attr);
-      auto fromExisting = mlir::cast<mlir::ArrayAttr>(defAttr.getFromExisting());
-      auto sourceRef = mlir::cast<tuples::ColumnRefAttr>(fromExisting[0]);
-      mlir::Type innerType = sourceRef.getColumn().type;
-      mlir::Type newType = mlir::isa<db::NullableType>(innerType) ? innerType : db::NullableType::get(outerJoinOp.getContext(), innerType);
-      defAttr.getColumn().type = newType;
-   }
-}
-static void refreshUnionMappingTypes(relalg::UnionOp unionOp) {
-   for (mlir::Attribute attr : unionOp.getMapping()) {
-      auto defAttr = mlir::cast<tuples::ColumnDefAttr>(attr);
-      auto fromExisting = mlir::cast<mlir::ArrayAttr>(defAttr.getFromExisting());
-      bool nullable = false;
-      mlir::Type mergedType;
-      for (mlir::Attribute side : fromExisting) {
-         auto sourceRef = mlir::dyn_cast<tuples::ColumnRefAttr>(side);
-         if (!sourceRef) {
-            nullable = true;
-            continue;
-         }
-         mlir::Type sideType = sourceRef.getColumn().type;
-         if (auto nullableType = mlir::dyn_cast<db::NullableType>(sideType)) {
-            nullable = true;
-            sideType = nullableType.getType();
-         }
-         if (!mergedType) mergedType = sideType;
-      }
-      if (!mergedType) continue;
-      defAttr.getColumn().type = nullable ? db::NullableType::get(unionOp.getContext(), mergedType) : mergedType;
-   }
-}
-static void refreshNullableTypes(ModuleOp module) {
-   module.walk([&](mlir::Operation* op) {
-      if (auto outerJoinOp = mlir::dyn_cast<relalg::OuterJoinOp>(op)) {
-         refreshOuterJoinMappingTypes(outerJoinOp);
-      } 
-      else if (auto unionOp = mlir::dyn_cast<relalg::UnionOp>(op)) {
-         refreshUnionMappingTypes(unionOp);
-      }
-   });
-}
 
-
-static void addCommonLegalDialects(ConversionTarget& target) {
-   target.addLegalDialect<gpu::GPUDialect>();
-   target.addLegalDialect<async::AsyncDialect>();
-   target.addLegalOp<ModuleOp>();
-   target.addLegalOp<UnrealizedConversionCastOp>();
-   target.addLegalDialect<subop::SubOperatorDialect>();
-   target.addLegalDialect<gsubop::GraphSubOpDialect>();
-   target.addLegalDialect<db::DBDialect>();
-   target.addLegalDialect<lingodb::compiler::dialect::arrow::ArrowDialect>();
-   target.addLegalDialect<relalg::RelAlgDialect>();
-   target.addLegalDialect<tuples::TupleStreamDialect>();
-   target.addLegalDialect<func::FuncDialect>();
-   target.addLegalDialect<memref::MemRefDialect>();
-   target.addLegalDialect<arith::ArithDialect>();
-   target.addLegalDialect<cf::ControlFlowDialect>();
-   target.addLegalDialect<scf::SCFDialect>();
-   target.addLegalDialect<util::UtilDialect>();
-   target.addLegalDialect<variant::VariantDialect>();
-}
-
-void GPMToSubOpLoweringPass::runOnOperation() {
-   auto module = getOperation();
-   getContext().getLoadedDialect<util::UtilDialect>()->getFunctionHelper().setParentModule(module);
-
-   TypeConverter typeConverter;
-   typeConverter.addConversion([](tuples::TupleStreamType t) { return t; });
-   typeConverter.addConversion([](mlir::Type t) { return t; });
-   auto* ctxt = &getContext();
-   ctxt->loadDialect<gsubop::GraphSubOpDialect>();
-   ctxt->loadDialect<variant::VariantDialect>();
-
-   NamedGraphMapper graphs;
-   ExternalGraphMapper externalGraphs;
-   int64_t graphIdxExpandIds = 0;
-
-   ConversionTarget target(getContext());
-   addCommonLegalDialects(target);
-   target.addLegalDialect<gpm::GPMDialect>();
-   target.addIllegalOp<gpm::NamedGraphOp, gpm::TriplePatternOp, gpm::NodeExpansionOp, gpm::EdgeExpansionOp>();
-
-   RewritePatternSet patterns(ctxt);
-   patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs, externalGraphs);
-   patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs);
-   patterns.insert<VirtualTriplePatternLowering>(typeConverter, ctxt, graphIdxExpandIds);
-   patterns.insert<NodeExpansionLowering>(typeConverter, ctxt, graphs);
-   patterns.insert<EdgeExpansionLowering>(typeConverter, ctxt, graphs);
-
-   if (failed(applyFullConversion(module, target, std::move(patterns)))) {
-      signalPassFailure();
-      return;
-   }
-
-   refreshNullableTypes(module);
-}
-static void expandMergedColumns(ModuleOp module) {
-   auto* ctxt = module.getContext();
-   auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-   module.walk([&](relalg::OuterJoinOp join) {
+class MergedColumnsLowering : public OpConversionPattern<relalg::OuterJoinOp> {
+   public:
+   using OpConversionPattern<relalg::OuterJoinOp>::OpConversionPattern;
+   LogicalResult matchAndRewrite(relalg::OuterJoinOp join, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
       auto mergedCols = join->getAttrOfType<mlir::ArrayAttr>(gpm::kMergedColumnsAttr);
-      if (!mergedCols) return;
-      join->removeAttr(gpm::kMergedColumnsAttr);
+      if (!mergedCols) return failure();
+      auto* ctxt = rewriter.getContext();
+      auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
       auto loc = join.getLoc();
-      OpBuilder builder(join);
-      builder.setInsertionPointAfter(join);
+      rewriter.modifyOpInPlace(join, [&]() { join->removeAttr(gpm::kMergedColumnsAttr); });
       auto* block = new Block;
       mlir::Value tuple = block->addArgument(tuples::TupleType::get(ctxt), loc);
       {
-         OpBuilder::InsertionGuard guard(builder);
+         OpBuilder builder(ctxt);
          builder.setInsertionPointToStart(block);
          llvm::SmallVector<mlir::Value> results;
          for (auto attr : mergedCols) {
@@ -444,8 +329,8 @@ static void expandMergedColumns(ModuleOp module) {
             auto sources = mlir::cast<mlir::ArrayAttr>(mergedDef.getFromExisting());
             auto leftRef = mlir::cast<tuples::ColumnRefAttr>(sources[0]);
             auto rightRef = mlir::cast<tuples::ColumnRefAttr>(sources[1]);
+            assert(mergedDef.getColumn().type == leftRef.getColumn().type && "merged column has the type of its left source");
             mlir::Value left = builder.create<tuples::GetColumnOp>(loc, leftRef.getColumn().type, leftRef, tuple);
-            mergedDef.getColumn().type = left.getType();
             if (!mlir::isa<db::NullableType>(left.getType())) {
                results.push_back(left);
                continue;
@@ -463,17 +348,48 @@ static void expandMergedColumns(ModuleOp module) {
       }
       llvm::SmallVector<mlir::Attribute> computedCols;
       for (auto attr : mergedCols) {
-         auto mergedDef = mlir::cast<tuples::ColumnDefAttr>(attr);
-         computedCols.push_back(columnManager.createDef(&mergedDef.getColumn()));
+         computedCols.push_back(columnManager.createDef(&mlir::cast<tuples::ColumnDefAttr>(attr).getColumn()));
       }
-      auto mapOp = builder.create<relalg::MapOp>(loc, tuples::TupleStreamType::get(ctxt), join.getResult(), builder.getArrayAttr(computedCols));
+      rewriter.setInsertionPointAfter(join);
+      auto mapOp = rewriter.create<relalg::MapOp>(loc, tuples::TupleStreamType::get(ctxt), join.getResult(), rewriter.getArrayAttr(computedCols));
       mapOp.getPredicate().push_back(block);
-      join.getResult().replaceAllUsesExcept(mapOp.getResult(), mapOp);
+      rewriter.replaceUsesWithIf(join.getResult(), mapOp.getResult(), [&](mlir::OpOperand& use) { return use.getOwner() != mapOp; });
+      return success();
+   }
+};
+
+static LogicalResult verifyResolvedColumnTypes(ModuleOp module) {
+   auto isPlaceholder = [](mlir::Type type) {
+      if (auto nullableType = mlir::dyn_cast_or_null<db::NullableType>(type)) type = nullableType.getType();
+      return mlir::isa_and_nonnull<gpm::VariableBindingType>(type);
+   };
+   auto result = module.walk([&](mlir::Operation* op) {
+      mlir::WalkResult status = mlir::WalkResult::advance();
+      op->getAttrDictionary().walk([&](tuples::ColumnDefAttr def) {
+         if (status.wasInterrupted() || !isPlaceholder(def.getColumn().type)) return;
+         op->emitOpError() << "column " << def.getName() << " still has type !gpm.variable_binding; run gpm-unnest-patterns first";
+         status = mlir::WalkResult::interrupt();
+      });
+      if (status.wasInterrupted()) return status;
+      if (auto getColumnOp = mlir::dyn_cast<tuples::GetColumnOp>(op)) {
+         bool readByGpmOp = llvm::any_of(op->getUsers(), [](mlir::Operation* user) { return mlir::isa<gpm::GPMDialect>(user->getDialect()); });
+         if (readByGpmOp && getColumnOp.getResult().getType() != getColumnOp.getAttr().getColumn().type) {
+            op->emitOpError() << "reads column " << getColumnOp.getAttr().getName() << " with a stale type (column: " << getColumnOp.getAttr().getColumn().type << ")";
+            return mlir::WalkResult::interrupt();
+         }
+      }
+      return status;
    });
+   return failure(result.wasInterrupted());
 }
-void GPMScalarToSubOpLoweringPass::runOnOperation() {
+
+void GPMToSubOpLoweringPass::runOnOperation() {
    auto module = getOperation();
    getContext().getLoadedDialect<util::UtilDialect>()->getFunctionHelper().setParentModule(module);
+   if (failed(verifyResolvedColumnTypes(module))) {
+      signalPassFailure();
+      return;
+   }
 
    TypeConverter typeConverter;
    typeConverter.addConversion([](tuples::TupleStreamType t) { return t; });
@@ -482,19 +398,44 @@ void GPMScalarToSubOpLoweringPass::runOnOperation() {
    ctxt->loadDialect<gsubop::GraphSubOpDialect>();
    ctxt->loadDialect<variant::VariantDialect>();
 
+   NamedGraphMapper graphs;
+   ExternalGraphMapper externalGraphs;
+   int64_t graphIdxExpandIds = 0;
+
    ConversionTarget target(getContext());
-   addCommonLegalDialects(target);
+   target.addLegalDialect<gpu::GPUDialect>();
+   target.addLegalDialect<async::AsyncDialect>();
+   target.addLegalOp<ModuleOp>();
+   target.addLegalOp<UnrealizedConversionCastOp>();
+   target.addLegalDialect<subop::SubOperatorDialect>();
+   target.addLegalDialect<gsubop::GraphSubOpDialect>();
+   target.addLegalDialect<db::DBDialect>();
+   target.addLegalDialect<lingodb::compiler::dialect::arrow::ArrowDialect>();
+   target.addLegalDialect<relalg::RelAlgDialect>();
+   target.addLegalDialect<tuples::TupleStreamDialect>();
+   target.addLegalDialect<func::FuncDialect>();
+   target.addLegalDialect<memref::MemRefDialect>();
+   target.addLegalDialect<arith::ArithDialect>();
+   target.addLegalDialect<cf::ControlFlowDialect>();
+   target.addLegalDialect<scf::SCFDialect>();
+   target.addLegalDialect<util::UtilDialect>();
+   target.addLegalDialect<variant::VariantDialect>();
    target.addIllegalDialect<gpm::GPMDialect>();
+   // target.addLegalOp<gpm::PathExpansionOp>();
+   target.addDynamicallyLegalOp<relalg::OuterJoinOp>([](relalg::OuterJoinOp join) { return !join->hasAttr(gpm::kMergedColumnsAttr); });
 
    RewritePatternSet patterns(ctxt);
+   patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs, externalGraphs);
+   patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs);
+   patterns.insert<VirtualTriplePatternLowering>(typeConverter, ctxt, graphIdxExpandIds);
+   patterns.insert<NodeExpansionLowering>(typeConverter, ctxt, graphs);
+   patterns.insert<EdgeExpansionLowering>(typeConverter, ctxt, graphs);
    patterns.insert<GpmBindingsCompatibleLowering>(typeConverter, ctxt);
    patterns.insert<GetBindingOpLowering>(typeConverter, ctxt);
-
-   expandMergedColumns(module);
+   patterns.insert<MergedColumnsLowering>(typeConverter, ctxt);
 
    if (failed(applyFullConversion(module, target, std::move(patterns)))) {
       signalPassFailure();
-      return;
    }
 }
 } // namespace
@@ -502,20 +443,12 @@ std::unique_ptr<mlir::Pass>
 gpm::createLowerToSubOpPass() {
    return std::make_unique<GPMToSubOpLoweringPass>();
 }
-std::unique_ptr<mlir::Pass>
-gpm::createLowerGPMScalarsToSubOpPass() {
-   return std::make_unique<GPMScalarToSubOpLoweringPass>();
-}
 void gpm::createLowerGPMToSubOpPipeline(mlir::OpPassManager& pm) {
    pm.addPass(gpm::createLowerToSubOpPass());
-   pm.addPass(gpm::createLowerGPMScalarsToSubOpPass());
 }
 void gpm::registerGPMToSubOpConversionPasses() {
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
       return gpm::createLowerToSubOpPass();
-   });
-   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
-      return gpm::createLowerGPMScalarsToSubOpPass();
    });
    mlir::PassPipelineRegistration<EmptyPipelineOptions>(
       "lower-gpm-to-subop",
