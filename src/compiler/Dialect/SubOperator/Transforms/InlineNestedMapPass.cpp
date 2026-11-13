@@ -25,7 +25,8 @@ class InlineNestedMapPass : public mlir::PassWrapper<InlineNestedMapPass, mlir::
 
    void runOnOperation() override {
       std::queue<subop::NestedMapOp> nestedMapOps;
-      getOperation()->walk([&](subop::NestedMapOp nestedMapOp) {
+      // outer nested maps first: inlining an inner nested map must not move the outer region's terminator
+      getOperation()->walk<mlir::WalkOrder::PreOrder>([&](subop::NestedMapOp nestedMapOp) {
          nestedMapOps.push(nestedMapOp);
       });
       while (!nestedMapOps.empty()) {
@@ -74,9 +75,10 @@ class InlineNestedMapPass : public mlir::PassWrapper<InlineNestedMapPass, mlir::
                mlir::IRMapping mapping;
                mapping.map(currentUse.get(), v);
                auto* cloned = mlir::cast<subop::SubOperator>(op).cloneSubOp(builder, mapping, columnMapping);
-               if (auto clonedNestedMap = mlir::dyn_cast<subop::NestedMapOp>(cloned)) {
+               // also queue nested maps inside the cloned op (outer first, consistent with the initial walk)
+               cloned->walk<mlir::WalkOrder::PreOrder>([&](subop::NestedMapOp clonedNestedMap) {
                   nestedMapOps.push(clonedNestedMap);
-               }
+               });
                opsToMove.push_back(cloned);
                for (auto& use : op->getUses()) {
                   if (mlir::isa_and_nonnull<tuples::TupleStreamType>(use.get().getType())) {

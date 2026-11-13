@@ -290,7 +290,7 @@ class PrepareLoweringPass : public mlir::PassWrapper<PrepareLoweringPass, mlir::
          auto tuple = nestedMapOp.getBody()->getArgument(0);
          for (auto* user : tuple.getUsers()) {
             if (auto combineOp = mlir::dyn_cast<subop::CombineTupleOp>(user)) { // if this tuple gets combined
-               if (combineOp->getBlock() != nestedMapOp.getBody()) {
+               if (!nestedMapOp.getRegion().isAncestor(combineOp->getParentRegion())) {
                   nestedMapOp.emitError("NestedMapOp: tuple parameter must only be used in the body block");
                   return signalPassFailure();
                }
@@ -309,9 +309,23 @@ class PrepareLoweringPass : public mlir::PassWrapper<PrepareLoweringPass, mlir::
                };
                std::unordered_set<tuples::Column*> requiredColumns;
                std::function<void(mlir::Operation*, std::unordered_set<tuples::Column*>)> addRequiredColumns = [&](mlir::Operation* op, std::unordered_set<tuples::Column*> availableColumns) {
+                  auto usedColumns = subop::ColumnUsageAnalysis::getUsedColumnsForOp(op);
+                  // columns the op reads from its input stream must be checked before the columns it creates, as it may
+                  // redefine them (e.g. a map computing x := f(x)). For a nested map (already prepared, post order) these are
+                  // its parameters, for other ops with nested sub-operators they cannot be told apart from region-internal uses.
+                  if (auto nestedOp = mlir::dyn_cast<subop::NestedMapOp>(op)) {
+                     for (auto param : nestedOp.getParameters()) {
+                        auto* paramColumn = &mlir::cast<tuples::ColumnRefAttr>(param).getColumn();
+                        if (!availableColumns.contains(paramColumn)) requiredColumns.insert(paramColumn);
+                     }
+                  } else if (!mlir::isa<subop::ContainsNestedSubOps>(op)) {
+                     for (auto* usedColumn : usedColumns) {
+                        if (!availableColumns.contains(usedColumn)) requiredColumns.insert(usedColumn);
+                     }
+                  }
                   auto created = createdColumns.getCreatedColumns(op); // for the combine op, get the columns it creates
                   availableColumns.insert(created.begin(), created.end()); // aggregate them in availableColumns, it contains all columns that are in the tuple-stream up to the current  combineOp
-                  for (auto* usedColumn : subop::ColumnUsageAnalysis::getUsedColumnsForOp(op)) {
+                  for (auto* usedColumn : usedColumns) {
                      if (!availableColumns.contains(usedColumn)) {
                         requiredColumns.insert(usedColumn); // if the combineOp uses a column that it doesn't create or that doesn't come from its definitions, the combineOp requires it
                      }

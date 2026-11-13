@@ -1425,7 +1425,23 @@ mlir::LogicalResult subop::MapOp::foldColumns(subop::ColumnMapping& columnInfo) 
 }
 
 mlir::Operation* subop::MapOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
-   auto newOp = builder.create<MapOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), columnMapping.clone(getComputedCols()), columnMapping.remap(getInputCols()));
+   // a map may redefine one of its inputs (x := f(x)): the inputs are remapped first, and such a redefinition keeps
+   // shadowing the (possibly remapped) input column instead of defining a fresh column. Other paths of the stream
+   // (e.g. a union branch bypassing the map) still refer to the original column.
+   auto inputCols = columnMapping.remap(getInputCols());
+   llvm::SmallVector<mlir::Attribute> computed;
+   for (auto attr : getComputedCols()) {
+      auto defAttr = mlir::cast<tuples::ColumnDefAttr>(attr);
+      auto isInput = llvm::any_of(getInputCols(), [&](mlir::Attribute in) { return &mlir::cast<tuples::ColumnRefAttr>(in).getColumn() == &defAttr.getColumn(); });
+      if (isInput) {
+         auto& colManager = getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+         computed.push_back(colManager.createDef(&columnMapping.remap(colManager.createRef(&defAttr.getColumn())).getColumn(), defAttr.getFromExisting()));
+      } else {
+         computed.push_back(columnMapping.clone(defAttr));
+      }
+   }
+   auto computedCols = mlir::ArrayAttr::get(getContext(), computed);
+   auto newOp = builder.create<MapOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), computedCols, inputCols);
    builder.cloneRegionBefore(getFn(), newOp.getFn(), newOp.getFn().begin(), mapping);
    mapResults(mapping, this->getOperation(), newOp.getOperation());
    return newOp;

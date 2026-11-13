@@ -6,12 +6,17 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
+
+#include "llvm/ADT/DenseSet.h"
 #include <string>
 #include <vector>
 
 namespace lingodb::compiler::dialect::subop {
 class ColumnMapping {
    llvm::DenseMap<dialect::tuples::Column*, dialect::tuples::Column*> mapping;
+   // columns whose definition was already cloned via this mapping: further definitions of the same column
+   // (e.g. in different union branches or as shadowing redefinition) must define the same cloned column
+   llvm::DenseSet<dialect::tuples::Column*> clonedDefs;
 
    public:
    dialect::tuples::ColumnRefAttr remap(dialect::tuples::ColumnRefAttr refAttr) {
@@ -63,9 +68,13 @@ class ColumnMapping {
       if (fromExisting) {
          fromExisting = remap(fromExisting);
       }
+      if (clonedDefs.contains(&defAttr.getColumn())) {
+         return colManager.createDef(mapping[&defAttr.getColumn()], fromExisting);
+      }
       auto newDef = colManager.createDef(colManager.getUniqueScope(scope), name, fromExisting);
       newDef.getColumn().type = defAttr.getColumn().type;
       mapping[&defAttr.getColumn()] = &newDef.getColumn();
+      clonedDefs.insert(&defAttr.getColumn());
       return newDef;
    }
    subop::ColumnDefMemberMappingAttr clone(subop::ColumnDefMemberMappingAttr mapping) {
