@@ -67,14 +67,14 @@ class OptimizeGpmJoinsPass : public mlir::PassWrapper<OptimizeGpmJoinsPass, mlir
    private:
    static void optimize(mlir::Operation* join, bool allowLeftIndex, relalg::AvailabilityCache& cache) {
       if (join->hasAttr("impl")) return;
-      auto allKeys = getCompatibleJoinKeys(join, cache, mergedProbeColumns(join));
+      auto allKeys = getCompatibleJoinKeys(join, cache);
       auto* block = join->getBlock();
       // index side keys must be non-nullable (a triple always binds), probe side keys may be unbound
       auto keys = withoutNullableIndexKeys(allKeys, /*indexIsRight=*/true);
-      gpm::TriplePatternOp triple = keys.first.empty() ? gpm::TriplePatternOp() : getIndexTriple(join->getOperand(1), anchorCandidates(keys, true), block);
+      gpm::TriplePatternOp triple = keys.first.empty() ? gpm::TriplePatternOp() : getIndexTriple(join->getOperand(1), keys.second, block);
       if (!triple && allowLeftIndex) {
          keys = withoutNullableIndexKeys(allKeys, /*indexIsRight=*/false);
-         if (!keys.first.empty()) triple = getIndexTriple(join->getOperand(0), anchorCandidates(keys, false), block);
+         if (!keys.first.empty()) triple = getIndexTriple(join->getOperand(0), keys.first, block);
       }
       if (!triple) return;
       mlir::Builder builder(join->getContext());
@@ -91,16 +91,6 @@ class OptimizeGpmJoinsPass : public mlir::PassWrapper<OptimizeGpmJoinsPass, mlir
       join->removeAttr("useHashJoin");
       join->removeAttr("reverseSides");
       triple->setAttr("virtual", builder.getUnitAttr());
-   }
-   // anchor candidates: index keys whose probe side partner is always bound
-   // (a NULL anchor would need a full triple scan per probe tuple, a hash join is preferable there)
-   static llvm::SmallVector<mlir::Attribute> anchorCandidates(const join_keys_t& keys, bool indexIsRight) {
-      llvm::SmallVector<mlir::Attribute> candidates;
-      for (auto [leftKey, rightKey] : llvm::zip(keys.first, keys.second)) {
-         auto probeKey = mlir::cast<tuples::ColumnRefAttr>(indexIsRight ? leftKey : rightKey);
-         if (!mlir::isa<db::NullableType>(probeKey.getColumn().type)) candidates.push_back(indexIsRight ? rightKey : leftKey);
-      }
-      return candidates;
    }
    static join_keys_t withoutNullableIndexKeys(const join_keys_t& keys, bool indexIsRight) {
       join_keys_t filtered;
@@ -124,19 +114,7 @@ class OptimizeGpmJoinsPass : public mlir::PassWrapper<OptimizeGpmJoinsPass, mlir
          return {};
       return triple;
    }
-   // unbound (NULL) probe keys are only supported if the join fills them in afterwards, i.e. an outer join whose
-   // gpm.merge coalesces the probe column with the (padded) index side column
-   static llvm::SmallPtrSet<const tuples::Column*, 4> mergedProbeColumns(mlir::Operation* join) {
-      llvm::SmallPtrSet<const tuples::Column*, 4> merged;
-      auto mergedCols = join->getAttrOfType<mlir::ArrayAttr>(gpm::kMergedColumnsAttr);
-      if (!mlir::isa<relalg::OuterJoinOp>(join) || !mergedCols) return merged;
-      for (auto attr : mergedCols) {
-         auto sources = mlir::cast<mlir::ArrayAttr>(mlir::cast<tuples::ColumnDefAttr>(attr).getFromExisting());
-         merged.insert(&mlir::cast<tuples::ColumnRefAttr>(sources[0]).getColumn());
-      }
-      return merged;
-   }
-   static join_keys_t getCompatibleJoinKeys(mlir::Operation* join, relalg::AvailabilityCache& cache, const llvm::SmallPtrSet<const tuples::Column*, 4>& mergedProbeColumns) {
+   static join_keys_t getCompatibleJoinKeys(mlir::Operation* join, relalg::AvailabilityCache& cache) {
       join_keys_t keys;
       auto returnOp = mlir::dyn_cast<tuples::ReturnOp>(mlir::cast<PredicateOperator>(join).getPredicateBlock().getTerminator());
       if (!returnOp || returnOp.getNumOperands() != 1)
@@ -167,11 +145,9 @@ class OptimizeGpmJoinsPass : public mlir::PassWrapper<OptimizeGpmJoinsPass, mlir
          if (!left || !right) continue;
          auto* leftColumn = &left.getAttr().getColumn();
          auto* rightColumn = &right.getAttr().getColumn();
-         auto isSupported = [&](const tuples::Column* probe, const tuples::Column* index) {
-            if (mlir::isa<db::NullableType>(index->type)) return false;
-            return !mlir::isa<db::NullableType>(probe->type) || mergedProbeColumns.contains(probe);
-         };
-         if (!isSupported(leftColumn, rightColumn) && !isSupported(rightColumn, leftColumn)) continue;
+         // a triple always binds, i.e. one side must be non-nullable to serve as index side. A NULL (unbound) probe key
+         // is supported by GINLJ: it joins with the full expansion and is filled in with the triple's value.
+         if (mlir::isa<db::NullableType>(leftColumn->type) && mlir::isa<db::NullableType>(rightColumn->type)) continue;
          if (leftColumns.contains(leftColumn) && rightColumns.contains(rightColumn)) {
             keys.first.push_back(left.getAttr());
             keys.second.push_back(right.getAttr());

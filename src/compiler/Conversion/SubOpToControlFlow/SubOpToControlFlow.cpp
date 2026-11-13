@@ -181,7 +181,8 @@ class ColumnMapping {
       return builder.create<subop::InFlightOp>(builder.getUnknownLoc(), values, builder.getArrayAttr(columns));
    }
    void define(tuples::ColumnDefAttr columnDefAttr, mlir::Value v) {
-      mapping.insert(std::make_pair(&columnDefAttr.getColumn(), v));
+      // a (re)definition shadows an earlier definition of the same column (e.g. a map computing x := f(x))
+      mapping[&columnDefAttr.getColumn()] = v;
    }
    void define(mlir::ArrayAttr columns, mlir::ValueRange values) {
       for (auto i = 0ul; i < columns.size(); i++) {

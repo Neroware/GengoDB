@@ -1512,13 +1512,15 @@ static mlir::Value translateGINLJBindingCompatible(mlir::Value left, mlir::Value
    // find anchor of graph expansion based on triple pattern annotation
    static auto findAnchor = [](mlir::DictionaryAttr triple, mlir::ArrayAttr hashRight, mlir::ArrayAttr hashLeft) -> std::optional<std::pair<size_t, gpm::TripleSlot>> {
       std::array<std::pair<gpm::TripleSlot, mlir::Attribute>, 2> slots{{{gpm::TripleSlot::subject, triple.get("s")}, {gpm::TripleSlot::object, triple.get("o")}}};
-      for (auto [slot, term] : slots) {
-         auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term);
-         if (!varTerm || !varTerm.getProducedBinding()) continue;
-         for (auto [i, attr] : llvm::enumerate(hashRight)) {
-            // prefer anchors that are always bound on the probe side
-            if (mlir::isa<db::NullableType>(mlir::cast<tuples::ColumnRefAttr>(hashLeft[i]).getColumn().type)) continue;
-            if (&mlir::cast<tuples::ColumnRefAttr>(attr).getColumn() == &varTerm.getProducedBinding().getColumn()) return std::make_pair(i, slot);
+      // prefer anchors that are always bound on the probe side, fall back to a nullable (binding compatible) anchor
+      for (bool allowNullable : {false, true}) {
+         for (auto [slot, term] : slots) {
+            auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term);
+            if (!varTerm || !varTerm.getProducedBinding()) continue;
+            for (auto [i, attr] : llvm::enumerate(hashRight)) {
+               if (!allowNullable && mlir::isa<db::NullableType>(mlir::cast<tuples::ColumnRefAttr>(hashLeft[i]).getColumn().type)) continue;
+               if (&mlir::cast<tuples::ColumnRefAttr>(attr).getColumn() == &varTerm.getProducedBinding().getColumn()) return std::make_pair(i, slot);
+            }
          }
       }
       return std::nullopt;
@@ -1569,6 +1571,29 @@ static mlir::Value translateGINLJBindingCompatible(mlir::Value left, mlir::Value
    // emit expansion, pipeline and join predicate (fn) per probe tuple, i.e. inside the nested map at the join position
    // (fn may create per-tuple state, e.g. the no-match marker of an outer join)
    mlir::OpBuilder::InsertionGuard guard(rewriter);
+   auto graphRefName = mlir::cast<tuples::ColumnRefAttr>(triple.get("graphRef")).getName();
+   bool anchorNullable = mlir::isa<db::NullableType>(anchorRef.getColumn().type);
+   // binding compatible: a probe tuple with an unbound anchor joins with the full (unanchored) expansion,
+   // which is materialized once and scanned per such probe tuple (cf. fullRightBuffer of translateHJBindingCompatible)
+   std::optional<MaterializationHelper> unboundHelper;
+   mlir::Value unboundBuffer;
+   if (anchorNullable && isFlagged(anchorIdx)) {
+      relalg::ColumnSet tripleColumns;
+      for (auto* slot : {"s", "p", "o"}) {
+         auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(triple.get(slot));
+         if (varTerm && varTerm.getProducedBinding()) tripleColumns.insert(&varTerm.getProducedBinding().getColumn());
+      }
+      if (auto truthDegr = mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(triple.get("truthDegr"))) tripleColumns.insert(&truthDegr.getColumn());
+      auto [fullNodeSetDef, fullNodeSetRef] = createColumn(scanGraph.getNodeSet().getColumn().type, "graphindex", "vx");
+      auto [fullEdgeSetDef, fullEdgeSetRef] = createColumn(scanGraph.getEdgeSet().getColumn().type, "graphindex", "ex");
+      gpm::lowering::NamedGraphMapper fullGraphs;
+      fullGraphs.insert({graphRefName, {mlir::cast<gsubop::GraphType>(graph.getType()), &fullNodeSetDef.getColumn(), &fullEdgeSetDef.getColumn(), graph}});
+      mlir::Value fullScan = rewriter.create<gsubop::ScanGraphOp>(loc, graph, fullNodeSetDef, fullEdgeSetDef);
+      mlir::Value fullExpansion = gpm::lowering::TripleEmitter(rewriter, fullGraphs, op, triple).lower(fullScan);
+      auto& helper = unboundHelper.emplace(tripleColumns, ctxt);
+      unboundBuffer = rewriter.create<subop::GenericCreateOp>(loc, subop::BufferType::get(ctxt, helper.createStateMembersAttr()));
+      rewriter.create<subop::MaterializeOp>(loc, fullExpansion, unboundBuffer, helper.createColumnstateMapping());
+   }
    auto [nodeSetDef, nodeSetRef] = createColumn(scanGraph.getNodeSet().getColumn().type, "graphindex", "vx");
    auto [edgeSetDef, edgeSetRef] = createColumn(scanGraph.getEdgeSet().getColumn().type, "graphindex", "ex");
    auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), left, rewriter.getArrayAttr({}));
@@ -1581,48 +1606,47 @@ static mlir::Value translateGINLJBindingCompatible(mlir::Value left, mlir::Value
    mlir::Value combined = rewriter.create<subop::CombineTupleOp>(loc, scan, tuple);
    mlir::Value boundStream = combined;
    mlir::Value unboundStream;
-   if (mlir::isa<db::NullableType>(anchorRef.getColumn().type)) {
+   if (anchorNullable) {
       auto [markerDef, markerRef] = createColumn(rewriter.getI1Type(), "graphindex", "unbound");
       mlir::Value marked = map(combined, rewriter, loc, rewriter.getArrayAttr(markerDef), [&](mlir::ConversionPatternRewriter& rewriter, subop::MapCreationHelper& helper, mlir::Location loc) -> std::vector<mlir::Value> {
          return {rewriter.create<db::IsNullOp>(loc, rewriter.getI1Type(), helper.access(anchorRef, loc))};
       });
       boundStream = rewriter.create<subop::FilterOp>(loc, marked, subop::FilterSemantic::none_true, rewriter.getArrayAttr(markerRef));
-      if (isFlagged(anchorIdx)) {
-         unboundStream = rewriter.create<subop::FilterOp>(loc, marked, subop::FilterSemantic::all_true, rewriter.getArrayAttr(markerRef));
-      }
+      if (unboundBuffer) unboundStream = rewriter.create<subop::FilterOp>(loc, marked, subop::FilterSemantic::all_true, rewriter.getArrayAttr(markerRef));
    }
+   // expand the bound anchor (the probe key is never filled in, as in translateHJBindingCompatible)
    gpm::lowering::NamedGraphMapper graphs;
-   graphs.insert({mlir::cast<tuples::ColumnRefAttr>(triple.get("graphRef")).getName(), {mlir::cast<gsubop::GraphType>(graph.getType()), &nodeSetDef.getColumn(), &edgeSetDef.getColumn(), graph}});
-   auto expand = [&](mlir::Value expanded, bool bound) -> mlir::Value {
-      gpm::lowering::TripleEmitter emitter(rewriter, graphs, op, triple);
-      if (bound) {
-         tuples::ColumnRefAttr anchorValueRef = anchorRef;
-         if (auto nullableType = mlir::dyn_cast<db::NullableType>(anchorRef.getColumn().type)) {
-            auto [valueDef, valueRef] = createColumn(nullableType.getType(), "graphindex", "anchor");
-            expanded = map(expanded, rewriter, loc, rewriter.getArrayAttr(valueDef), [&](mlir::ConversionPatternRewriter& rewriter, subop::MapCreationHelper& helper, mlir::Location loc) -> std::vector<mlir::Value> {
-               return {rewriter.create<db::NullableGetVal>(loc, helper.access(anchorRef, loc))};
-            });
-            anchorValueRef = valueRef;
-         }
-         emitter.bind(&tripleAnchorRef.getColumn(), anchorValueRef);
-         expanded = emitter.lower(expanded, anchorSlot);
-         // TODO: mutates the shared column type; only safe as long as the index side is non-nullable
-         tripleAnchorRef.getColumn().type = anchorValueRef.getColumn().type;
-         expanded = map(expanded, rewriter, loc, rewriter.getArrayAttr(colManager.createDef(&tripleAnchorRef.getColumn())), [&](mlir::ConversionPatternRewriter&, subop::MapCreationHelper& helper, mlir::Location loc) -> std::vector<mlir::Value> {
-            return {helper.access(anchorValueRef, loc)};
-         });
-      } 
-      else {
-         expanded = emitter.lower(expanded);
-         expanded = map(expanded, rewriter, loc, rewriter.getArrayAttr(colManager.createDef(&anchorRef.getColumn())), [&](mlir::ConversionPatternRewriter& rewriter, subop::MapCreationHelper& helper, mlir::Location loc) -> std::vector<mlir::Value> {
-            return {rewriter.create<db::AsNullableOp>(loc, anchorRef.getColumn().type, helper.access(tripleAnchorRef, loc))};
-         });
-      }
-      return expanded;
-   };
-   mlir::Value expanded = expand(boundStream, true);
+   graphs.insert({graphRefName, {mlir::cast<gsubop::GraphType>(graph.getType()), &nodeSetDef.getColumn(), &edgeSetDef.getColumn(), graph}});
+   gpm::lowering::TripleEmitter emitter(rewriter, graphs, op, triple);
+   mlir::Value expanded = boundStream;
+   tuples::ColumnRefAttr anchorValueRef = anchorRef;
+   if (auto nullableType = mlir::dyn_cast<db::NullableType>(anchorRef.getColumn().type)) {
+      auto [valueDef, valueRef] = createColumn(nullableType.getType(), "graphindex", "anchor");
+      expanded = map(expanded, rewriter, loc, rewriter.getArrayAttr(valueDef), [&](mlir::ConversionPatternRewriter& rewriter, subop::MapCreationHelper& helper, mlir::Location loc) -> std::vector<mlir::Value> {
+         return {rewriter.create<db::NullableGetVal>(loc, helper.access(anchorRef, loc))};
+      });
+      anchorValueRef = valueRef;
+   }
+   emitter.bind(&tripleAnchorRef.getColumn(), anchorValueRef);
+   expanded = emitter.lower(expanded, anchorSlot);
+   // TODO: mutates the shared column type; only safe as long as the index side is non-nullable
+   tripleAnchorRef.getColumn().type = anchorValueRef.getColumn().type;
+   expanded = map(expanded, rewriter, loc, rewriter.getArrayAttr(colManager.createDef(&tripleAnchorRef.getColumn())), [&](mlir::ConversionPatternRewriter&, subop::MapCreationHelper& helper, mlir::Location loc) -> std::vector<mlir::Value> {
+      return {helper.access(anchorValueRef, loc)};
+   });
    if (unboundStream) {
-      expanded = rewriter.create<subop::UnionOp>(loc, mlir::ValueRange{expanded, expand(unboundStream, false)});
+      // unbound anchor: join with the full expansion (the buffer is only scanned for unbound probe tuples)
+      auto unboundMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), unboundStream, rewriter.getArrayAttr({}));
+      auto* unboundBody = new Block;
+      mlir::Value unboundTuple = unboundBody->addArgument(tuples::TupleType::get(ctxt), loc);
+      unboundMapOp.getRegion().push_back(unboundBody);
+      {
+         mlir::OpBuilder::InsertionGuard unboundGuard(rewriter);
+         rewriter.setInsertionPointToStart(unboundBody);
+         mlir::Value fullScan = rewriter.create<subop::ScanOp>(loc, unboundBuffer, unboundHelper->createStateColumnMapping());
+         rewriter.create<tuples::ReturnOp>(loc, rewriter.create<subop::CombineTupleOp>(loc, fullScan, unboundTuple).getResult());
+      }
+      expanded = rewriter.create<subop::UnionOp>(loc, mlir::ValueRange{expanded, unboundMapOp.getRes()});
    }
    for (auto* pipelineOp : pipeline) {
       rewriter.moveOpBefore(pipelineOp, body, body->end());
@@ -1630,6 +1654,32 @@ static mlir::Value translateGINLJBindingCompatible(mlir::Value left, mlir::Value
    if (right == inOp.getRes()) right = expanded;
    rewriter.replaceOp(inOp, expanded);
    rewriter.setInsertionPointToEnd(body);
+   // binding compatible: an unbound probe key takes the value of the triple it is joined with
+   llvm::SmallVector<mlir::Attribute> fillDefs;
+   llvm::SmallVector<std::pair<tuples::ColumnRefAttr, tuples::ColumnRefAttr>> fillPairs;
+   for (auto [i, leftAttr, rightAttr] : llvm::enumerate(hashLeft, hashRight)) {
+      auto leftKey = mlir::cast<tuples::ColumnRefAttr>(leftAttr);
+      if (!isFlagged(i) || !mlir::isa<db::NullableType>(leftKey.getColumn().type)) continue;
+      fillDefs.push_back(colManager.createDef(&leftKey.getColumn()));
+      fillPairs.push_back({leftKey, mlir::cast<tuples::ColumnRefAttr>(rightAttr)});
+   }
+   if (!fillPairs.empty()) {
+      right = map(right, rewriter, loc, rewriter.getArrayAttr(fillDefs), [&](mlir::ConversionPatternRewriter& rewriter, subop::MapCreationHelper& helper, mlir::Location loc) -> std::vector<mlir::Value> {
+         std::vector<mlir::Value> res;
+         for (auto [leftKey, rightKey] : fillPairs) {
+            mlir::Value probeVal = helper.access(leftKey, loc);
+            mlir::Value indexVal = helper.access(rightKey, loc);
+            if (indexVal.getType() != probeVal.getType()) indexVal = rewriter.create<db::AsNullableOp>(loc, probeVal.getType(), indexVal);
+            mlir::Value isNull = rewriter.create<db::IsNullOp>(loc, probeVal);
+            auto ifOp = rewriter.create<mlir::scf::IfOp>(
+               loc, isNull,
+               [&](mlir::OpBuilder& b, mlir::Location l) { b.create<mlir::scf::YieldOp>(l, indexVal); },
+               [&](mlir::OpBuilder& b, mlir::Location l) { b.create<mlir::scf::YieldOp>(l, probeVal); });
+            res.push_back(ifOp.getResult(0));
+         }
+         return res;
+      });
+   }
    rewriter.create<tuples::ReturnOp>(loc, fn(right, rewriter));
    return nestedMapOp.getRes();
 }
