@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Runs every .sparql query in a directory through run-sparql and reports pass/fail.
+# Runs every .sparql query in a directory (and its group subdirectories,
+# e.g. resources/sparql/coffee/{agg,bind,join,...}/) through run-sparql and
+# reports pass/fail. Subdirectories named `errors` (expected-failure queries,
+# e.g. resources/sparql/coffee-fuzzy/errors/) are skipped.
 #
 # Counterpart to mlir-oracle.sh: instead of exercising GPM-lowered MLIR
 # snippets directly, this drives real SPARQL query text through the full
@@ -7,7 +10,9 @@
 # query runs without crashing, queries that have a golden fixture under
 # tools/gengodb/oracle/golden/ (see tools/gengodb/oracle/generate_golden.py)
 # also get their *result* checked against that independently-computed (via
-# rdflib) expected answer set, so a query that runs cleanly but returns the
+# rdflib) expected answer set (fixture name: the query's path relative to
+# resources/sparql/ with `/` replaced by `__`, e.g. coffee/agg/agg_sample.sparql
+# -> golden/coffee__agg__agg_sample.sparql.json), so a query that runs cleanly but returns the
 # wrong rows is reported as a failure too, not just a silent pass.
 #
 # Usage:
@@ -56,22 +61,26 @@ fi
 have_python=1
 command -v "$PYTHON3" >/dev/null 2>&1 || have_python=0
 
-shopt -s nullglob
-queries=("$QUERIES_DIR"/*.sparql)
-shopt -u nullglob
+QUERIES_DIR="$(cd -- "$QUERIES_DIR" && pwd)"
+SPARQL_ROOT="$REPO_ROOT/resources/sparql"
+mapfile -t queries < <(find "$QUERIES_DIR" -type d -name errors -prune -o -type f -name '*.sparql' -print | LC_ALL=C sort)
 
 if [[ ${#queries[@]} -eq 0 ]]; then
    echo "error: no .sparql files found in '$QUERIES_DIR'" >&2
    exit 1
 fi
 
-category="$(basename "$QUERIES_DIR")"
+if [[ "$QUERIES_DIR/" == "$SPARQL_ROOT/"* ]]; then
+   key_root="$SPARQL_ROOT"
+else
+   key_root="$(dirname -- "$QUERIES_DIR")"
+fi
 failures=()
 pass_count=0
 checked_count=0
 
 for query in "${queries[@]}"; do
-   name="$(basename "$query")"
+   name="${query#"$QUERIES_DIR"/}"
    output="$(cd "$REPO_ROOT" && timeout "$TIMEOUT" "$RUN_SPARQL" "$query" "$TTL_DIR" 2>&1)"
    status=$?
    if [[ $status -ne 0 ]]; then
@@ -81,7 +90,8 @@ for query in "${queries[@]}"; do
       continue
    fi
 
-   golden="$GOLDEN_DIR/${category}__${name}.json"
+   rel="${query#"$key_root"/}"
+   golden="$GOLDEN_DIR/${rel//\//__}.json"
    if [[ $have_python -eq 1 && -f "$golden" ]]; then
       check_output="$(printf '%s\n' "$output" | "$PYTHON3" "$CHECK_RESULT" "$golden" 2>&1)"
       check_status=$?

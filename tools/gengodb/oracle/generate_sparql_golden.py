@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Offline tool: computes golden answer sets for the real SPARQL query files
-under resources/sparql/{coffee,bsbm}/, using rdflib as an independent SPARQL
-engine, and writes them as JSON fixtures under tools/gengodb/oracle/golden/
--- picked up automatically by tools/gengodb/sparql-oracle.sh's result check
-(it looks for golden/<category>__<name>.json, where <category> is the
-queries-dir basename, e.g. "coffee" or "bsbm").
+under resources/sparql/{coffee,bsbm}/ (including group subdirectories such as
+coffee/agg/, coffee/path/, ...; `errors/` subdirectories are skipped), using
+rdflib as an independent SPARQL engine, and writes them as JSON fixtures under
+tools/gengodb/oracle/golden/ -- picked up automatically by
+tools/gengodb/sparql-oracle.sh's result check (it looks for
+golden/<path>.json, where <path> is the query's path relative to
+resources/sparql/ with `/` replaced by `__`, e.g. coffee/agg/agg_sample.sparql
+-> coffee__agg__agg_sample.sparql.json).
 
 Unlike generate_golden.py (which runs hand-translated, hand-derived queries
 against coffee.ttl for the GPM MLIR snippets), this runs the *actual*
@@ -23,7 +26,7 @@ and run-sparql rejects both forms outright ("not yet supported"), so there's
 nothing to check either way yet.
 
 Queries using the GengoDB-specific fuzzy `TRUTH ?t OF [hedge] { ... }` extension
-(e.g. coffee/truth_crisp.sparql) are skipped too: rdflib can't parse that
+(e.g. coffee/misc/truth_crisp.sparql) are skipped too: rdflib can't parse that
 non-standard construct, so there's no independent oracle for them.
 
 This is NOT run as part of the build or test suite -- it requires `rdflib`
@@ -51,8 +54,8 @@ GOLDEN_DIR = os.path.join(os.path.dirname(__file__), "golden")
 COFFEE_GRAPH_IRI = "file://resources/ttl/coffee/coffee.ttl#rdf"
 SKIP = {"bsbm/9.sparql", "bsbm/12.sparql"}  # DESCRIBE / CONSTRUCT not yet supported
 # list of exclusions, due to rdflib issues
-SKIP_RDFLIB = {"coffee/agg_expr_arg_error.sparql", "coffee/agg_group_by_expr_noalias.sparql",
-               "coffee/agg_computed_alias_chain.sparql"}
+SKIP_RDFLIB = {"coffee/agg/agg_expr_arg_error.sparql", "coffee/agg/agg_group_by_expr_noalias.sparql",
+               "coffee/agg/agg_computed_alias_chain.sparql"}
 TRUTH_OF_RE = re.compile(r"\bTRUTH\s+\S+\s+OF\b", re.IGNORECASE)  # fuzzy extension, not standard SPARQL
 UNORDERED_CONCAT_RE = re.compile(r'^#\s*oracle:\s*unordered-concat\s+\?(\w+)\s+"((?:[^"\\]|\\.)*)"\s*$', re.MULTILINE)
 
@@ -74,9 +77,11 @@ def main():
     stores = {"coffee": load_coffee(), "bsbm": load_bsbm()}
 
     for category, store in stores.items():
-        for path in sorted(glob.glob(os.path.join(REPO, "resources/sparql", category, "*.sparql"))):
-            name = os.path.basename(path)
-            rel = f"{category}/{name}"
+        paths = glob.glob(os.path.join(REPO, "resources/sparql", category, "**", "*.sparql"), recursive=True)
+        for path in sorted(paths):
+            rel = os.path.relpath(path, os.path.join(REPO, "resources/sparql")).replace(os.sep, "/")
+            if "errors" in rel.split("/")[:-1]:
+                continue
             if rel in SKIP:
                 print(f"skip {rel} (CONSTRUCT/DESCRIBE, not a row-table result)")
                 continue
@@ -96,7 +101,7 @@ def main():
                 if var not in result_vars:
                     sys.exit(f"{rel}: unordered-concat directive names ?{var}, which is not projected")
                 unordered.append([result_vars.index(var), sep.encode().decode("unicode_escape")])
-            out_path = os.path.join(GOLDEN_DIR, f"{category}__{name}.json")
+            out_path = os.path.join(GOLDEN_DIR, rel.replace("/", "__") + ".json")
             n = golden.write_golden(out_path, rows, unordered or None)
             print(f"wrote {out_path} ({n} rows)")
 
