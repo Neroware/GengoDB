@@ -290,7 +290,7 @@ class PrepareLoweringPass : public mlir::PassWrapper<PrepareLoweringPass, mlir::
          auto tuple = nestedMapOp.getBody()->getArgument(0);
          for (auto* user : tuple.getUsers()) {
             if (auto combineOp = mlir::dyn_cast<subop::CombineTupleOp>(user)) { // if this tuple gets combined
-               if (combineOp->getBlock() != nestedMapOp.getBody()) {
+               if (!nestedMapOp.getRegion().isAncestor(combineOp->getParentRegion())) {
                   nestedMapOp.emitError("NestedMapOp: tuple parameter must only be used in the body block");
                   return signalPassFailure();
                }
