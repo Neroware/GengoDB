@@ -221,6 +221,19 @@ class SingleJoinToInnerJoin : public mlir::RewritePattern {
       mapOp.getPredicate().push_back(mapBlock);
    }
 };
+// key columns into which a binding compatible join merges the binding of the other side (cf. mergeBindingKeys in RelAlgToSubOp)
+relalg::ColumnSet getBindingMergedColumns(mlir::Operation* op) {
+   relalg::ColumnSet merged;
+   auto leftHash = op->getAttrOfType<mlir::ArrayAttr>("leftHash");
+   auto flags = op->getAttrOfType<mlir::ArrayAttr>("bindingCompatible");
+   if (!leftHash || !flags) return merged;
+   for (auto [keyAttr, flagAttr] : llvm::zip(leftHash, flags)) {
+      auto key = mlir::dyn_cast<tuples::ColumnRefAttr>(keyAttr);
+      if (!key || mlir::cast<mlir::IntegerAttr>(flagAttr).getInt() == 0 || !mlir::isa<db::NullableType>(key.getColumn().type)) continue;
+      merged.insert(&key.getColumn());
+   }
+   return merged;
+}
 class Pushdown : public mlir::PassWrapper<Pushdown, mlir::OperationPass<mlir::func::FuncOp>> {
    virtual llvm::StringRef getArgument() const override { return "relalg-pushdown"; }
 
@@ -533,6 +546,12 @@ class Pushdown : public mlir::PassWrapper<Pushdown, mlir::OperationPass<mlir::fu
                        for (auto* c : usedAttributes) {
                           pushableLeft &= columnCreatorAnalysis.getCreator(c).canColumnReach(Operator{}, left, c);
                           pushableRight &= columnCreatorAnalysis.getCreator(c).canColumnReach(Operator{}, right, c);
+                       }
+                       // a binding compatible join merges its (nullable) left keys in place: below the join, they still
+                       // hold the unmerged value, so a selection reading them must stay above the join
+                       if (usedAttributes.intersects(getBindingMergedColumns(binop.getOperation()))) {
+                          pushableLeft = false;
+                          pushableRight = false;
                        }
 
                        pushableLeft &= topushUnary.lPushable(binop);

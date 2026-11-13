@@ -4,7 +4,6 @@
 #include <memory>
 namespace gengodb::compiler::dialect {
 namespace gpm {
-constexpr const char* kMergedColumnsAttr = "gpm.merge";
 constexpr const char* kBindAttr = "gpm.bind";
 std::unique_ptr<mlir::Pass> createUnnestGraphPatternsPass();
 std::unique_ptr<mlir::Pass> createOptimizeGpmJoinsPass();

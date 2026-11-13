@@ -543,7 +543,6 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       }
       if (auto outerJoin = mlir::dyn_cast<relalg::OuterJoinOp>(op)) {
          insertMapping(outerJoin.getMapping());
-         if (auto merged = outerJoin->getAttrOfType<mlir::ArrayAttr>(gpm::kMergedColumnsAttr)) insertMapping(merged);
          result.insert(producedColumns(outerJoin.getLeft(), visited));
          return result;
       }
@@ -713,7 +712,6 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
             if (mlir::isa<db::NullableType>(pair.first->type)) mergePairs.push_back(pair);
          }
          relalg::ColumnSet paddedVars = elementCreatedVars;
-         for (auto [leftCol, rightCol] : mergePairs) paddedVars.insert(rightCol);
          for (auto& scope : fuzzyScopes) {
             if (const auto* degree = scope.degreeOf.lookup(elementStream)) paddedVars.insert(degree);
          }
@@ -730,18 +728,15 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          for (auto [leftCol, rightCol] : splitPairs) {
             if (!mlir::isa<db::NullableType>(leftCol->type)) nameMerges[nullableColMap.lookup(rightCol)] = leftCol;
          }
+         // binding compatible outer join: the join merges an unbound (nullable) left key with the right key in place,
+         // i.e. the left column holds the merged binding downstream (see mergeBindingKeys in RelAlgToSubOp)
          ColumnMapper colMap = nullableColMap;
-         if (!mergePairs.empty()) {
-            auto mergedCols = buildMergedColumns(mergePairs, nullableColMap);
-            join->setAttr(gpm::kMergedColumnsAttr, mergedCols);
-            for (auto [attr, pair] : llvm::zip(mergedCols, mergePairs)) {
-               const auto* merged = &mlir::cast<tuples::ColumnDefAttr>(attr).getColumn();
-               const auto* paddedRight = nullableColMap.lookup(pair.second);
-               colMap[pair.first] = merged;
-               colMap[pair.second] = merged;
-               colMap[paddedRight] = merged;
-               nameMerges[pair.first] = merged;
-               nameMerges[paddedRight] = merged;
+         for (auto [leftCol, rightCol] : mergePairs) {
+            colMap[rightCol] = leftCol;
+            nameMerges[rightCol] = leftCol;
+            if (const auto* paddedRight = nullableColMap.lookup(rightCol)) {
+               colMap[paddedRight] = leftCol;
+               nameMerges[paddedRight] = leftCol;
             }
          }
          gpm::BindingColumnTransformer(&getContext()).remapColumnsEverywhere(getOperation(), join.getOperation(), colMap, &preMergeOps);
@@ -906,9 +901,6 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       if (auto outerJoin = mlir::dyn_cast<relalg::OuterJoinOp>(op)) {
          for (auto mappingAttr : outerJoin.getMapping()) {
             result.insert(&mlir::cast<tuples::ColumnDefAttr>(mappingAttr).getColumn());
-         }
-         if (auto merged = outerJoin->getAttrOfType<mlir::ArrayAttr>(gpm::kMergedColumnsAttr)) {
-            for (auto mergedAttr : merged) result.insert(&mlir::cast<tuples::ColumnDefAttr>(mergedAttr).getColumn());
          }
          result.insert(collectTripleVariables(outerJoin.getLeft(), visited));
          return result;
@@ -1130,20 +1122,6 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          colMap[column] = &newDef.getColumn();
       }
       return mlir::ArrayAttr::get(ctxt, mappingEntries);
-   }
-   mlir::ArrayAttr buildMergedColumns(const ColumnPairs& pairs, const ColumnMapper& paddedColMap) {
-      auto* ctxt = insertPoint->getContext();
-      auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-      auto scope = columnManager.getUniqueScope("merge");
-      llvm::SmallVector<mlir::Attribute> mergedCols;
-      for (auto [leftCol, rightCol] : pairs) {
-         const auto* paddedCol = paddedColMap.lookup(rightCol);
-         auto sources = mlir::ArrayAttr::get(ctxt, {columnManager.createRef(leftCol), columnManager.createRef(paddedCol)});
-         auto mergedDef = columnManager.createDef(scope, columnManager.getName(leftCol).second, sources);
-         mergedDef.getColumn().type = leftCol->type;
-         mergedCols.push_back(mergedDef);
-      }
-      return mlir::ArrayAttr::get(ctxt, mergedCols);
    }
    void collectSubtreeOps(mlir::Value v, llvm::SmallPtrSetImpl<mlir::Operation*>& ops) {
       auto* op = v.getDefiningOp();

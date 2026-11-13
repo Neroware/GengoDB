@@ -1,0 +1,17 @@
+PREFIX ex: <http://example.org/>
+
+# ?cup is unbound for some left rows (OPTIONAL) and merged by the binding compatible join of the two groups;
+# the FILTER reads the merged binding and must not be pushed below that join
+SELECT ?person ?food ?cup ?what
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        {
+            ?person ex:eats ?food .
+            OPTIONAL { ?person ex:cup ?cup . }
+        }
+        {
+            ?cup ex:drinks ?what .
+        }
+        FILTER(?cup = ex:bob)
+    }
+}

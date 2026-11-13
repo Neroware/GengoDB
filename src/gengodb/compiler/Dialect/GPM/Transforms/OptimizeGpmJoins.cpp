@@ -78,14 +78,15 @@ class OptimizeGpmJoinsPass : public mlir::PassWrapper<OptimizeGpmJoinsPass, mlir
       }
       if (!triple) return;
       mlir::Builder builder(join->getContext());
+      // all compatible keys stay on the join (not only the index keys): the join merges every nullable left key in place
       auto flags = [&](int64_t value) {
-         return builder.getArrayAttr(llvm::SmallVector<mlir::Attribute>(keys.first.size(), builder.getI8IntegerAttr(value)));
+         return builder.getArrayAttr(llvm::SmallVector<mlir::Attribute>(allKeys.first.size(), builder.getI8IntegerAttr(value)));
       };
       join->setAttr("impl", builder.getStringAttr("graphIndex"));
       join->setAttr("useGraphIndex", builder.getUnitAttr());
       join->setAttr("graph", triple.getGraphRefAttr());
-      join->setAttr("leftHash", builder.getArrayAttr(keys.first));
-      join->setAttr("rightHash", builder.getArrayAttr(keys.second));
+      join->setAttr("leftHash", builder.getArrayAttr(allKeys.first));
+      join->setAttr("rightHash", builder.getArrayAttr(allKeys.second));
       join->setAttr("nullsEqual", flags(0));
       join->setAttr("bindingCompatible", flags(1));
       join->removeAttr("useHashJoin");

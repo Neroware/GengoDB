@@ -269,10 +269,29 @@ class OptimizeImplementations : public mlir::PassWrapper<OptimizeImplementations
          } else {
             delete mapBlockInfo.block; // no need to keep empty block
          }
-         predicateOperator->setAttr("leftHash", builder.getArrayAttr(keys));
+         // a binding compatible join merges its flagged nullable left keys in place, re-extracting the keys must keep them
+         auto mergedKeys = [](mlir::Attribute keys, mlir::Attribute flags) {
+            relalg::ColumnSet merged;
+            auto keyArray = mlir::dyn_cast_or_null<mlir::ArrayAttr>(keys);
+            auto flagArray = mlir::dyn_cast_or_null<mlir::ArrayAttr>(flags);
+            if (!keyArray || !flagArray) return merged;
+            for (auto [keyAttr, flagAttr] : llvm::zip(keyArray, flagArray)) {
+               auto key = mlir::dyn_cast<tuples::ColumnRefAttr>(keyAttr);
+               if (key && mlir::cast<mlir::IntegerAttr>(flagAttr).getInt() != 0 && mlir::isa<db::NullableType>(key.getColumn().type)) merged.insert(&key.getColumn());
+            }
+            return merged;
+         };
+         auto mergedBefore = mergedKeys(predicateOperator->getAttr("leftHash"), predicateOperator->getAttr("bindingCompatible"));
+         auto keysAttr = builder.getArrayAttr(keys);
+         auto bindingCompatibleAttr = builder.getArrayAttr(bindingCompatible);
+         if (!mergedBefore.isSubsetOf(mergedKeys(keysAttr, bindingCompatibleAttr))) {
+            predicateOperator->emitError("join lost a binding compatible key during hash key extraction");
+            signalPassFailure();
+         }
+         predicateOperator->setAttr("leftHash", keysAttr);
          predicateOperator->setAttr("nullsEqual", builder.getArrayAttr(nullsEqual));
          if (llvm::any_of(bindingCompatible, [](mlir::Attribute a) { return mlir::cast<mlir::IntegerAttr>(a).getInt() != 0; })) {
-            predicateOperator->setAttr("bindingCompatible", builder.getArrayAttr(bindingCompatible));
+            predicateOperator->setAttr("bindingCompatible", bindingCompatibleAttr);
          } else {
             predicateOperator->removeAttr("bindingCompatible");
          }

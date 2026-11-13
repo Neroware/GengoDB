@@ -70,7 +70,7 @@ module {
 //CHECK: subop.union
 //CHECK-NEXT: tuples.return
 //CHECK-NEXT: }
-//CHECK: subop.materialize {{.*}}@merge::@cup
+//CHECK: subop.materialize {{.*}}@outerjoin::@cup
 module {
   func.func @nullable_anchor() {
     %0 = subop.execution_group (){
@@ -91,8 +91,8 @@ module {
         %11 = tuples.getcol %arg0 @bindings_u_1::@s : !variant.variant
         %12 = gpm.bindings_compatible %10 : !db.nullable<!variant.variant>, %11 : !variant.variant
         tuples.return %12 : i1
-      }  mapping: {@outerjoin_u_1::@drink({type = !db.nullable<!variant.variant>})=[@vars::@drink], @outerjoin_u_1::@s({type = !db.nullable<!variant.variant>})=[@bindings_u_1::@s]} attributes {bindingCompatible = [1 : i8], gpm.merge = [#tuples.columndef<@merge::@cup,!db.nullable<!variant.variant>,[#tuples.columnref<@outerjoin::@cup>, #tuples.columnref<@outerjoin_u_1::@s>]>], graph = #tuples.columnref<@graphs_u_3::@ref>, impl = "graphIndex", leftHash = [#tuples.columnref<@outerjoin::@cup>], nullsEqual = [0 : i8], rightHash = [#tuples.columnref<@bindings_u_1::@s>], useGraphIndex}
-      %9 = relalg.materialize %8 [@vars::@person,@vars::@food,@merge::@cup,@outerjoin_u_1::@drink] => ["person", "food", "cup", "drink"] : !subop.local_table<[col1 : !db.string, col2 : !db.string, col3 : !db.string, col4 : !db.string], ["person", "food", "cup", "drink"]>
+      }  mapping: {@outerjoin_u_1::@drink({type = !db.nullable<!variant.variant>})=[@vars::@drink], @outerjoin_u_1::@s({type = !db.nullable<!variant.variant>})=[@bindings_u_1::@s]} attributes {bindingCompatible = [1 : i8], graph = #tuples.columnref<@graphs_u_3::@ref>, impl = "graphIndex", leftHash = [#tuples.columnref<@outerjoin::@cup>], nullsEqual = [0 : i8], rightHash = [#tuples.columnref<@bindings_u_1::@s>], useGraphIndex}
+      %9 = relalg.materialize %8 [@vars::@person,@vars::@food,@outerjoin::@cup,@outerjoin_u_1::@drink] => ["person", "food", "cup", "drink"] : !subop.local_table<[col1 : !db.string, col2 : !db.string, col3 : !db.string, col4 : !db.string], ["person", "food", "cup", "drink"]>
       subop.execution_group_return %9 : !subop.local_table<[col1 : !db.string, col2 : !db.string, col3 : !db.string, col4 : !db.string], ["person", "food", "cup", "drink"]>
     } -> !subop.local_table<[col1 : !db.string, col2 : !db.string, col3 : !db.string, col4 : !db.string], ["person", "food", "cup", "drink"]>
     subop.set_result 0 %0 : !subop.local_table<[col1 : !db.string, col2 : !db.string, col3 : !db.string, col4 : !db.string], ["person", "food", "cup", "drink"]>

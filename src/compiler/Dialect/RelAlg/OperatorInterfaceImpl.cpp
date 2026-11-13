@@ -4,7 +4,6 @@
 #include "lingodb/compiler/Dialect/RelAlg/Transforms/QueryParameters.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
 
-#include "gengodb/compiler/Dialect/GPM/Transforms/Passes.h"
 
 #include "llvm/ADT/TypeSwitch.h"
 
@@ -384,11 +383,6 @@ ColumnSet OuterJoinOp::getCreatedColumns() {
       created.insert(&relationDefAttr.getColumn());
    }
 
-   if (auto merged = getOperation()->getAttrOfType<mlir::ArrayAttr>(gengodb::compiler::dialect::gpm::kMergedColumnsAttr)) {
-      for (mlir::Attribute attr : merged) {
-         created.insert(&mlir::cast<ColumnDefAttr>(attr).getColumn());
-      }
-   }
    return created;
 }
 ColumnSet OuterJoinOp::getUsedColumns() {
@@ -1077,13 +1071,7 @@ mlir::LogicalResult relalg::OuterJoinOp::foldColumns(relalg::ColumnFoldInfo& col
 }
 mlir::LogicalResult relalg::OuterJoinOp::eliminateDeadColumns(relalg::ColumnSet& usedColumns, mlir::Value& newStream) {
    auto mapping = getMapping();
-   relalg::ColumnSet keptColumns = usedColumns;
-   if (auto merged = getOperation()->getAttrOfType<mlir::ArrayAttr>(gengodb::compiler::dialect::gpm::kMergedColumnsAttr)) {
-      for (mlir::Attribute attr : merged) {
-         keptColumns.insert(relalg::ColumnSet::fromArrayAttr(mlir::cast<mlir::ArrayAttr>(mlir::cast<ColumnDefAttr>(attr).getFromExisting())));
-      }
-   }
-   auto newColDefs = eliminateDeadColumnsInMapping(getContext(), mapping, keptColumns);
+   auto newColDefs = eliminateDeadColumnsInMapping(getContext(), mapping, usedColumns);
    if (newColDefs.size() == mapping.size()) {
       return mlir::failure();
    }
