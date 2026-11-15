@@ -300,6 +300,8 @@ class RelAlg_JoinOp<string mnemonic> : RelAlg_Op<mnemonic,
 def InnerJoinOp : RelAlg_JoinOp<"join"> {
     let summary = "inner join operation";
     let extraClassDeclaration = [{
+        ColumnSet getCreatedColumns();
+        ColumnSet getUsedColumns();
         mlir::LogicalResult foldColumns(dialect::relalg::ColumnFoldInfo& columnInfo);
         lingodb::compiler::dialect::relalg::FunctionalDependencies getFDs();
     }];

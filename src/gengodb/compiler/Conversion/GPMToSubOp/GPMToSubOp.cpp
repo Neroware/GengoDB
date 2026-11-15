@@ -308,11 +308,13 @@ class GetBindingOpLowering : public OpConversionPattern<gpm::GetBindingOp> {
    }
 };
 
-class MergedColumnsLowering : public OpConversionPattern<relalg::OuterJoinOp> {
+template <class JoinOp>
+class MergedColumnsLowering : public OpConversionPattern<JoinOp> {
    public:
-   using OpConversionPattern<relalg::OuterJoinOp>::OpConversionPattern;
-   LogicalResult matchAndRewrite(relalg::OuterJoinOp join, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
-      auto mergedCols = join->getAttrOfType<mlir::ArrayAttr>(gpm::kMergedColumnsAttr);
+   using OpConversionPattern<JoinOp>::OpConversionPattern;
+   using OpAdaptor = typename OpConversionPattern<JoinOp>::OpAdaptor;
+   LogicalResult matchAndRewrite(JoinOp join, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      auto mergedCols = join->template getAttrOfType<mlir::ArrayAttr>(gpm::kMergedColumnsAttr);
       if (!mergedCols) return failure();
       auto* ctxt = rewriter.getContext();
       auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
@@ -329,12 +331,14 @@ class MergedColumnsLowering : public OpConversionPattern<relalg::OuterJoinOp> {
             auto sources = mlir::cast<mlir::ArrayAttr>(mergedDef.getFromExisting());
             auto leftRef = mlir::cast<tuples::ColumnRefAttr>(sources[0]);
             auto rightRef = mlir::cast<tuples::ColumnRefAttr>(sources[1]);
-            assert(mergedDef.getColumn().type == leftRef.getColumn().type && "merged column has the type of its left source");
+            auto mergedType = mergedDef.getColumn().type;
             mlir::Value left = builder.create<tuples::GetColumnOp>(loc, leftRef.getColumn().type, leftRef, tuple);
             if (!mlir::isa<db::NullableType>(left.getType())) {
+               if (left.getType() != mergedType) left = builder.create<db::AsNullableOp>(loc, mergedType, left);
                results.push_back(left);
                continue;
             }
+            assert(left.getType() == mergedType && "merged column has the type of its left source");
             mlir::Value right = builder.create<tuples::GetColumnOp>(loc, rightRef.getColumn().type, rightRef, tuple);
             if (right.getType() != left.getType()) right = builder.create<db::AsNullableOp>(loc, left.getType(), right);
             mlir::Value leftIsNull = builder.create<db::IsNullOp>(loc, left);
@@ -421,9 +425,10 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    target.addLegalDialect<util::UtilDialect>();
    target.addLegalDialect<variant::VariantDialect>();
    target.addIllegalDialect<gpm::GPMDialect>();
-   // target.addLegalOp<gpm::PathExpansionOp>();
-   target.addDynamicallyLegalOp<relalg::OuterJoinOp>([](relalg::OuterJoinOp join) { return !join->hasAttr(gpm::kMergedColumnsAttr); });
-
+   target.addDynamicallyLegalOp<relalg::OuterJoinOp, relalg::InnerJoinOp>([](mlir::Operation* join) { 
+      return !join->hasAttr(gpm::kMergedColumnsAttr); 
+   });
+   
    RewritePatternSet patterns(ctxt);
    patterns.insert<NamedGraphLowering>(typeConverter, ctxt, graphs, externalGraphs);
    patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs);
@@ -432,7 +437,8 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    patterns.insert<EdgeExpansionLowering>(typeConverter, ctxt, graphs);
    patterns.insert<GpmBindingsCompatibleLowering>(typeConverter, ctxt);
    patterns.insert<GetBindingOpLowering>(typeConverter, ctxt);
-   patterns.insert<MergedColumnsLowering>(typeConverter, ctxt);
+   patterns.insert<MergedColumnsLowering<relalg::OuterJoinOp>>(typeConverter, ctxt);
+   patterns.insert<MergedColumnsLowering<relalg::InnerJoinOp>>(typeConverter, ctxt);
 
    if (failed(applyFullConversion(module, target, std::move(patterns)))) {
       signalPassFailure();
