@@ -522,11 +522,11 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          collectOuterJoinRemaps(operand, visited, remaps);
       }
    }
-   relalg::ColumnSet producedColumns(mlir::Value v) {
+   relalg::ColumnSet producedColumns(mlir::Value v, bool throughUnions = false) {
       llvm::SmallPtrSet<mlir::Operation*, 16> visited;
-      return producedColumns(v, visited);
+      return producedColumns(v, visited, throughUnions);
    }
-   relalg::ColumnSet producedColumns(mlir::Value v, llvm::SmallPtrSetImpl<mlir::Operation*>& visited) {
+   relalg::ColumnSet producedColumns(mlir::Value v, llvm::SmallPtrSetImpl<mlir::Operation*>& visited, bool throughUnions = false) {
       relalg::ColumnSet result;
       auto* op = v.getDefiningOp();
       if (!op || !visited.insert(op).second) return result;
@@ -539,16 +539,20 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       }
       if (auto unionOp = mlir::dyn_cast<relalg::UnionOp>(op)) {
          insertMapping(unionOp.getMapping());
+         if (throughUnions) {
+            result.insert(producedColumns(unionOp.getLeft(), visited, throughUnions));
+            result.insert(producedColumns(unionOp.getRight(), visited, throughUnions));
+         }
          return result;
       }
       if (auto outerJoin = mlir::dyn_cast<relalg::OuterJoinOp>(op)) {
          insertMapping(outerJoin.getMapping());
          if (auto merged = outerJoin->getAttrOfType<mlir::ArrayAttr>(gpm::kMergedColumnsAttr)) insertMapping(merged);
-         result.insert(producedColumns(outerJoin.getLeft(), visited));
+         result.insert(producedColumns(outerJoin.getLeft(), visited, throughUnions));
          return result;
       }
       if (auto antiSemiJoin = mlir::dyn_cast<relalg::AntiSemiJoinOp>(op)) {
-         result.insert(producedColumns(antiSemiJoin.getLeft(), visited));
+         result.insert(producedColumns(antiSemiJoin.getLeft(), visited, throughUnions));
          return result;
       }
       if (auto bindMap = asBindMap(op)) insertComputedColumns(bindMap, result);
@@ -557,7 +561,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       }
       for (auto operand : op->getOperands()) {
          if (mlir::isa<tuples::TupleStreamType>(operand.getType())) {
-            result.insert(producedColumns(operand, visited));
+            result.insert(producedColumns(operand, visited, throughUnions));
          }
       }
       return result;
@@ -627,13 +631,19 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          passthroughColMap[column] = &newDef.getColumn();
       }
       llvm::MapVector<const tuples::Column*, std::pair<tuples::ColumnRefAttr, tuples::ColumnRefAttr>> bindingsByOuterCol;
+      auto visibleBindingsRef = [&](const ColumnMapper& remaps, tuples::ColumnRefAttr ref) {
+         const auto* resolved = resolveThroughRemaps(remaps, &ref.getColumn());
+         return resolved == &ref.getColumn() ? ref : columnManager.createRef(resolved);
+      };
       {
-         auto pairs = ensureBindingsColumns(leftStream, loc, [&](const tuples::Column* c) { return !leftProduced.contains(c); });
-         for (auto& pair : pairs) bindingsByOuterCol[&pair.outerRef.getColumn()].first = pair.bindingsRef;
+         relalg::ColumnSet leftBound = producedColumns(leftStream, /*throughUnions=*/true);
+         auto pairs = ensureBindingsColumns(leftStream, loc, [&](const tuples::Column* c) { return !leftBound.contains(c); });
+         for (auto& pair : pairs) bindingsByOuterCol[&pair.outerRef.getColumn()].first = visibleBindingsRef(leftRemaps, pair.bindingsRef);
       }
       {
-         auto pairs = ensureBindingsColumns(rightStream, loc, [&](const tuples::Column* c) { return !rightProduced.contains(c); });
-         for (auto& pair : pairs) bindingsByOuterCol[&pair.outerRef.getColumn()].second = pair.bindingsRef;
+         relalg::ColumnSet rightBound = producedColumns(rightStream, /*throughUnions=*/true);
+         auto pairs = ensureBindingsColumns(rightStream, loc, [&](const tuples::Column* c) { return !rightBound.contains(c); });
+         for (auto& pair : pairs) bindingsByOuterCol[&pair.outerRef.getColumn()].second = visibleBindingsRef(rightRemaps, pair.bindingsRef);
       }
       for (auto& [outerCol, sides] : bindingsByOuterCol) {
          auto leftBindingsRef = sides.first;
