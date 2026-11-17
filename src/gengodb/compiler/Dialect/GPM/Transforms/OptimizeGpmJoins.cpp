@@ -53,15 +53,16 @@ class OptimizeGpmJoinsPass : public mlir::PassWrapper<OptimizeGpmJoinsPass, mlir
    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(OptimizeGpmJoinsPass)
 
    void runOnOperation() override {
-      relalg::AvailabilityCache cache;
-      getOperation().walk([&](mlir::Operation* op) {
-         if (mlir::isa<relalg::InnerJoinOp>(op)) {
-            optimize(op, true, cache);
-         } 
-         else if (mlir::isa<relalg::OuterJoinOp>(op)) {
-            optimize(op, false, cache);
-         }
-      });
+      // TODO disabled for now...
+      // relalg::AvailabilityCache cache;
+      // getOperation().walk([&](mlir::Operation* op) {
+      //    if (mlir::isa<relalg::InnerJoinOp>(op)) {
+      //       optimize(op, true, cache);
+      //    } 
+      //    else if (mlir::isa<relalg::OuterJoinOp>(op)) {
+      //       optimize(op, false, cache);
+      //    }
+      // });
    }
 
    private:
