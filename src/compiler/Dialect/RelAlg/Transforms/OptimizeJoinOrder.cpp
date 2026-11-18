@@ -6,9 +6,11 @@
 #include "lingodb/compiler/Dialect/RelAlg/Transforms/queryopt/DPhyp.h"
 #include "lingodb/compiler/Dialect/RelAlg/Transforms/queryopt/GOO.h"
 #include "lingodb/compiler/Dialect/RelAlg/Transforms/queryopt/QueryGraphBuilder.h"
+#include "gengodb/compiler/Dialect/GPM/Transforms/TripleMetrics.h"
 
 namespace {
 using namespace lingodb::compiler::dialect;
+using namespace gengodb::compiler::dialect;
 
 class OptimizeJoinOrder : public mlir::PassWrapper<OptimizeJoinOrder, mlir::OperationPass<mlir::func::FuncOp>> {
    virtual llvm::StringRef getArgument() const override { return "relalg-optimize-join-order"; }
@@ -90,6 +92,22 @@ class OptimizeJoinOrder : public mlir::PassWrapper<OptimizeJoinOrder, mlir::Oper
             } else if (children.size() == 1 && children[0]->hasAttr("rows")) {
                aggregationOp->setAttr("rows", children[0]->getAttr("rows"));
             }
+         })
+         .Case<gpm::NamedGraphOp>([&](gpm::NamedGraphOp namedGraphOp) {
+            namedGraphOp->setAttr("rows", mlir::FloatAttr::get(mlir::Float64Type::get(&getContext()), 1.0));
+         })
+         .Case<gpm::TriplePatternOp>([&](gpm::TriplePatternOp tripleOp) {
+            double childRows = 1.0;
+            if (children.size() == 1 && children[0]->hasAttr("rows")) {
+               childRows = mlir::cast<mlir::FloatAttr>(children[0]->getAttr("rows")).getValueAsDouble();
+            }
+            double matches = 1.0;
+            if (auto namedGraphOp = tripleOp.getRel().getDefiningOp<gpm::NamedGraphOp>()) {
+               if (auto meta = mlir::dyn_cast_or_null<gpm::GraphMetaDataAttr>(namedGraphOp->getAttr("meta"))) {
+                  matches = gpm::estimateTripleMatches(tripleOp, *meta.getMeta());
+               }
+            }
+            tripleOp->setAttr("rows", mlir::FloatAttr::get(mlir::Float64Type::get(&getContext()), childRows * matches));
          })
          .Case<UnaryOperator>([&](UnaryOperator unaryOperator) {
             if (children.size() == 1 && children[0]->hasAttr("rows")) {

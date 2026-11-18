@@ -35,6 +35,7 @@ void relalg::createQueryOptPipeline(mlir::OpPassManager& pm, lingodb::catalog::C
    pm.addNestedPass<mlir::func::FuncOp>(relalg::createPushdownPass());
    if (catalog) {
       pm.addNestedPass<mlir::func::FuncOp>(relalg::createAttachMetaDataPass(*catalog));
+      pm.addNestedPass<mlir::func::FuncOp>(gpm::createAttachMetaDataPass(*catalog));
    }
    pm.addNestedPass<mlir::func::FuncOp>(relalg::createReduceGroupByKeysPass());
    pm.addNestedPass<mlir::func::FuncOp>(relalg::createExpandTransitiveEqualities());
@@ -46,6 +47,7 @@ void relalg::createQueryOptPipeline(mlir::OpPassManager& pm, lingodb::catalog::C
    pm.addNestedPass<mlir::func::FuncOp>(relalg::createOptimizeImplementationsPass());
    if (catalog) {
       pm.addNestedPass<mlir::func::FuncOp>(relalg::createDetachMetaDataPass());
+      pm.addNestedPass<mlir::func::FuncOp>(gpm::createDetachMetaDataPass());
    }
    pm.addNestedPass<mlir::func::FuncOp>(relalg::createCommonSubtreeEliminationPass());
    pm.addPass(lingodb::compiler::createCanonicalizerPass());

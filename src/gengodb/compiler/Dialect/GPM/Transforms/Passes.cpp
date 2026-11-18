@@ -8,4 +8,7 @@ void gpm::registerGpmTransformations() {
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
       return gpm::createOptimizeGpmJoinsPass();
    });
+   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
+      return gpm::createDetachMetaDataPass();
+   });
 }
