@@ -72,9 +72,11 @@ class OptimizeGpmJoinsPass : public mlir::PassWrapper<OptimizeGpmJoinsPass, mlir
       // only non-nullable index side keys can serve as anchor
       auto keys = getNonNullableIndexKeys(allKeys, true);
       gpm::TriplePatternOp triple = keys.first.empty() ? gpm::TriplePatternOp() : getIndexTriple(join->getOperand(1), keys.second, block);
+      bool indexIsRight = true;
       if (!triple && allowLeftIndex) {
          keys = getNonNullableIndexKeys(allKeys, false);
          if (!keys.first.empty()) triple = getIndexTriple(join->getOperand(0), keys.first, block);
+         indexIsRight = false;
       }
       if (!triple) return;
       mlir::Builder builder(join->getContext());
@@ -91,6 +93,63 @@ class OptimizeGpmJoinsPass : public mlir::PassWrapper<OptimizeGpmJoinsPass, mlir
       join->removeAttr("useHashJoin");
       join->removeAttr("reverseSides");
       triple->setAttr("virtual", builder.getUnitAttr());
+      removeAnchorPredicate(join, triple, indexIsRight ? keys.first : keys.second, indexIsRight ? keys.second : keys.first);
+   }
+   // the graph index lookup guarantees the anchor key, all other keys still need to be checked by the join predicate
+   static void removeAnchorPredicate(mlir::Operation* join, gpm::TriplePatternOp triple, llvm::ArrayRef<mlir::Attribute> probeKeys, llvm::ArrayRef<mlir::Attribute> indexKeys) {
+      auto column = [](mlir::Attribute key) { return &mlir::cast<tuples::ColumnRefAttr>(key).getColumn(); };
+      // same anchor choice as translateGINLJBindingCompatible: subject before object, non-nullable probe keys preferred
+      std::optional<size_t> anchorIdx;
+      for (bool allowNullable : {false, true}) {
+         for (mlir::Attribute term : {triple.getS(), triple.getO()}) {
+            auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term);
+            if (anchorIdx || !varTerm || !varTerm.getProducedBinding()) continue;
+            for (auto [i, indexKey] : llvm::enumerate(indexKeys)) {
+               if (!allowNullable && mlir::isa<db::NullableType>(column(probeKeys[i])->type)) continue;
+               if (column(indexKey) == &varTerm.getProducedBinding().getColumn()) {
+                  anchorIdx = i;
+                  break;
+               }
+            }
+         }
+      }
+      if (!anchorIdx) return;
+      auto* probeColumn = column(probeKeys[*anchorIdx]);
+      auto* indexColumn = column(indexKeys[*anchorIdx]);
+      auto isAnchorPredicate = [&](mlir::Value value) {
+         auto cmpOp = mlir::dyn_cast_or_null<relalg::CmpOpInterface>(value.getDefiningOp());
+         if (!cmpOp || !cmpOp.isBindingCompatiblePred()) return false;
+         auto left = mlir::dyn_cast_or_null<tuples::GetColumnOp>(cmpOp.getLeft().getDefiningOp());
+         auto right = mlir::dyn_cast_or_null<tuples::GetColumnOp>(cmpOp.getRight().getDefiningOp());
+         if (!left || !right) return false;
+         auto* leftColumn = &left.getAttr().getColumn();
+         auto* rightColumn = &right.getAttr().getColumn();
+         return (leftColumn == probeColumn && rightColumn == indexColumn) || (leftColumn == indexColumn && rightColumn == probeColumn);
+      };
+      auto returnOp = mlir::cast<tuples::ReturnOp>(mlir::cast<PredicateOperator>(join).getPredicateBlock().getTerminator());
+      llvm::SmallVector<mlir::Value> anded;
+      llvm::SmallVector<mlir::Value> worklist{returnOp.getOperand(0)};
+      while (!worklist.empty()) {
+         mlir::Value current = worklist.pop_back_val();
+         if (auto andOp = mlir::dyn_cast_or_null<db::AndOp>(current.getDefiningOp())) {
+            for (mlir::Value operand : llvm::reverse(andOp.getVals())) worklist.push_back(operand);
+         } else {
+            anded.push_back(current);
+         }
+      }
+      auto* anchorPredicate = llvm::find_if(anded, isAnchorPredicate);
+      if (anchorPredicate == anded.end()) return;
+      anded.erase(anchorPredicate);
+      // the now dead predicate ops are removed by canonicalization
+      mlir::OpBuilder builder(returnOp);
+      if (anded.empty()) {
+         builder.create<tuples::ReturnOp>(returnOp.getLoc(), mlir::ValueRange{});
+      } else if (anded.size() == 1) {
+         builder.create<tuples::ReturnOp>(returnOp.getLoc(), anded[0]);
+      } else {
+         builder.create<tuples::ReturnOp>(returnOp.getLoc(), builder.create<db::AndOp>(returnOp.getLoc(), anded).getResult());
+      }
+      returnOp.erase();
    }
    static join_keys_t getNonNullableIndexKeys(const join_keys_t& keys, bool indexIsRight) {
       join_keys_t filtered;

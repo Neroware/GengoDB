@@ -58,6 +58,8 @@ class HashJoinUtils {
       size_t i = 0;
       std::vector<mlir::Value> andedResults;
       std::vector<db::AndOp> andOps;
+      std::vector<mlir::Value> bindingCompatiblePreds;
+      bool nullableBindingCompatible = false;
       if (auto returnOp = mlir::dyn_cast_or_null<tuples::ReturnOp>(block->getTerminator())) {
          if (returnOp.getNumOperands() > 0) {
             collectAndedResults(andedResults, andOps, returnOp.getOperand(0));
@@ -105,8 +107,11 @@ class HashJoinUtils {
                      bool isBindingCompatible = cmpOp.isBindingCompatiblePred();
                      nullsEqual.push_back(mlir::IntegerAttr::get(mlir::IntegerType::get(cmpOp.getContext(), 8), !isBindingCompatible && !cmpOp.isEqualityPred(false)));
                      bindingCompatible.push_back(mlir::IntegerAttr::get(mlir::IntegerType::get(cmpOp.getContext(), 8), isBindingCompatible));
-                     if (!isBindingCompatible) {
-                        mlir::Value opToRemove = cmpOp->getResult(0);
+                     mlir::Value opToRemove = cmpOp->getResult(0);
+                     if (isBindingCompatible) {
+                        bindingCompatiblePreds.push_back(opToRemove);
+                        nullableBindingCompatible |= mlir::isa<db::NullableType>(cmpOp.getLeft().getType()) || mlir::isa<db::NullableType>(cmpOp.getRight().getType());
+                     } else {
                         andedResults.erase(std::remove(andedResults.begin(), andedResults.end(), opToRemove), andedResults.end());
                      }
                   }
@@ -123,6 +128,12 @@ class HashJoinUtils {
                }
             }
          });
+         // the binding compatible hash join guarantees its keys, except for multiple keys with nullable ones (its null key branches are cross products)
+         if (toHash.size() == 1 || !nullableBindingCompatible) {
+            for (mlir::Value opToRemove : bindingCompatiblePreds) {
+               andedResults.erase(std::remove(andedResults.begin(), andedResults.end(), opToRemove), andedResults.end());
+            }
+         }
          auto* context = returnOp->getContext();
          returnOp.erase();
          mlir::OpBuilder builder(context);

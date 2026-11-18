@@ -416,6 +416,7 @@ double QueryGraph::calculateSelectivity(SelectionEdge& edge, NodeSet left, NodeS
    return selectivity;
 }
 double QueryGraph::estimateSelectivity(Operator op, NodeSet left, NodeSet right) {
+   if (op) op->dump();
    auto availableLeft = getAttributesForNodeSet(left);
    auto availableRight = getAttributesForNodeSet(right);
    std::vector<Predicate> predicates;
