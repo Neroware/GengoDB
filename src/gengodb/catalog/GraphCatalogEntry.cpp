@@ -55,6 +55,34 @@ void RDFGraphCatalogEntry::ensureFullyLoaded() {
     }
     impl->ensureLoaded();
 }
+size_t RDFGraphCatalogEntry::getNumNodes() const {
+    return impl->getNodes().size();
+}
+size_t RDFGraphCatalogEntry::getNumTriples() const {
+    return impl->getTotalStatistics().getNumTriples();
+}
+std::vector<std::pair<std::string, int32_t>> RDFGraphCatalogEntry::getPredicates() const {
+    std::vector<std::pair<std::string, int32_t>> predicates;
+    predicates.reserve(impl->getPredicateStatistics().size());
+    for (const auto& [id, stats] : impl->getPredicateStatistics()) {
+        predicates.emplace_back(std::string(impl->getIri(id).identifier()), id);
+    }
+    return predicates;
+}
+const TripleStatistics& RDFGraphCatalogEntry::getTotalStatistics() const {
+    return impl->getTotalStatistics();
+}
+std::optional<int32_t> RDFGraphCatalogEntry::resolvePredicate(std::string_view iri) const {
+    int32_t id = impl->getNodes().get_safe(IRI{iri});
+    if (id < 0) return std::nullopt;
+    return id;
+}
+const TripleStatistics* RDFGraphCatalogEntry::getPredicateStatistics(int32_t predicate) const {
+    const auto& stats = impl->getPredicateStatistics();
+    auto it = stats.find(predicate);
+    if (it == stats.end()) return nullptr;
+    return &it->second;
+}
 void RDFGraphCatalogEntry::setShouldPersist(bool shouldPersist) {
     impl->setPersist(shouldPersist);
 }

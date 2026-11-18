@@ -3,6 +3,7 @@
 
 #include "gengodb/runtime/GengoDBGraph.h"
 #include "gengodb/catalog/CreateRdfGraphDef.h"
+#include "gengodb/catalog/MetaData.h"
 #include "gengodb/semantics/Identifiers.h"
 #include <rdf4cpp.hpp>
 #include <rdf4cpp/Timezone.hpp>
@@ -203,6 +204,8 @@ private:
     std::unique_ptr<NodeIdDict> nodes;
     std::unordered_map<LiteralKey, int32_t, LiteralKeyHash> literalNodes;
     std::deque<std::string> literalKeyBytes;
+    catalog::TripleStatistics totalStatistics;
+    std::unordered_map<int32_t, catalog::TripleStatistics> predicateStatistics;
 private:
     void addLiteralNode(const LiteralKey& key, int32_t id) {
         const std::string& bytes = literalKeyBytes.emplace_back(key.data, key.len);
@@ -263,6 +266,8 @@ public:
         }
         setTruth(rel, fuzzy ? truth : 1.0f);
     }
+    const catalog::TripleStatistics& getTotalStatistics() const { return totalStatistics; }
+    const std::unordered_map<int32_t, catalog::TripleStatistics>& getPredicateStatistics() const { return predicateStatistics; }
     runtime::rel_id_t addTriple(const IRI& s, const IRI& p, const IRI& o);
     runtime::rel_id_t addTriple(const IRI& s, const IRI& p, const BlankNode& o);
     runtime::rel_id_t addTriple(const IRI& s, const IRI& p, const Literal& o);
@@ -290,6 +295,7 @@ private:
     bool loaded = false;
 
     void rebuildLiteralNodeCache();
+    runtime::rel_id_t addTriple(int32_t s, int32_t o, int32_t p);
 
     NodeHelper nodeHelper;
     friend class NodeHelper;

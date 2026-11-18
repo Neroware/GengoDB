@@ -157,22 +157,27 @@ LiteralKey NodeHelper::literalKeyFor(int32_t id) const {
     return LiteralKey{data, len, datatypeNode};
 }
 runtime::rel_id_t RdfGraph::addTriple(const IRI& s, const IRI& p, const IRI& o) {
-    return storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
+    return addTriple(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
 runtime::rel_id_t RdfGraph::addTriple(const IRI& s, const IRI& p, const BlankNode& o) {
-    return storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
+    return addTriple(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
 runtime::rel_id_t RdfGraph::addTriple(const IRI& s, const IRI& p, const Literal& o) {
-    return storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
+    return addTriple(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
 runtime::rel_id_t RdfGraph::addTriple(const BlankNode& s, const IRI& p, const IRI& o) {
-    return storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
+    return addTriple(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
 runtime::rel_id_t RdfGraph::addTriple(const BlankNode& s, const IRI& p, const BlankNode& o) {
-    return storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
+    return addTriple(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
 }
 runtime::rel_id_t RdfGraph::addTriple(const BlankNode& s, const IRI& p, const Literal& o) {
-    return storage->storage().addRelationship(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
+    return addTriple(nodeHelper.resolve(s), nodeHelper.resolve(o), nodeHelper.resolve(p));
+}
+runtime::rel_id_t RdfGraph::addTriple(int32_t s, int32_t o, int32_t p) {
+    totalStatistics.add(s, o);
+    predicateStatistics[p].add(s, o);
+    return storage->storage().addRelationship(s, o, p);
 }
 void RdfGraph::setTruth(runtime::rel_id_t rel, float degree) {
     storage->storage().rel(rel).payload = std::bit_cast<runtime::prop_id_t>(degree);
@@ -248,6 +253,8 @@ void RdfGraph::ensureLoaded() {
                 nodes = std::make_unique<NodeIdDict>();
                 literalNodes.clear();
                 literalKeyBytes.clear();
+                totalStatistics = catalog::TripleStatistics{};
+                predicateStatistics.clear();
                 loadTriples();
             }
         }
@@ -345,6 +352,8 @@ void RdfGraph::serialize(lingodb::utility::Serializer& serializer) const {
     serializer.writeProperty(3, fileName);
     serializer.writeProperty(4, nodes);
     serializer.writeProperty(5, sourceFileName);
+    serializer.writeProperty(6, totalStatistics);
+    serializer.writeProperty(7, predicateStatistics);
 }
 std::unique_ptr<RdfGraph> RdfGraph::deserialize(lingodb::utility::Deserializer& deserializer) {
     auto iri = deserializer.readProperty<std::string>(1);
@@ -352,8 +361,12 @@ std::unique_ptr<RdfGraph> RdfGraph::deserialize(lingodb::utility::Deserializer& 
     auto fileName = deserializer.readProperty<std::string>(3);
     auto nodes = deserializer.readProperty<std::unique_ptr<NodeIdDict>>(4);
     auto sourceFileName = deserializer.readProperty<std::string>(5);
+    auto totalStatistics = deserializer.readProperty<catalog::TripleStatistics>(6);
+    auto predicateStatistics = deserializer.readProperty<std::unordered_map<int32_t, catalog::TripleStatistics>>(7);
     auto graph = std::make_unique<RdfGraph>(IRI{iri}, std::move(storage), fileName, sourceFileName);
     graph->nodes = std::move(nodes);
+    graph->totalStatistics = std::move(totalStatistics);
+    graph->predicateStatistics = std::move(predicateStatistics);
     return graph;
 }
 
