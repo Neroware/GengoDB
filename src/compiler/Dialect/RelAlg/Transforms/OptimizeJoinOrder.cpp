@@ -6,7 +6,7 @@
 #include "lingodb/compiler/Dialect/RelAlg/Transforms/queryopt/DPhyp.h"
 #include "lingodb/compiler/Dialect/RelAlg/Transforms/queryopt/GOO.h"
 #include "lingodb/compiler/Dialect/RelAlg/Transforms/queryopt/QueryGraphBuilder.h"
-#include "gengodb/compiler/Dialect/GPM/Transforms/TripleMetrics.h"
+#include "gengodb/compiler/Dialect/GPM/Transforms/GraphMetrics.h"
 
 namespace {
 using namespace lingodb::compiler::dialect;
@@ -102,10 +102,8 @@ class OptimizeJoinOrder : public mlir::PassWrapper<OptimizeJoinOrder, mlir::Oper
                childRows = mlir::cast<mlir::FloatAttr>(children[0]->getAttr("rows")).getValueAsDouble();
             }
             double matches = 1.0;
-            if (auto namedGraphOp = tripleOp.getRel().getDefiningOp<gpm::NamedGraphOp>()) {
-               if (auto meta = mlir::dyn_cast_or_null<gpm::GraphMetaDataAttr>(namedGraphOp->getAttr("meta"))) {
-                  matches = gpm::estimateTripleMatches(tripleOp, *meta.getMeta());
-               }
+            if (const auto* meta = gpm::getGraphMetadata(tripleOp)) {
+               matches = gpm::metrics::estimateTripleMatches(tripleOp, *meta);
             }
             tripleOp->setAttr("rows", mlir::FloatAttr::get(mlir::Float64Type::get(&getContext()), childRows * matches));
          })
