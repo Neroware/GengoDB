@@ -119,6 +119,12 @@ def GraphRef : GPM_Type<"GraphReference", "graph_ref"> {
 
 class GPM_Attr<string name> : AttrDef<GPM_Dialect, name>;
 
+def GraphMetaDataAttr : GPM_Attr<"GraphMetaData"> {
+    let mnemonic = "graph_metadata";
+    let parameters = (ins "std::shared_ptr<gengodb::catalog::GraphMetadataProvider>":$meta);
+    let hasCustomAssemblyFormat = 1;
+}
+
 class GPM_TermAttr<string name, string attrMnemonic> : GPM_Attr<name> {
     let mnemonic = attrMnemonic;
     let summary = "graph pattern term attribute";

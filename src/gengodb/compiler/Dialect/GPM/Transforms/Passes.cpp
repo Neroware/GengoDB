@@ -5,4 +5,10 @@ void gpm::registerGpmTransformations() {
    ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
       return gpm::createUnnestGraphPatternsPass();
    });
+   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
+      return gpm::createOptimizeGpmJoinsPass();
+   });
+   ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
+      return gpm::createDetachMetaDataPass();
+   });
 }

@@ -520,6 +520,15 @@ int8_t VariantRuntime::langMatches(int64_t payload, int32_t tag, VarLen32 langRa
     return rdf4cpp::lang_matches(langTagStr, range) ? 1 : 0;
 }
 
+int8_t VariantRuntime::strStarts(int64_t payload, int32_t tag, int64_t prefixPayload, int32_t prefixTag) {
+    auto lit = reconstructLiteral(payload, tag);
+    auto prefix = reconstructLiteral(prefixPayload, prefixTag);
+    if (!lit.has_value() || !prefix.has_value()) return -1;
+    auto res = lit->as_str_starts_with(*prefix);
+    if (res.null()) return -1;
+    return res.ebv() == rdf4cpp::TriBool::True ? 1 : 0;
+}
+
 int32_t VariantRuntime::resolveEdge(uint8_t* graph, int32_t tag, int64_t payload) {
     if (tag != xsd::to_int32(xsd::Type::Edge))
         throw std::runtime_error("unsupported: variant must be a reference to an edge");

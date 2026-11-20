@@ -41,6 +41,7 @@ class CombinePredicates : public mlir::PassWrapper<CombinePredicates, mlir::Oper
       getOperation().walk([&](relalg::SelectionOp op) {
          mlir::Value lower = op.getRel();
          bool canCombine = mlir::isa<relalg::InnerJoinOp>(lower.getDefiningOp());
+         canCombine = canCombine && !op.getUsedColumns().intersects(mlir::cast<Operator>(lower.getDefiningOp()).getCreatedColumns());
          if (canCombine && lower.hasOneUse()) {
             combine(op, mlir::cast<PredicateOperator>(lower.getDefiningOp()));
             op.replaceAllUsesWith(lower);

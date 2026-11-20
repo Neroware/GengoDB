@@ -3,10 +3,13 @@
 #include "lingodb/compiler/mlir-support/eval.h"
 #include "lingodb/compiler/mlir-support/parsing.h"
 
+#include "gengodb/compiler/Dialect/GPM/Transforms/GraphMetrics.h"
+
 #include <iostream>
 
 #include <arrow/record_batch.h>
 namespace {
+namespace gpm = gengodb::compiler::dialect::gpm;
 std::unique_ptr<lingodb::compiler::support::eval::expr> buildConstant(mlir::Type type, std::variant<int64_t, double, std::string> parseArg) {
    namespace db = lingodb::compiler::dialect::db;
    ::arrow::Type::type typeConstant = ::arrow::Type::type::NA;
@@ -461,6 +464,30 @@ double QueryGraph::estimateSelectivity(Operator op, NodeSet left, NodeSet right)
    for (auto predicate : predicates) {
       if (predicate.left.isSubsetOf(predicatesLeft) && predicate.right.isSubsetOf(predicatesRight)) {
          if (predicate.isEq) {
+            // check for triple statistics
+            std::optional<double> tripleDistinctLeft, tripleDistinctRight;
+            if (predicate.left.size() == 1 && predicate.right.size() == 1) {
+               auto estimateDistinct = [this](NodeSet& nodes, const auto* column) {
+                  std::optional<double> result;
+                  iterateNodes(nodes, [&](Node& node) {
+                     if (result || !node.op) return;
+                     if (auto triple = mlir::dyn_cast<gpm::TriplePatternOp>(node.op.getOperation())) {
+                        if (const auto* meta = gpm::getGraphMetadata(triple)) {
+                           if (auto distinct = gpm::metrics::estimateTripleDistinctValues(triple, *meta, column)) {
+                              result = std::clamp(*distinct, 1.0, std::max(node.rows, 1.0));
+                           }
+                        }
+                     }
+                  });
+                  return result;
+               };
+               tripleDistinctLeft = estimateDistinct(left, *predicate.left.begin());
+               tripleDistinctRight = estimateDistinct(right, *predicate.right.begin());
+            }
+            if (tripleDistinctLeft || tripleDistinctRight) {
+               selectivity *= 1.0 / std::max(tripleDistinctLeft.value_or(1.0), tripleDistinctRight.value_or(1.0));
+               continue;
+            }
             selectivity *= 0.1;
          } else {
             selectivity *= 0.25;

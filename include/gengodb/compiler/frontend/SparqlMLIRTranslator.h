@@ -485,8 +485,12 @@ class Parser {
    Token tok;
    bool aggregatesAllowed{false};
    bool sawAggregate{false};
+   std::set<std::string> seenVars;
 
-   void advance() { tok = tz.next(); }
+   void advance() {
+      tok = tz.next();
+      if (tok.kind == TK::Variable) seenVars.insert(tok.value);
+   }
    bool is(TK k) const { return tok.kind == k; }
    bool kw(const char* w) const { return tok.kind == TK::Keyword && tok.value == w; }
 
@@ -963,6 +967,139 @@ class Parser {
       eat(TK::RBrace);
    }
 
+   static bool certainlyBound(const std::vector<std::unique_ptr<sparql::PatternElement>>& patterns, const std::string& v) {
+      for (const auto& p : patterns) {
+         if (p->kind() == sparql::PatternElement::Kind::Graph) {
+            for (const auto& t : static_cast<const sparql::GraphPattern&>(*p).triples)
+               for (const sparql::Term* term : {&t.s, &t.p, &t.o})
+                  if (term->kind == sparql::Term::Kind::Variable && term->value == v) return true;
+         } else if (p->kind() == sparql::PatternElement::Kind::Group) {
+            if (certainlyBound(static_cast<const sparql::GroupPattern&>(*p).patterns, v)) return true;
+         }
+      }
+      return false;
+   }
+
+   // DESCRIBE, restricted to rule 1 of the Concise Bounded Description (i.e. all triples with the resource as subject)
+   void parseDescribe(sparql::Query& q, const std::string& defaultGraph) {
+      size_t line = tok.line;
+      eatKw("DESCRIBE");
+      bool star = false;
+      std::vector<sparql::Term> targets;
+      if (is(TK::Star)) {
+         advance();
+         star = true;
+      } else {
+         while (is(TK::Variable) || is(TK::IRI) || is(TK::PrefixedName)) {
+            sparql::Term t = parseTerm(q.prefixes);
+            bool dup = std::any_of(targets.begin(), targets.end(), [&](const sparql::Term& o) { return o.kind == t.kind && o.value == t.value; });
+            if (!dup) targets.push_back(std::move(t));
+         }
+         if (targets.empty())
+            throw std::runtime_error("DESCRIBE requires variables, IRIs or * at line " + std::to_string(tok.line) + ", got '" + tok.value + "'");
+      }
+
+      while (kw("FROM")) { advance(); if (kw("NAMED")) advance(); if (is(TK::IRI) || is(TK::PrefixedName)) advance(); }
+
+      if (defaultGraph.empty())
+         throw std::runtime_error("DESCRIBE reads descriptions from the default graph, but no default graph is defined");
+
+      std::vector<std::unique_ptr<sparql::PatternElement>> where;
+      Tokenizer whereTz = tz;
+      Token whereTok = tok;
+      if (kw("WHERE") || is(TK::LBrace)) {
+         if (kw("WHERE")) advance();
+         whereTz = tz;
+         whereTok = tok;
+         parseGroup(where, q.prefixes, defaultGraph);
+      } else if (star) {
+         throw std::runtime_error("DESCRIBE * requires a WHERE clause (line " + std::to_string(line) + ")");
+      }
+
+      for (const char* mod : {"GROUP", "HAVING", "ORDER", "LIMIT", "OFFSET", "VALUES"}) {
+         if (kw(mod)) throw sparql::UnsupportedFeatureError(std::string(mod) + " is not yet supported on DESCRIBE queries");
+      }
+      if (!is(TK::Eof))
+         throw std::runtime_error("Parse error at line " + std::to_string(tok.line) + ": unexpected '" + tok.value + "' after the query");
+
+      std::set<std::string> inScope;
+      sparql::collectInScopeVariables(where, inScope);
+      if (star) {
+         for (const auto& v : inScope) targets.push_back({sparql::Term::Kind::Variable, v});
+         if (targets.empty()) throw std::runtime_error("DESCRIBE * : the WHERE clause binds no variables");
+      }
+      for (const auto& t : targets) {
+         if (t.kind == sparql::Term::Kind::Variable && !inScope.count(t.value))
+            throw std::runtime_error("Described variable ?" + t.value + " is not bound in WHERE clause");
+      }
+
+      auto fresh = [&](std::string name) {
+         while (seenVars.count(name)) name = "_" + name;
+         seenVars.insert(name);
+         return name;
+      };
+      const std::string subjectVar = fresh("subject"), predicateVar = fresh("predicate"), objectVar = fresh("object");
+
+      std::vector<std::vector<std::unique_ptr<sparql::PatternElement>>> branches;
+      bool whereConsumed = false;
+      for (const auto& t : targets) {
+         std::vector<std::unique_ptr<sparql::PatternElement>> branch;
+         auto bind = std::make_unique<sparql::BindPattern>();
+         bind->var = subjectVar;
+         bind->line = line;
+         if (t.kind == sparql::Term::Kind::Variable) {
+            auto inner = std::make_unique<sparql::GroupPattern>();
+            if (!whereConsumed) {
+               inner->patterns = std::move(where);
+               whereConsumed = true;
+            } else {
+               Tokenizer endTz = tz;
+               Token endTok = tok;
+               tz = whereTz;
+               tok = whereTok;
+               parseGroup(inner->patterns, q.prefixes, defaultGraph);
+               tz = std::move(endTz);
+               tok = std::move(endTok);
+            }
+            if (!certainlyBound(inner->patterns, t.value)) {
+               auto var = std::make_unique<sparql::VariableExpr>();
+               var->name = t.value;
+               auto boundCall = std::make_unique<sparql::FunctionCallExpr>();
+               boundCall->name = "BOUND";
+               boundCall->args.push_back(std::move(var));
+               auto guard = std::make_unique<sparql::FilterPattern>();
+               guard->expr = std::move(boundCall);
+               inner->patterns.push_back(std::move(guard));
+            }
+            branch.push_back(std::move(inner));
+            auto subject = std::make_unique<sparql::VariableExpr>();
+            subject->name = t.value;
+            bind->expr = std::move(subject);
+         } else {
+            auto subject = std::make_unique<sparql::LiteralExpr>();
+            subject->lexicalForm = t.value;
+            subject->xsdType = gengodb::semantics::xsd::Type::AnyIRI;
+            bind->expr = std::move(subject);
+         }
+         auto description = std::make_unique<sparql::GraphPattern>();
+         description->graphUri = defaultGraph;
+         description->triples.push_back({t, {sparql::Term::Kind::Variable, predicateVar}, {sparql::Term::Kind::Variable, objectVar}});
+         branch.push_back(std::move(description));
+         branch.push_back(std::move(bind));
+         branches.push_back(std::move(branch));
+      }
+
+      if (branches.size() == 1) {
+         q.patterns = std::move(branches.front());
+      } else {
+         auto unionPattern = std::make_unique<sparql::UnionPattern>();
+         unionPattern->branches = std::move(branches);
+         q.patterns.push_back(std::move(unionPattern));
+      }
+      q.distinct = true;
+      q.selectVars = {subjectVar, predicateVar, objectVar};
+   }
+
    public:
    explicit Parser(std::string input) : tz(std::move(input)) { advance(); }
 
@@ -988,8 +1125,12 @@ class Parser {
          q.prefixes[label] = tok.value; advance();
       }
 
-      for (const char* form : {"ASK", "DESCRIBE", "CONSTRUCT"}) {
-         if (kw(form)) throw sparql::UnsupportedFeatureError(std::string(form) + " queries are not yet supported (only SELECT is implemented)");
+      for (const char* form : {"ASK", "CONSTRUCT"}) {
+         if (kw(form)) throw sparql::UnsupportedFeatureError(std::string(form) + " queries are not yet supported (only SELECT and DESCRIBE are implemented)");
+      }
+      if (kw("DESCRIBE")) {
+         parseDescribe(q, defaultGraph);
+         return q;
       }
 
       eatKw("SELECT");
@@ -1650,7 +1791,7 @@ class Translator {
             throw std::runtime_error("BOUND() requires exactly one variable argument, e.g. BOUND(?x)");
          mlir::Value var = translateArithExpr(*fc.args[0], tupleArg);
          auto pred = builder.getArrayAttr({builder.getStringAttr("BOUND")});
-         return builder.create<variant::PredicateOp>(loc, resType, var, pred);
+         return builder.create<variant::PredicateOp>(loc, resType, var, mlir::ValueRange{}, pred);
       }
       if (fc.name == "LANGMATCHES") {
          if (fc.args.size() != 2)
@@ -1662,7 +1803,15 @@ class Translator {
          if (rangeLit.xsdType != gengodb::semantics::xsd::Type::String)
             throw std::runtime_error("LANGMATCHES()'s second argument must be a string literal language range");
          auto pred = builder.getArrayAttr({builder.getStringAttr("LANGMATCHES"), builder.getStringAttr(rangeLit.lexicalForm)});
-         return builder.create<variant::PredicateOp>(loc, resType, var, pred);
+         return builder.create<variant::PredicateOp>(loc, resType, var, mlir::ValueRange{}, pred);
+      }
+      if (fc.name == "STRSTARTS") {
+         if (fc.args.size() != 2)
+            throw std::runtime_error("STRSTARTS() requires exactly two arguments, e.g. STRSTARTS(STR(?x), \"abc\")");
+         mlir::Value str = translateArithExpr(*fc.args[0], tupleArg);
+         mlir::Value prefix = translateArithExpr(*fc.args[1], tupleArg);
+         auto pred = builder.getArrayAttr({builder.getStringAttr("STRSTARTS")});
+         return builder.create<variant::PredicateOp>(loc, resType, str, mlir::ValueRange{prefix}, pred);
       }
       throw sparql::UnsupportedFeatureError("Unsupported FILTER function '" + fc.name + "'");
    }
@@ -1690,7 +1839,7 @@ class Translator {
          case sparql::Expr::Kind::FunctionCall:
             return translatePredicateCall(static_cast<const sparql::FunctionCallExpr&>(expr), tupleArg);
          default:
-            throw sparql::UnsupportedFeatureError("Unsupported FILTER expression (only comparisons, &&, ||, !, arithmetic +-*/, and BOUND()/LANGMATCHES() are implemented)");
+            throw sparql::UnsupportedFeatureError("Unsupported FILTER expression (only comparisons, &&, ||, !, arithmetic +-*/, and BOUND()/LANGMATCHES()/STRSTARTS() are implemented)");
       }
    }
    mlir::Value buildFilter(const sparql::FilterPattern& fp, mlir::Value inputStream) {

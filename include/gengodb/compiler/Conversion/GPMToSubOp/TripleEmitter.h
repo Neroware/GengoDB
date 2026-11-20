@@ -12,7 +12,7 @@ struct NamedGraph {
     mlir::Value externalGraph;
 };
 using NamedGraphMapper = llvm::DenseMap<mlir::SymbolRefAttr, NamedGraph>;
-constexpr llvm::StringLiteral kGraphIndexTripleAttr = "graphIndexTriple";
+constexpr llvm::StringLiteral kGraphIdxExpId = "graphIndexExpand";
 
 struct GraphEmitter {
     using AnchorT = std::variant<IdentifierTermAttr, tuples::ColumnRefAttr>;

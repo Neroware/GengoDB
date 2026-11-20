@@ -54,7 +54,7 @@ mlir::Value GraphEmitter::emitNodeToEdge(mlir::Value stream, AnchorT anchor, Edg
             auto [identDef, identRef] = createColumn(gsubop::IdentifierType::get(ctxt), "idents", "lookup");
             auto scan = generateTupleStream(rewriter, loc, identDef, [&](mlir::OpBuilder& b) -> mlir::Value {
                 auto identOp = b.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, identAttr.getIdent());
-                if (paramId) relalg::forwardParameter(op, *paramId, identOp.getOperation());
+                if (paramId) identOp->setAttr(relalg::kQueryParamsAttrName, relalg::makeQueryParamsAttr(ctxt, *paramId, identAttr.getIdent()));
                 return identOp;
             });
             scan = filterByIdentifier(scan, identRef);
@@ -102,7 +102,7 @@ mlir::Value GraphEmitter::scanEdges(mlir::Value stream, tuples::ColumnRefAttr ed
 }
 mlir::Value GraphEmitter::filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr ref, IdentifierTermAttr ident, std::optional<size_t> paramId) {
     auto identOp = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, ident.getIdent());
-    if (paramId) relalg::forwardParameter(op, *paramId, identOp.getOperation());
+    if (paramId) identOp->setAttr(relalg::kQueryParamsAttrName, relalg::makeQueryParamsAttr(ctxt, *paramId, ident.getIdent()));
     return rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, ref, identOp);
 }
 mlir::Value GraphEmitter::filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr identRef) {
@@ -198,7 +198,7 @@ mlir::Value TripleEmitter::lower(mlir::Value stream, std::optional<gpm::TripleSl
     gsubop::EdgeRefType edgeRefType;
     tuples::ColumnRefAttr edgeRef;
     bool anchorSubject = anchor.has_value() ? *anchor == gpm::TripleSlot::subject : mlir::isa<gpm::IdentifierTermAttr>(sTerm);
-    bool anchorObject = anchor.has_value() ? *anchor == gpm::TripleSlot::object : !anchorSubject && mlir::isa<gpm::IdentifierTermAttr>(sTerm);
+    bool anchorObject = anchor.has_value() ? *anchor == gpm::TripleSlot::object : !anchorSubject && mlir::isa<gpm::IdentifierTermAttr>(oTerm);
     if (anchorSubject) {
         stream = emitNodeToEdge(stream, anchorAttr(sTerm), EdgeDirection::Outgoing, edgeRefType, edgeRef, paramIds[0]);
         stream = emitPredicate(stream, edgeRef, paramIds[1]);
@@ -223,7 +223,7 @@ mlir::Value TripleEmitter::lower(mlir::Value stream, std::optional<gpm::TripleSl
 mlir::Value TripleEmitter::emitTruthDegree(mlir::Value stream, gsubop::EdgeRefType edgeRefType, tuples::ColumnRefAttr edgeRef) {
     auto truthMember = edgeRefType.getPropertyMembers().getMembers()[0];
     assert(mlir::isa<mlir::Float32Type>(memberManager.getType(truthMember)) && "edge ref must expose its payload as truth degree");
-    truthDegrAttr.getColumn().type = rewriter.getF32Type();
+    assert(mlir::isa<mlir::Float32Type>(truthDegrAttr.getColumn().type) && "truth degree columns need type f32");
     return rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(ctxt, {{truthMember, truthDegrAttr}}));
 }
 GraphEmitter::AnchorT TripleEmitter::anchorAttr(mlir::Attribute term) {
@@ -261,7 +261,7 @@ mlir::Value TripleEmitter::finish(mlir::Value stream, mlir::Attribute term, tupl
         return filterVariantsEqual(stream, tmpRef, it->second);
     }
     auto variantDef = columnManager.createDef(column);
-    variantDef.getColumn().type = variant::VariantType::get(ctxt);
+    assert(mlir::isa<variant::VariantType>(variantDef.getColumn().type) && "column type needs to be variant");
     stream = wrapNode(stream, rawRef, variantDef);
     localTerms[column] = columnManager.createRef(column);
     return stream;

@@ -376,6 +376,33 @@ ColumnSet relalg::detail::getSetOpUsedColumns(mlir::Operation* op) {
    }
    return used;
 }
+namespace {
+mlir::ArrayAttr getMergedColumns(mlir::Operation* op) {
+   return op->getAttrOfType<mlir::ArrayAttr>(gengodb::compiler::dialect::gpm::kMergedColumnsAttr);
+}
+ColumnSet mergedColumns(mlir::Operation* op) {
+   ColumnSet merged;
+   if (auto mergedAttr = getMergedColumns(op)) {
+      for (mlir::Attribute attr : mergedAttr) merged.insert(&mlir::cast<ColumnDefAttr>(attr).getColumn());
+   }
+   return merged;
+}
+ColumnSet mergedSourceColumns(mlir::Operation* op) {
+   ColumnSet sources;
+   if (auto mergedAttr = getMergedColumns(op)) {
+      for (mlir::Attribute attr : mergedAttr) sources.insert(ColumnSet::fromArrayAttr(mlir::cast<mlir::ArrayAttr>(mlir::cast<ColumnDefAttr>(attr).getFromExisting())));
+   }
+   return sources;
+}
+} // namespace
+ColumnSet InnerJoinOp::getCreatedColumns() {
+   return mergedColumns(getOperation());
+}
+ColumnSet InnerJoinOp::getUsedColumns() {
+   auto used = relalg::detail::getUsedColumns(getOperation());
+   used.insert(mergedSourceColumns(getOperation()));
+   return used;
+}
 ColumnSet OuterJoinOp::getCreatedColumns() {
    ColumnSet created;
 
@@ -383,12 +410,7 @@ ColumnSet OuterJoinOp::getCreatedColumns() {
       auto relationDefAttr = mlir::dyn_cast_or_null<ColumnDefAttr>(attr);
       created.insert(&relationDefAttr.getColumn());
    }
-
-   if (auto merged = getOperation()->getAttrOfType<mlir::ArrayAttr>(gengodb::compiler::dialect::gpm::kMergedColumnsAttr)) {
-      for (mlir::Attribute attr : merged) {
-         created.insert(&mlir::cast<ColumnDefAttr>(attr).getColumn());
-      }
-   }
+   created.insert(mergedColumns(getOperation()));
    return created;
 }
 ColumnSet OuterJoinOp::getUsedColumns() {
@@ -729,6 +751,7 @@ bool relalg::detail::isJoin(mlir::Operation* op) {
 }
 bool relalg::detail::isNonDecomposableJoin(mlir::Operation* op) {
    if (op->hasAttr("impl")) return true;
+   if (getMergedColumns(op)) return true;
    auto predicateOperator = mlir::dyn_cast_or_null<PredicateOperator>(op);
    if (!predicateOperator) return false;
    bool nullableBindingCompatible = false;
@@ -1078,11 +1101,7 @@ mlir::LogicalResult relalg::OuterJoinOp::foldColumns(relalg::ColumnFoldInfo& col
 mlir::LogicalResult relalg::OuterJoinOp::eliminateDeadColumns(relalg::ColumnSet& usedColumns, mlir::Value& newStream) {
    auto mapping = getMapping();
    relalg::ColumnSet keptColumns = usedColumns;
-   if (auto merged = getOperation()->getAttrOfType<mlir::ArrayAttr>(gengodb::compiler::dialect::gpm::kMergedColumnsAttr)) {
-      for (mlir::Attribute attr : merged) {
-         keptColumns.insert(relalg::ColumnSet::fromArrayAttr(mlir::cast<mlir::ArrayAttr>(mlir::cast<ColumnDefAttr>(attr).getFromExisting())));
-      }
-   }
+   keptColumns.insert(mergedSourceColumns(getOperation()));
    auto newColDefs = eliminateDeadColumnsInMapping(getContext(), mapping, keptColumns);
    if (newColDefs.size() == mapping.size()) {
       return mlir::failure();

@@ -1,6 +1,7 @@
 #include "gengodb/compiler/Dialect/GPM/Transforms/BindingColumnTransformer.h"
 
 #include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgOpsAttributes.h"
+#include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOpsAttributes.h"
 
 namespace gengodb::compiler::dialect::gpm {
@@ -61,7 +62,17 @@ void BindingColumnTransformer::remapColumnsOf(mlir::Operation* op, const ColumnM
         changed |= remapped != namedAttr.getValue();
         newAttrs.emplace_back(namedAttr.getName(), remapped);
     }
-    if (changed) op->setAttrs(mlir::DictionaryAttr::get(op->getContext(), newAttrs));
+    if (!changed) return;
+    op->setAttrs(mlir::DictionaryAttr::get(op->getContext(), newAttrs));
+    if (auto getColumnOp = mlir::dyn_cast<tuples::GetColumnOp>(op)) remapBindingReadType(getColumnOp);
+}
+void BindingColumnTransformer::remapBindingReadType(tuples::GetColumnOp getColumnOp) {
+    mlir::Type liveType = getColumnOp.getAttr().getColumn().type;
+    if (getColumnOp.getResult().getType() == liveType) return;
+    bool onlyGpmUsers = llvm::all_of(getColumnOp->getUsers(), [](mlir::Operation* user) { 
+        return mlir::isa<gpm::GPMDialect>(user->getDialect()); 
+    });
+    if (onlyGpmUsers) getColumnOp.getResult().setType(liveType);
 }
 void BindingColumnTransformer::remapColumnsIn(const llvm::SmallPtrSetImpl<mlir::Operation*>& ops, const ColumnMapper& colMap) {
     if (colMap.empty()) return;

@@ -1212,6 +1212,8 @@ mlir::Operation* subop::LockOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMap
 llvm::SmallVector<subop::Member> subop::NestedMapOp::getReadMembers() {
    llvm::SmallVector<subop::Member> res;
    getRegion().walk([&](subop::SubOperator subop) {
+      if (mlir::isa<subop::NestedMapOp>(subop.getOperation())) 
+         return; // internal nested map gets read already
       auto read = subop.getReadMembers();
       res.insert(res.end(), read.begin(), read.end());
    });
@@ -1220,6 +1222,8 @@ llvm::SmallVector<subop::Member> subop::NestedMapOp::getReadMembers() {
 llvm::SmallVector<subop::Member> subop::NestedMapOp::getWrittenMembers() {
    llvm::DenseSet<Member> res;
    this->getRegion().walk([&](subop::SubOperator subop) {
+      if (mlir::isa<subop::NestedMapOp>(subop.getOperation())) 
+         return; // internal nested map gets read already
       auto written = subop.getWrittenMembers();
       res.insert(written.begin(), written.end());
    });

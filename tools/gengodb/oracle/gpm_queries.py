@@ -169,6 +169,23 @@ SELECT ?who ?what ?age ?who2 ?what2 WHERE {
   OPTIONAL { ?who2 ex:age ?age }
 }""",
 
+# The same binding compatible inner join (?cup can be unbound on the left), forced to each
+# join implementation (hash / nested / graphindex) in the snippet's already unnested IR.
+**{f"optional/optional_then_join_{impl}.mlir": EX + """
+SELECT ?person ?food ?cup ?who WHERE {
+  ?person ex:eats ?food .
+  OPTIONAL { ?person ex:cup ?cup . }
+  ?who ex:cup ?cup .
+}""" for impl in ("hash", "nested", "graphindex")},
+
+**{f"optional/optional_then_join_filter_bound_{impl}.mlir": EX + """
+SELECT ?person ?food ?cup ?who WHERE {
+  ?person ex:eats ?food .
+  OPTIONAL { ?person ex:cup ?cup . }
+  ?who ex:cup ?cup .
+  FILTER(BOUND(?cup))
+}""" for impl in ("hash", "nested", "graphindex")},
+
 "union/union_basic.mlir": EX + """
 SELECT ?who ?what {
     { ?who ex:drinks ?what }

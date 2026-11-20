@@ -5,6 +5,7 @@
 #include "mlir/IR/OpDefinition.h"
 #include "lingodb/compiler/Dialect/TupleStream/TupleStreamOpsAttributes.h"
 
+#include "gengodb/catalog/MetaData.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOpsEnums.h"
 
 #define GET_ATTRDEF_CLASSES

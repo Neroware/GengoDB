@@ -1,0 +1,12 @@
+@prefix ex: <http://example.org/factory/> .
+
+ex:Machine1 ex:hasSensor ex:Sensor1 ;
+            ex:serialNumber "M-1042" .
+
+ex:Machine2 ex:hasSensor ex:Sensor2 .
+
+ex:Sensor1 ex:measures ex:Temperature ;
+           ex:locatedIn ex:Hall43 .
+
+ex:Sensor2 ex:measures ex:Temperature ;
+           ex:locatedIn ex:Hall43 .

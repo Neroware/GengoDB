@@ -41,5 +41,6 @@ add_mlir_dialect_library(MLIRRelAlg
         MLIRIR
         MLIRCompilerHelper
         MLIRUtil
+        MLIRGPM
         runtime_funcs_ptr
 )

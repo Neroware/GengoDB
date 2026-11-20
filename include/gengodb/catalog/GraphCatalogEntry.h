@@ -5,6 +5,7 @@
 #include "gengodb/semantics/RdfGraph.h"
 #include "gengodb/semantics/RdfFileFormat.h"
 #include "gengodb/catalog/CreateRdfGraphDef.h"
+#include "gengodb/catalog/MetaData.h"
 
 #include <rdf4cpp.hpp>
 
@@ -16,7 +17,7 @@ class RdfGraph;
 namespace gengodb::catalog {
 using namespace lingodb::catalog;
 using namespace rdf4cpp;
-class GraphCatalogEntry : public CatalogEntry {
+class GraphCatalogEntry : public CatalogEntry, public GraphMetadataProvider {
 protected:
     std::string name;
 public:
@@ -52,6 +53,12 @@ class RDFGraphCatalogEntry : public GraphCatalogEntry {
     virtual void ensureFullyLoaded() override;
     virtual void setShouldPersist(bool shouldPersist) override;
     virtual void setDBDir(std::string dbDir) override;
+    size_t getNumNodes() const override;
+    size_t getNumTriples() const override;
+    std::vector<std::pair<std::string, int32_t>> getPredicates() const override;
+    const TripleStatistics& getTotalStatistics() const override;
+    std::optional<int32_t> resolvePredicate(std::string_view iri) const override;
+    const TripleStatistics* getPredicateStatistics(int32_t predicate) const override;
     static std::shared_ptr<RDFGraphCatalogEntry> createFromCreateRdfGraphDef(const CreateRdfGraphDef& def);
 };
 } // lingodb::semantics

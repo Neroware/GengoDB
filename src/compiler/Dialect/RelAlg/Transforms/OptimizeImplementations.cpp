@@ -701,6 +701,7 @@ class OptimizeImplementations : public mlir::PassWrapper<OptimizeImplementations
       getOperation().walk([&](relalg::InnerJoinOp op) {
          auto usedColumns = op.getUsedColumns();
          if (!op->hasAttr("leftHash") || !op->hasAttr("rightHash")) return;
+         if (op->hasAttr("useGraphIndex")) return;
          auto leftKeys = mlir::cast<mlir::ArrayAttr>(op->getAttr("leftHash"));
          auto rightKeys = mlir::cast<mlir::ArrayAttr>(op->getAttr("rightHash"));
          auto leftKeySet = relalg::ColumnSet::fromArrayAttr(leftKeys);

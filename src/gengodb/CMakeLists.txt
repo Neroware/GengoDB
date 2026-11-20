@@ -6,5 +6,6 @@ add_library(gengodb
     catalog/CreateRdfGraphDef.cpp
     catalog/GraphCatalogEntry.cpp
     catalog/GraphNodeIndexCatalogEntry.cpp
+    catalog/MetaData.cpp
     execution/SparqlEngine.cpp )
 target_link_libraries(gengodb PRIVATE rdf4cpp::rdf4cpp LibXml2 runner scheduler)

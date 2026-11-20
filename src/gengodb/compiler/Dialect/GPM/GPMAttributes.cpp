@@ -1,5 +1,6 @@
 #include "gengodb/compiler/Dialect/GPM/IR/GPMDialect.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOpsAttributes.h"
+#include "lingodb/utility/Serialization.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
 #include <llvm/ADT/TypeSwitch.h>
@@ -10,6 +11,16 @@
 namespace gengodb::compiler::dialect::gpm {
 using namespace lingodb::compiler::dialect;
 
+::mlir::Attribute GraphMetaDataAttr::parse(::mlir::AsmParser& parser, ::mlir::Type type) {
+    mlir::StringAttr attr;
+    if (parser.parseLess() || parser.parseAttribute(attr) || parser.parseGreater()) return {};
+    return GraphMetaDataAttr::get(parser.getContext(), lingodb::utility::deserializeFromHexString<std::shared_ptr<gengodb::catalog::GraphMetadataProvider>>(attr.str()));
+}
+void GraphMetaDataAttr::print(::mlir::AsmPrinter& printer) const {
+    printer << "<";
+    printer.printAttribute(mlir::StringAttr::get(getContext(), lingodb::utility::serializeToHexString(getMeta())));
+    printer << ">";
+}
 bool VariableTermAttr::hasBinding() const {
     return mlir::isa<tuples::ColumnRefAttr>(getBinding());
 }

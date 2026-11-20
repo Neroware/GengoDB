@@ -5,6 +5,8 @@
 #include "lingodb/compiler/Dialect/util/UtilOps.h"
 #include "lingodb/compiler/runtime/ExecutionContext.h"
 
+#include "llvm/ADT/SmallPtrSet.h"
+
 namespace {
 using namespace lingodb::compiler::dialect;
 namespace rt = lingodb::compiler::runtime;
@@ -37,16 +39,25 @@ class QueryCanonicalize : public mlir::PassWrapper<QueryCanonicalize, mlir::Oper
             }
         });
 
+        auto leafErr = [](const llvm::SmallVector<mlir::Operation*, 1>& leaves) -> const char* {
+            mlir::Operation* first = leaves.front();
+            for (mlir::Operation* leaf : leaves) {
+                if (leaf->getNumResults() != 1) return " leaf op has unexpected result arity";
+                if (mlir::cast<mlir::ArrayAttr>(leaf->getAttr(relalg::kQueryParamsAttrName)).size() != 1) return " leaf op carries several param ids";
+                if (leaf->getName() != first->getName() || leaf->getResult(0).getType() != first->getResult(0).getType()) {
+                    return " has ambiguous leaf ops";
+                }
+            }
+            return nullptr;
+        };
         bool cacheable = true;
         for (size_t id = 0; id < numParams; ++id) {
             auto it = leavesById.find(id);
-            bool ok = it != leavesById.end() && it->second.size() == 1 && it->second.front()->getNumResults() == 1;
-            if (!ok) {
+            const char* problem = it == leavesById.end() ? " has no resolved leaf op" : leafErr(it->second);
+            if (problem) {
                 cacheable = false;
-                llvm::errs() << "std-query-canonicalize: query param id " << id
-                            << (it == leavesById.end() ? " has no resolved leaf op"
-                                                        : (it->second.size() != 1 ? " has ambiguous leaf ops" : " leaf op has unexpected result arity"))
-                            << "; forwarding site was missed; marking this compilation not cacheable.\n";
+                llvm::errs() << "std-query-canonicalize: query param id " << id << problem
+                             << "; forwarding site was missed; marking this compilation not cacheable.\n";
             }
         }
 
@@ -54,31 +65,26 @@ class QueryCanonicalize : public mlir::PassWrapper<QueryCanonicalize, mlir::Oper
         moduleOp->setAttr(relalg::kQueryCacheableAttrName, attrBuilder.getBoolAttr(cacheable));
         if (!cacheable) return;
 
-        llvm::SmallVector<mlir::Operation*> orderedLeaves;
-        llvm::SmallVector<mlir::Type> fieldTypes;
-        orderedLeaves.reserve(numParams);
-        fieldTypes.reserve(numParams);
-        for (size_t id = 0; id < numParams; ++id) {
-            mlir::Operation* leaf = leavesById[id].front();
-            orderedLeaves.push_back(leaf);
-            fieldTypes.push_back(leaf->getResult(0).getType());
-        }
         auto i128Type = mlir::IntegerType::get(ctxt, 128);
         llvm::SmallVector<mlir::Type> slotTypes(numParams, i128Type);
         auto slotTupleType = mlir::TupleType::get(ctxt, slotTypes);
         auto slotRefType = util::RefType::get(ctxt, slotTupleType);
 
+        llvm::SmallPtrSet<mlir::Operation*, 8> erased;
         for (size_t id = 0; id < numParams; ++id) {
-            mlir::Operation* leaf = orderedLeaves[id];
-            auto loc = leaf->getLoc();
-            mlir::OpBuilder builder(leaf);
-            mlir::Value rawBuf = rt::ExecutionContext::getQueryParamBuffer(builder, loc)({})[0];
-            auto slotBuf = builder.create<util::GenericMemrefCastOp>(loc, slotRefType, rawBuf);
-            auto slotPtr = builder.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, i128Type), slotBuf, static_cast<int32_t>(id));
-            auto realPtr = builder.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, fieldTypes[id]), slotPtr);
-            auto loaded = builder.create<util::LoadOp>(loc, realPtr);
-            leaf->getResult(0).replaceAllUsesWith(loaded.getResult());
-            leaf->erase();
+            for (mlir::Operation* leaf : leavesById[id]) {
+                if (!erased.insert(leaf).second) continue;
+                auto fieldType = leaf->getResult(0).getType();
+                auto loc = leaf->getLoc();
+                mlir::OpBuilder builder(leaf);
+                mlir::Value rawBuf = rt::ExecutionContext::getQueryParamBuffer(builder, loc)({})[0];
+                auto slotBuf = builder.create<util::GenericMemrefCastOp>(loc, slotRefType, rawBuf);
+                auto slotPtr = builder.create<util::TupleElementPtrOp>(loc, util::RefType::get(ctxt, i128Type), slotBuf, static_cast<int32_t>(id));
+                auto realPtr = builder.create<util::GenericMemrefCastOp>(loc, util::RefType::get(ctxt, fieldType), slotPtr);
+                auto loaded = builder.create<util::LoadOp>(loc, realPtr);
+                leaf->getResult(0).replaceAllUsesWith(loaded.getResult());
+                leaf->erase();
+            }
         }
     }
 };
