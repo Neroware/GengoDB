@@ -1,0 +1,292 @@
+@prefix frdf: <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix dc: <http://purl.org/dc/elements/1.1/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+frdf:defaultTNorm a owl:AnnotationProperty ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "defaultTNorm" ;
+    rdfs:comment "The default t-norm for this FRDF ontology; an implementation may override it." .
+
+<https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> a owl:Ontology ;
+    dc:title "The crisp vocabulary of a fuzzy RDF" ;
+    dc:date "2026-11-24" ;
+    dc:description "This is one out of many extensions of the RDF introducing fuzzy concepts (FRDF). All triples defining the FuzzyRDF schema are crisp, meaning they have an absolute ground truth value of 1.0." ;
+    frdf:defaultTNorm frdf:ProductNorm .
+
+frdf:FuzzyResource a frdf:FuzzyClass ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "FuzzyResource" ;
+    rdfs:comment "The fuzzy class resource." ;
+    rdfs:subClassOf rdfs:Resource .
+
+frdf:FuzzyClass a rdfs:Class ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "FuzzyClass" ;
+    rdfs:comment "The fuzzy class" ;
+    rdfs:subClassOf rdfs:Class .
+
+frdf:FuzzyProperty a rdfs:Class ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "FuzzyProperty" ;
+    rdfs:comment "The class of fuzzy RDF properties." ;
+    rdfs:subClassOf rdf:Property .
+
+### ================================================================================================
+### The fuzzification generalization
+### ------------------------------------------------------------------------------------------------
+### Fuzzy RDF is a generalization of the regular RDF/RDFS. Therefore, we know that every class in
+### RDF is also an frdf:FuzzyClass. Likewise, every property is a frdf:FuzzyProperty. The following
+### axioms express this extension.
+### =================================================================================================
+
+rdf:Property rdfs:subClassOf frdf:FuzzyProperty .
+rdfs:Class rdfs:subClassOf frdf:FuzzyClass .
+
+rdf:type a frdf:FuzzyProperty .
+rdf:Statement a frdf:FuzzyClass .
+rdf:subject a frdf:FuzzyProperty .
+rdf:predicate a frdf:FuzzyProperty .
+rdf:object a frdf:FuzzyProperty .
+rdf:Bag a frdf:FuzzyClass .
+rdf:Seq a frdf:FuzzyClass .
+rdf:Alt a frdf:FuzzyClass .
+rdf:value a frdf:FuzzyProperty .
+rdf:List a frdf:FuzzyClass .
+rdf:first a frdf:FuzzyProperty .
+rdf:CompoundLiteral a frdf:FuzzyClass .
+rdf:language a frdf:FuzzyProperty .
+rdf:direction a frdf:FuzzyProperty .
+rdfs:subClassOf a frdf:FuzzyProperty .
+rdfs:subPropertyOf a frdf:FuzzyProperty .
+rdfs:comment a frdf:FuzzyProperty .
+rdfs:label a frdf:FuzzyProperty .
+rdfs:domain a frdf:FuzzyProperty .
+rdfs:range a frdf:FuzzyProperty .
+rdfs:seeAlso a frdf:FuzzyProperty .
+rdfs:isDefinedBy a frdf:FuzzyProperty .
+rdfs:Literal a frdf:FuzzyClass .
+rdfs:Container a frdf:FuzzyClass .
+rdfs:ContainerMembershipProperty a frdf:FuzzyClass .
+rdfs:member a frdf:FuzzyProperty .
+rdfs:Datatype a frdf:FuzzyClass .
+
+### ================================================================================================
+### RDF reification representation
+### ------------------------------------------------------------------------------------------------
+### An RDF resource r represents an FRDF fact (s, p, o, t) if r is an rdf:Statement and has exactly
+### one rdf:subject value s, exactly one rdf:predicate value p, exactly one rdf:object value o, and
+### exactly one frdf:truth value t. The value t MUST be an xsd:float in [0.0, 1.0]. This mapping is
+### an FRDF serialization convention: the reification representation and the inline Fuzzy Turtle
+### representation denote the same FRDF fact. Reification alone does not assert the unannotated RDF
+### triple (s, p, o).
+### ------------------------------------------------------------------------------------------------
+
+frdf:TruthValue a rdfs:Datatype ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "TruthValue" ;
+    rdfs:comment "The datatype of truth values between 0 and 1, inclusive." ;
+    owl:equivalentClass [
+        a rdfs:Datatype ;
+        owl:onDatatype xsd:float ;
+        owl:withRestrictions (
+            [ xsd:minInclusive "0.0"^^xsd:float ]
+            [ xsd:maxInclusive "1.0"^^xsd:float ]
+        )
+    ] .
+
+frdf:truth a rdf:Property, owl:DatatypeProperty ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "truth" ;
+    rdfs:comment "RDF representation of the truth degree of the subject FRDF statement" ;
+    rdfs:domain rdf:Statement ;
+    rdfs:range frdf:TruthValue .
+
+### ================================================================================================
+### Membership functions
+### ------------------------------------------------------------------------------------------------
+### Truth values can be inferred through membership functions. We define them either implicitly
+### via a membership function subclass (e.g. frdf:TrapezoidFunction), or through a Haskell expression
+### taking a real number which gets substituted into:
+###
+### membership :: (Real a) => a -> Float
+### membership truth = {expression}
+###
+### The idea is that fuzzy class receives a fuzzy class definition built around its membership
+### function, which allows the computation (i.e. inference) of truth degree values.
+### =================================================================================================
+
+frdf:TruthFunction a rdfs:Class ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "TruthFunction" ;
+    rdfs:comment "A function that computes an FRDF truth value from one or more inputs." ;
+    rdfs:subClassOf rdfs:Resource .
+
+frdf:Membership a rdfs:Class ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "Membership" ;
+    rdfs:comment "A function that computes a truth degree for class membership" ;
+    rdfs:subClassOf frdf:TruthFunction .
+
+frdf:hasMembership a rdf:Property ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "hasMembership" ;
+    rdfs:comment "The subject has the object as fuzzy membership" ;
+    rdfs:domain frdf:FuzzyClass ;
+    rdfs:range frdf:Membership .
+
+frdf:expressedBy a rdf:Property ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "expressedBy" ;
+    rdfs:comment "The subject truth function is expressed by the object expression" ;
+    rdfs:domain frdf:TruthFunction ;
+    rdfs:range frdf:TruthExpression .
+
+frdf:TruthExpression a rdfs:Class ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "TruthExpression" ;
+    rdfs:comment "An expression whose evaluation yields an FRDF truth value." ;
+    rdfs:subClassOf rdfs:Resource .
+
+frdf:MembershipExpression a rdfs:Class ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "MembershipExpression" ;
+    rdfs:comment "An expression defining a membership function." ;
+    rdfs:subClassOf frdf:TruthExpression .
+
+frdf:HaskellTruthExpression a rdfs:Class ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "HaskellTruthExpression" ;
+    rdfs:comment "A Haskell expression that computes an FRDF truth value." ;
+    rdfs:subClassOf frdf:TruthExpression .
+
+frdf:HaskellMembershipExpression a rdfs:Class ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "HaskellMembershipExpression" ;
+    rdfs:comment "A Haskell expression defining a membership function." ;
+    rdfs:subClassOf frdf:MembershipExpression, frdf:HaskellTruthExpression .
+
+frdf:HaskellHedgeExpression a rdfs:Class ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "HaskellHedgeExpression" ;
+    rdfs:comment "A Haskell expression defining a hedge." ;
+    rdfs:subClassOf frdf:HaskellTruthExpression .
+
+frdf:HaskellTNormExpression a rdfs:Class ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "HaskellTNormExpression" ;
+    rdfs:comment "A Haskell expression defining a t-norm." ;
+    rdfs:subClassOf frdf:HaskellTruthExpression .
+
+frdf:expressionText a owl:DatatypeProperty ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "expressionText" ;
+    rdfs:comment "The Haskell expression text" ;
+    rdfs:domain frdf:HaskellTruthExpression ;
+    rdfs:range xsd:string .
+
+frdf:evaluates a rdf:Property ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "evaluates" ;
+    rdfs:comment "The data property whose values are used as input to the membership function" ;
+    rdfs:domain frdf:Membership ;
+    rdfs:range owl:DatatypeProperty .
+
+### ================================================================================================
+### Hedges
+### ------------------------------------------------------------------------------------------------
+### FRDF uses Fuzzy Logic as theoretical ground work. A hedge is a function (e.g. VERY, MORE_OR_LESS,
+### NOT, etc.) that transforms a truth degree. We define a selection of hedges in this document.
+### ------------------------------------------------------------------------------------------------
+
+frdf:Hedge a rdfs:Class ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "Hedge" ;
+    rdfs:comment "A fuzzy hedge" ;
+    rdfs:subClassOf frdf:TruthFunction .
+
+frdf:Very a frdf:Hedge ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "Very" ;
+    rdfs:comment "The VERY fuzzy hedge" ;
+    frdf:expressedBy [
+        a frdf:HaskellHedgeExpression ;
+        frdf:expressionText "truth * truth"
+    ] .
+
+frdf:Extremely a frdf:Hedge ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "Extremely" ;
+    rdfs:comment "The EXTREMELY fuzzy hedge" ;
+    frdf:expressedBy [
+        a frdf:HaskellHedgeExpression ;
+        frdf:expressionText "truth * truth * truth"
+    ] .
+
+frdf:MoreOrLess a frdf:Hedge ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "MoreOrLess" ;
+    rdfs:comment "The MORE_OR_LESS fuzzy hedge" ;
+    frdf:expressedBy [
+        a frdf:HaskellHedgeExpression ;
+        frdf:expressionText "sqrt truth"
+    ] .
+
+frdf:Not a frdf:Hedge ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "Not" ;
+    rdfs:comment "The NOT fuzzy hedge" ;
+    frdf:expressedBy [
+        a frdf:HaskellHedgeExpression ;
+        frdf:expressionText "1.0 - truth"
+    ] .
+
+### ================================================================================================
+### t-norms
+### ------------------------------------------------------------------------------------------------
+### FRDF uses a t-norm to combine two truth degrees. A t-norm represents fuzzy-logical And.
+### Expressions use the signature:
+###
+### tNorm :: Float -> Float -> Float
+### tNorm left right = {expression}
+###
+### The ontology-level default is frdf:ProductNorm. An FRDF implementation may allow a query
+### or runtime configuration to override that default.
+### =================================================================================================
+
+frdf:TNorm a rdfs:Class ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "TNorm" ;
+    rdfs:comment "A binary fuzzy logical conjunction operator" ;
+    rdfs:subClassOf frdf:TruthFunction .
+
+frdf:ProductNorm a frdf:TNorm ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "ProductNorm" ;
+    rdfs:comment "The product t-norm" ;
+    frdf:expressedBy [
+        a frdf:HaskellTNormExpression ;
+        frdf:expressionText "left * right"
+    ] .
+
+frdf:MinNorm a frdf:TNorm ;
+    rdfs:isDefinedBy <https://www.forsocialrobots.de/ontologies/pi-fuzzy-rdf#> ;
+    rdfs:label "MinNorm" ;
+    rdfs:comment "The minimum t-norm" ;
+    frdf:expressedBy [
+        a frdf:HaskellTNormExpression ;
+        frdf:expressionText "min left right"
+    ] .
+
+### ================================================================================================
+### A Fuzzy RDF Fact
+### ------------------------------------------------------------------------------------------------
+### In this example, the FRDF fact that Raoul is a person has truth degree 0.99. The FRDF parser
+### maps it to the 4-tuple (s, p, o, 0.99). An FRDF engine needs to parse the 0.99 as an xsd:float.
+### It is the truth degree of the triple that Raoul is a person. If your parser does not support the
+### FRDF specification, it should fail at this position.
+### ------------------------------------------------------------------------------------------------
+
+<https://www.uni-augsburg.de/de/fakultaet/fai/informatik/prof/pi/lehrstuhl/mitarbeiter/zebisch#rdf> a <http://xmlns.com/foaf/0.1/Person> {0.99} .
