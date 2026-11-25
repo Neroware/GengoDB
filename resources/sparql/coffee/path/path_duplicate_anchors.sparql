@@ -1,0 +1,10 @@
+# oracle: rdflib-dedupe
+PREFIX ex: <http://example.org/>
+
+SELECT ?d ?z
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ex:bob ex:drinks ?d .
+        ?d ex:asksForMore* ?z .
+    }
+}

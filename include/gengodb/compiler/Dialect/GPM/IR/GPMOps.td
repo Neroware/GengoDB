@@ -69,6 +69,29 @@ def EdgeExpansionOp : GPM_RelAlgOp<"edge_expansion", [Pure,GPMOperator,Operator,
   }];
 }
 
+def PathOp : GPM_RelAlgOp<"path", [Pure,GPMOperator,Operator,UnaryOperator,DeclareOpInterfaceMethods<Parameterizable>]> {
+  let summary = "property path pattern";
+  let description = [{
+    Leaf relation of a SPARQL property path `s (p1|...|pn)+ o` (min 1) or `s (p1|...|pn)* o` (min 0):
+    the set of distinct pairs (x, y) such that y is reachable from x over at least `min` edges whose
+    predicate is one of the step predicates. Like a triple pattern, it reads only its named graph and is
+    joined with the rest of the plan by binding-compatible joins. `s` and `o` are variables or
+    identifiers; the same variable on both ends (`?x p+ ?x`) keeps only the pairs (x, x).
+  }];
+  let arguments = (ins TupleStream:$rel, ColumnRefAttr:$graphRef, AnyAttr:$s, AnyAttr:$o, ArrayAttr:$predicates, I64Attr:$minLength);
+  let results = (outs TupleStream:$res);
+  let assemblyFormat = [{  $rel custom<CustRef>($graphRef) `(` custom<Term>($s) `,` custom<Term>($o) `)` `step` `:` custom<PredicateList>($predicates) `min` `:` $minLength attr-dict }];
+  let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
+    bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
+    // query parameter id of the identifier at the subject or object end (`slot` must not be predicate)
+    std::optional<size_t> getParamId(TripleSlot slot);
+  }];
+}
+
 def NamedGraphOp : GPM_RelAlgOp<"named_graph", [Pure,GPMOperator,Operator]> {
   let summary = "named graph";
   let arguments = (ins ColumnDefAttr:$def);

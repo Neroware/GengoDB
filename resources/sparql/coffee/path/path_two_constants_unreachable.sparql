@@ -1,0 +1,9 @@
+PREFIX ex: <http://example.org/>
+
+SELECT ?d
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        ex:bob ex:drinks+ ex:a .
+        ex:bob ex:drinks ?d .
+    }
+}

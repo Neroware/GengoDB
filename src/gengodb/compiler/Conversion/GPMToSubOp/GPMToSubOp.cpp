@@ -15,6 +15,7 @@
 #include "lingodb/compiler/Dialect/util/UtilOps.h"
 #include "lingodb/compiler/Conversion/RelAlgToSubOp/OrderedAttributes.h"
 #include "gengodb/compiler/Conversion/GPMToSubOp/TripleEmitter.h"
+#include "gengodb/compiler/Conversion/GPMToSubOp/PathLowering.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -429,6 +430,7 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    patterns.insert<TriplePatternLowering>(typeConverter, ctxt, graphs);
    patterns.insert<VirtualTriplePatternLowering>(typeConverter, ctxt, graphIdxExpandIds);
    patterns.insert<NodeExpansionLowering>(typeConverter, ctxt, graphs);
+   populatePathLoweringPatterns(patterns, typeConverter, graphs);
    patterns.insert<EdgeExpansionLowering>(typeConverter, ctxt, graphs);
    patterns.insert<GpmBindingsCompatibleLowering>(typeConverter, ctxt);
    patterns.insert<GetBindingOpLowering>(typeConverter, ctxt);
