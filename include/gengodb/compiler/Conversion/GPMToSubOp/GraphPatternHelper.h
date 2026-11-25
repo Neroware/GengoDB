@@ -3,6 +3,15 @@
 
 #include "gengodb/compiler/Conversion/GPMToSubOp/helpers.h"
 
+// #include "gengodb/compiler/Dialect/GPM/IR/GPMOps.h"
+#include "gengodb/compiler/Dialect/GraphSubOp/GraphSubOps.h"
+// #include "gengodb/compiler/Dialect/Variant/VariantOps.h"
+// #include "gengodb/semantics/Datatypes.h"
+// #include "lingodb/compiler/Dialect/DB/IR/DBOps.h"
+// #include "lingodb/compiler/Dialect/RelAlg/Transforms/QueryParameters.h"
+// #include "lingodb/compiler/Dialect/SubOperator/SubOperatorOps.h"
+// #include "lingodb/compiler/Dialect/SubOperator/Utils.h"
+
 namespace gengodb::compiler::dialect::gpm::lowering {
 using namespace lingodb::compiler::dialect;
 struct NamedGraph {
@@ -13,6 +22,12 @@ struct NamedGraph {
 };
 using NamedGraphMapper = llvm::DenseMap<mlir::SymbolRefAttr, NamedGraph>;
 constexpr llvm::StringLiteral kGraphIdxExpId = "graphIndexExpand";
+
+inline gsubop::CreateIdentifierOp createIdentifier(mlir::OpBuilder& builder, mlir::Location loc, const std::string& graph, gpm::IdentifierTermAttr ident, std::optional<size_t> paramId) {
+    auto identOp = builder.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(builder.getContext()), graph, ident.getIdent());
+    if (paramId) identOp->setAttr(relalg::kQueryParamsAttrName, relalg::makeQueryParamsAttr(builder.getContext(), *paramId, ident.getIdent()));
+    return identOp;
+}
 
 struct GraphPatternHelper {
     using AnchorT = std::variant<IdentifierTermAttr, tuples::ColumnRefAttr>;
@@ -36,7 +51,10 @@ struct GraphPatternHelper {
     mlir::Value wrapEdge(mlir::Value stream, tuples::ColumnRefAttr edgeRef, tuples::ColumnDefAttr variantDef);
     mlir::Value resolveNode(mlir::Value stream, tuples::ColumnRefAttr nodeVariantRef, gsubop::NodeRefType& nodeRefType, tuples::ColumnRefAttr& nodeRef);
     mlir::Value resolveEdge(mlir::Value stream, tuples::ColumnRefAttr edgeVariantRef, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef);
+
     void setUseEdgeWeights(bool useEdgeWeights) { this->useEdgeWeights = useEdgeWeights; }
+    std::pair<std::string, std::string> getGraphName() const { return {group, graph}; }
+    NamedGraph& getGraph() const { return graphs[graphName]; }
 
     protected:
     mlir::ConversionPatternRewriter& rewriter;
@@ -82,6 +100,24 @@ class TripleEmitter : public GraphPatternHelper {
     mlir::Value emitTerm(mlir::Value stream, mlir::Attribute term, subop::Member nodeMember, tuples::ColumnRefAttr edgeRef, std::optional<size_t> paramId = std::nullopt);
     mlir::Value emitTruthDegree(mlir::Value stream, gsubop::EdgeRefType edgeRefType, tuples::ColumnRefAttr edgeRef);
 }; // TripleEmitter
+
+class PathPatternEmitter : public GraphPatternHelper {
+    public:
+    PathPatternEmitter(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& localGraphs, mlir::Operation* op, tuples::ColumnRefAttr graphRef)
+        : GraphPatternHelper(rewriter, localGraphs, op, graphRef) {}
+
+    // a single step from node id `fromRef` along the step edges: -> i32 id of the neighbor
+    // mlir::Value step(mlir::Value stream, tuples::ColumnRefAttr fromRef, bool outgoing, llvm::ArrayRef<mlir::Attribute> predicates, tuples::ColumnRefAttr& toRef);
+
+    void addAnchor(mlir::Value anchor, tuples::ColumnRefAttr idRef) { anchors.push_back({anchor, idRef}); }
+    mlir::Value emitFrontier();
+    mlir::Value emitVisited();
+    mlir::Value emitStep(mlir::Value frontier);
+    mlir::Value finish(mlir::Value stream);
+
+    private:
+    llvm::SmallVector<std::pair<mlir::Value, tuples::ColumnRefAttr>> anchors;
+}; // PathPatternEmitter
 
 } // namespace gengodb::compiler::dialect::gpm::lowering
 

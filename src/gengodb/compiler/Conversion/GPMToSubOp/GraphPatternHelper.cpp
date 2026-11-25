@@ -53,9 +53,7 @@ mlir::Value GraphPatternHelper::emitNodeToEdge(mlir::Value stream, AnchorT ancho
             rewriter.setInsertionPointToStart(block);
             auto [identDef, identRef] = createColumn(gsubop::IdentifierType::get(ctxt), "idents", "lookup");
             auto scan = generateTupleStream(rewriter, loc, identDef, [&](mlir::OpBuilder& b) -> mlir::Value {
-                auto identOp = b.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, identAttr.getIdent());
-                if (paramId) identOp->setAttr(relalg::kQueryParamsAttrName, relalg::makeQueryParamsAttr(ctxt, *paramId, identAttr.getIdent()));
-                return identOp;
+                return createIdentifier(b, loc, graph, identAttr, paramId);
             });
             scan = filterByIdentifier(scan, identRef);
             nodeRefType = createNodeRefType(ctxt, group, graph);
@@ -101,8 +99,7 @@ mlir::Value GraphPatternHelper::scanEdges(mlir::Value stream, tuples::ColumnRefA
     return nestedMapOp.getRes();
 }
 mlir::Value GraphPatternHelper::filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr ref, IdentifierTermAttr ident, std::optional<size_t> paramId) {
-    auto identOp = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, ident.getIdent());
-    if (paramId) identOp->setAttr(relalg::kQueryParamsAttrName, relalg::makeQueryParamsAttr(ctxt, *paramId, ident.getIdent()));
+    auto identOp = createIdentifier(rewriter, loc, graph, ident, paramId);
     return rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, ref, mlir::ValueRange{identOp});
 }
 mlir::Value GraphPatternHelper::filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr identRef) {
