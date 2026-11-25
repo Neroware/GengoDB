@@ -82,6 +82,21 @@ def NamedGraphOp : GPM_RelAlgOp<"named_graph", [Pure,GPMOperator,Operator]> {
   }];
 }
 
+def PathOp : GPM_RelAlgOp<"path", [Pure,GPMOperator,Operator,UnaryOperator,DeclareOpInterfaceMethods<Parameterizable>]> {
+  let summary = "path expansion";
+  let arguments = (ins TupleStream:$rel, ColumnRefAttr:$graphRef, AnyAttr:$s, AnyAttr:$o, ArrayAttr:$predicates, I64Attr:$minLength);
+  let results = (outs TupleStream:$res);
+  let assemblyFormat = [{  $rel custom<CustRef>($graphRef) `(` custom<Term>($s) `,` custom<Term>($o) `)` `step` `:` custom<PredicateList>($predicates) `min` `:` $minLength attr-dict }];
+  let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    lingodb::compiler::dialect::relalg::ColumnSet getUsedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getCreatedColumns();
+    lingodb::compiler::dialect::relalg::ColumnSet getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache);
+    bool canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column);
+    std::optional<size_t> getParamId(TripleSlot slot);
+  }];
+}
+
 //===----------------------------------------------------------------------===//
 // Graph pattern types
 //===----------------------------------------------------------------------===//

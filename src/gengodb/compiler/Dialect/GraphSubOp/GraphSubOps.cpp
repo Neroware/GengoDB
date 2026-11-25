@@ -172,7 +172,7 @@ mlir::Operation* gsubop::ScanPropertySetOp::cloneSubOp(mlir::OpBuilder& builder,
 }
 
 mlir::Operation* gsubop::FilterByIdentifierOp::cloneSubOp(mlir::OpBuilder& builder, mlir::IRMapping& mapping, subop::ColumnMapping& columnMapping) {
-   auto newOp = builder.create<FilterByIdentifierOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), columnMapping.remap(getRef()), mapping.lookupOrDefault(getIdent()));
+   auto newOp = builder.create<FilterByIdentifierOp>(this->getLoc(), mapping.lookupOrDefault(getStream()), columnMapping.remap(getRef()), llvm::to_vector(llvm::map_range(getIdent(), [&](mlir::Value v) { return mapping.lookupOrDefault(v); })));
    mapResults(mapping, this->getOperation(), newOp.getOperation());
 
    return newOp;
