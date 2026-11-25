@@ -202,7 +202,7 @@ class NodeExpansionLowering : public OpConversionPattern<gpm::NodeExpansionOp> {
    NodeExpansionLowering(TypeConverter& typeConverter, MLIRContext* context, NamedGraphMapper& graphs)
       : OpConversionPattern<gpm::NodeExpansionOp>(typeConverter, context), graphs(graphs) {}
    LogicalResult matchAndRewrite(gpm::NodeExpansionOp expansionOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
-      GraphEmitter::AnchorT anchor;
+      GraphPatternHelper::AnchorT anchor;
       if (auto ident = mlir::dyn_cast<gpm::IdentifierTermAttr>(expansionOp.getAnchorTerm())) {
          anchor = ident;
       } else {
@@ -211,10 +211,10 @@ class NodeExpansionLowering : public OpConversionPattern<gpm::NodeExpansionOp> {
             return expansionOp.emitOpError() << "nullable anchors not yet supported";
          anchor = anchorRef;
       }
-      auto direction = expansionOp.getAnchor() == gpm::ExpansionDirection::outgoing ? GraphEmitter::Outgoing : GraphEmitter::Incoming;
+      auto direction = expansionOp.getAnchor() == gpm::ExpansionDirection::outgoing ? GraphPatternHelper::Outgoing : GraphPatternHelper::Incoming;
       auto targetDef = mlir::cast<gpm::VariableTermAttr>(expansionOp.getTarget()).getProducedBinding();
       assert(mlir::isa<variant::VariantType>(targetDef.getColumn().type) && "column not a variant");
-      GraphEmitter emitter(rewriter, graphs, expansionOp, expansionOp.getGraphRef());
+      GraphPatternHelper emitter(rewriter, graphs, expansionOp, expansionOp.getGraphRef());
       gsubop::EdgeRefType edgeRefType;
       tuples::ColumnRefAttr edgeRef;
       mlir::Value lowered = emitter.emitNodeToEdge(adaptor.getRel(), anchor, direction, edgeRefType, edgeRef, expansionOp.getParamId());
@@ -231,7 +231,7 @@ class EdgeExpansionLowering : public OpConversionPattern<gpm::EdgeExpansionOp> {
    LogicalResult matchAndRewrite(gpm::EdgeExpansionOp expansionOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
       auto targetDef = mlir::cast<gpm::VariableTermAttr>(expansionOp.getTarget()).getProducedBinding();
       assert(mlir::isa<variant::VariantType>(targetDef.getColumn().type) && "column not a variant");
-      GraphEmitter emitter(rewriter, graphs, expansionOp, expansionOp.getGraphRef());
+      GraphPatternHelper emitter(rewriter, graphs, expansionOp, expansionOp.getGraphRef());
       gsubop::EdgeRefType edgeRefType;
       tuples::ColumnRefAttr edgeRef;
       mlir::Value lowered;

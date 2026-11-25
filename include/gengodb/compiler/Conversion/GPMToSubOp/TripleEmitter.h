@@ -14,11 +14,11 @@ struct NamedGraph {
 using NamedGraphMapper = llvm::DenseMap<mlir::SymbolRefAttr, NamedGraph>;
 constexpr llvm::StringLiteral kGraphIdxExpId = "graphIndexExpand";
 
-struct GraphEmitter {
+struct GraphPatternHelper {
     using AnchorT = std::variant<IdentifierTermAttr, tuples::ColumnRefAttr>;
     enum EdgeDirection { Incoming, Outgoing };
 
-    GraphEmitter(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& graphs, mlir::Operation* op, tuples::ColumnRefAttr graphRefAttr)
+    GraphPatternHelper(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& graphs, mlir::Operation* op, tuples::ColumnRefAttr graphRefAttr)
         : rewriter(rewriter), ctxt(rewriter.getContext()), op(op),
         columnManager(ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager()),
         memberManager(ctxt->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager()),
@@ -50,10 +50,10 @@ struct GraphEmitter {
     mlir::SymbolRefAttr graphName;
     std::string group, graph;
     bool useEdgeWeights = false;
-}; // GraphEmitter
+}; // GraphPatternHelper
 
 // Lowers a triple over a tuplestream that carries a graph's node/edge set columns (see NamedGraphMapper).
-class TripleEmitter : public GraphEmitter {
+class TripleEmitter : public GraphPatternHelper {
     mlir::Attribute sTerm, pTerm, oTerm;
     tuples::ColumnDefAttr truthDegrAttr;
     llvm::DenseMap<const tuples::Column*, tuples::ColumnRefAttr> localTerms;
@@ -62,7 +62,7 @@ class TripleEmitter : public GraphEmitter {
     public:
     template<typename OpTy>
     TripleEmitter(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& graphs, OpTy op)
-        : GraphEmitter(rewriter, graphs, op.getOperation(), op.getGraphRef()),
+        : GraphPatternHelper(rewriter, graphs, op.getOperation(), op.getGraphRef()),
         sTerm(op.getS()), pTerm(op.getP()), oTerm(op.getO()), truthDegrAttr(op.getTruthDegrAttr()),
         paramIds{op.getParamId(TripleSlot::subject), op.getParamId(TripleSlot::predicate), op.getParamId(TripleSlot::object)} {}
     TripleEmitter(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& graphs, mlir::Operation* op, mlir::DictionaryAttr triple);

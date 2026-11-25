@@ -26,7 +26,7 @@ mlir::Value generateTupleStream(mlir::ConversionPatternRewriter& rewriter, mlir:
     return generateOp.getRes();
 }
 TripleEmitter::TripleEmitter(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& graphs, mlir::Operation* op, mlir::DictionaryAttr triple)
-    : GraphEmitter(rewriter, graphs, op, mlir::cast<tuples::ColumnRefAttr>(triple.get("graphRef"))),
+    : GraphPatternHelper(rewriter, graphs, op, mlir::cast<tuples::ColumnRefAttr>(triple.get("graphRef"))),
     sTerm(triple.get("s")), pTerm(triple.get("p")), oTerm(triple.get("o")),
     truthDegrAttr(mlir::dyn_cast_or_null<tuples::ColumnDefAttr>(triple.get("truthDegr"))) {
     for (auto [i, attr] : llvm::enumerate(mlir::cast<mlir::ArrayAttr>(triple.get("paramIds")))) {
@@ -34,7 +34,7 @@ TripleEmitter::TripleEmitter(mlir::ConversionPatternRewriter& rewriter, NamedGra
         if (id >= 0) paramIds[i] = static_cast<size_t>(id);
     }
 }
-mlir::Value GraphEmitter::emitNodeToEdge(mlir::Value stream, AnchorT anchor, EdgeDirection direction, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef, std::optional<size_t> paramId) {
+mlir::Value GraphPatternHelper::emitNodeToEdge(mlir::Value stream, AnchorT anchor, EdgeDirection direction, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef, std::optional<size_t> paramId) {
     gsubop::NodeRefType nodeRefType;
     tuples::ColumnRefAttr nodeRef;
     if (auto* anchorAttr = std::get_if<tuples::ColumnRefAttr>(&anchor)) {
@@ -73,17 +73,17 @@ mlir::Value GraphEmitter::emitNodeToEdge(mlir::Value stream, AnchorT anchor, Edg
     stream = rewriter.create<subop::GatherOp>(loc, stream, nodeRef, createColumnDefMemberMappingAttr(ctxt, {{edgeMember, edgesDef}}));
     return scanEdges(stream, edgesRef, edgeSetType, edgeRefType, edgeRef);
 }
-mlir::Value GraphEmitter::emitEdgeToNode(mlir::Value stream, tuples::ColumnRefAttr edgeRef, Member nodeMember, tuples::ColumnRefAttr& rawRef) {
+mlir::Value GraphPatternHelper::emitEdgeToNode(mlir::Value stream, tuples::ColumnRefAttr edgeRef, Member nodeMember, tuples::ColumnRefAttr& rawRef) {
     auto [rawDef, ref] = createColumn(memberManager.getType(nodeMember), "nodes", "raw");
     rawRef = ref;
     return rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(ctxt, {{nodeMember, rawDef}}));
 }
-mlir::Value GraphEmitter::scanEdges(mlir::Value stream, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef) {
+mlir::Value GraphPatternHelper::scanEdges(mlir::Value stream, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef) {
     auto& graphData = graphs[graphName];
     auto edgesRef = columnManager.createRef(graphData.edgeSetColumn);
     return scanEdges(stream, edgesRef, graphData.edgeSetColumn->type, edgeRefType, edgeRef);
 }
-mlir::Value GraphEmitter::scanEdges(mlir::Value stream, tuples::ColumnRefAttr edgesRef, mlir::Type edgeSetType, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRefColumnRef) {
+mlir::Value GraphPatternHelper::scanEdges(mlir::Value stream, tuples::ColumnRefAttr edgesRef, mlir::Type edgeSetType, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRefColumnRef) {
     auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({edgesRef}));
     auto* b = new mlir::Block();
     b->addArgument(tuples::TupleType::get(ctxt), loc);
@@ -100,12 +100,12 @@ mlir::Value GraphEmitter::scanEdges(mlir::Value stream, tuples::ColumnRefAttr ed
     edgeRefColumnRef = resolvedRef;
     return nestedMapOp.getRes();
 }
-mlir::Value GraphEmitter::filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr ref, IdentifierTermAttr ident, std::optional<size_t> paramId) {
+mlir::Value GraphPatternHelper::filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr ref, IdentifierTermAttr ident, std::optional<size_t> paramId) {
     auto identOp = rewriter.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(ctxt), graph, ident.getIdent());
     if (paramId) identOp->setAttr(relalg::kQueryParamsAttrName, relalg::makeQueryParamsAttr(ctxt, *paramId, ident.getIdent()));
     return rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, ref, mlir::ValueRange{identOp});
 }
-mlir::Value GraphEmitter::filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr identRef) {
+mlir::Value GraphPatternHelper::filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr identRef) {
     subop::MapCreationHelper helper(ctxt);
     auto [validDef, validRef] = createColumn(rewriter.getI1Type(), "idents", "valid");
     helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
@@ -124,7 +124,7 @@ mlir::Value GraphEmitter::filterByIdentifier(mlir::Value stream, tuples::ColumnR
     mapOp.getFn().push_back(helper.getMapBlock());
     return rewriter.create<subop::FilterOp>(loc, mapOp.getResult(), subop::FilterSemantic::all_true, rewriter.getArrayAttr({validRef}));
 }
-mlir::Value GraphEmitter::wrapNode(mlir::Value stream, tuples::ColumnRefAttr rawRef, tuples::ColumnDefAttr variantDef) {
+mlir::Value GraphPatternHelper::wrapNode(mlir::Value stream, tuples::ColumnRefAttr rawRef, tuples::ColumnDefAttr variantDef) {
     subop::MapCreationHelper helper(ctxt);
     helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
         mlir::Value rawVal = helper.access(rawRef, loc);
@@ -135,7 +135,7 @@ mlir::Value GraphEmitter::wrapNode(mlir::Value stream, tuples::ColumnRefAttr raw
     mapOp.getFn().push_back(helper.getMapBlock());
     return mapOp.getResult();
 }
-mlir::Value GraphEmitter::wrapEdge(mlir::Value stream, tuples::ColumnRefAttr edgeRef, tuples::ColumnDefAttr variantDef) {
+mlir::Value GraphPatternHelper::wrapEdge(mlir::Value stream, tuples::ColumnRefAttr edgeRef, tuples::ColumnDefAttr variantDef) {
     subop::MapCreationHelper helper(ctxt);
     helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
         mlir::Value edgeVal = helper.access(edgeRef, loc);
@@ -146,7 +146,7 @@ mlir::Value GraphEmitter::wrapEdge(mlir::Value stream, tuples::ColumnRefAttr edg
     mapOp.getFn().push_back(helper.getMapBlock());
     return mapOp.getResult();
 }
-mlir::Value GraphEmitter::resolveEdge(mlir::Value stream, tuples::ColumnRefAttr edgeVariantRef, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef) {
+mlir::Value GraphPatternHelper::resolveEdge(mlir::Value stream, tuples::ColumnRefAttr edgeVariantRef, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef) {
     auto& graphData = graphs[graphName];
     auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({columnManager.createRef(graphData.edgeSetColumn), edgeVariantRef}));
     auto* block = new mlir::Block();
@@ -170,7 +170,7 @@ mlir::Value GraphEmitter::resolveEdge(mlir::Value stream, tuples::ColumnRefAttr 
     }
     return nestedMapOp.getRes();
 }
-mlir::Value GraphEmitter::resolveNode(mlir::Value stream, tuples::ColumnRefAttr nodeVariantRef, gsubop::NodeRefType& nodeRefType, tuples::ColumnRefAttr& nodeRef) {
+mlir::Value GraphPatternHelper::resolveNode(mlir::Value stream, tuples::ColumnRefAttr nodeVariantRef, gsubop::NodeRefType& nodeRefType, tuples::ColumnRefAttr& nodeRef) {
     auto& graphData = graphs[graphName];
     auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({columnManager.createRef(graphData.nodeSetColumn), nodeVariantRef}));
     auto* block = new mlir::Block();
@@ -226,7 +226,7 @@ mlir::Value TripleEmitter::emitTruthDegree(mlir::Value stream, gsubop::EdgeRefTy
     assert(mlir::isa<mlir::Float32Type>(truthDegrAttr.getColumn().type) && "truth degree columns need type f32");
     return rewriter.create<subop::GatherOp>(loc, stream, edgeRef, createColumnDefMemberMappingAttr(ctxt, {{truthMember, truthDegrAttr}}));
 }
-GraphEmitter::AnchorT TripleEmitter::anchorAttr(mlir::Attribute term) {
+GraphPatternHelper::AnchorT TripleEmitter::anchorAttr(mlir::Attribute term) {
     if (auto identTerm = mlir::dyn_cast<gpm::IdentifierTermAttr>(term))
         return identTerm;
     auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(term);
