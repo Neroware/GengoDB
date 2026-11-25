@@ -23,11 +23,44 @@ struct NamedGraph {
 using NamedGraphMapper = llvm::DenseMap<mlir::SymbolRefAttr, NamedGraph>;
 constexpr llvm::StringLiteral kGraphIdxExpId = "graphIndexExpand";
 
-inline gsubop::CreateIdentifierOp createIdentifier(mlir::OpBuilder& builder, mlir::Location loc, const std::string& graph, gpm::IdentifierTermAttr ident, std::optional<size_t> paramId) {
-    auto identOp = builder.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(builder.getContext()), graph, ident.getIdent());
-    if (paramId) identOp->setAttr(relalg::kQueryParamsAttrName, relalg::makeQueryParamsAttr(builder.getContext(), *paramId, ident.getIdent()));
-    return identOp;
-}
+struct GraphHelper {
+    GraphHelper(mlir::OpBuilder& builder, mlir::Location loc)
+        : builder(builder), loc(loc), ctxt(builder.getContext()), 
+        columnManager(ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager()) {}
+    inline gsubop::CreateIdentifierOp createIdentifier(const std::string& graph, gpm::IdentifierTermAttr ident, std::optional<size_t> paramId) {
+        auto identOp = builder.create<gsubop::CreateIdentifierOp>(loc, gsubop::IdentifierType::get(builder.getContext()), graph, ident.getIdent());
+        if (paramId) identOp->setAttr(relalg::kQueryParamsAttrName, relalg::makeQueryParamsAttr(builder.getContext(), *paramId, ident.getIdent()));
+        return identOp;
+    }
+    inline mlir::Value attach(mlir::Value stream, llvm::ArrayRef<tuples::ColumnRefAttr> columns, llvm::function_ref<mlir::Value(mlir::Value, mlir::ValueRange)> buildInner) {
+        llvm::SmallVector<mlir::Attribute> refs(columns.begin(), columns.end());
+        auto nestedMapOp = builder.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, builder.getArrayAttr(refs));
+        auto* block = new mlir::Block;
+        auto tuple = block->addArgument(tuples::TupleType::get(ctxt), loc);
+        for (auto ref : columns) block->addArgument(ref.getColumn().type, loc);
+        nestedMapOp.getRegion().push_back(block);
+        mlir::OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPointToStart(block);
+        builder.create<tuples::ReturnOp>(loc, buildInner(tuple, block->getArguments().drop_front()));
+        return nestedMapOp.getRes();
+    }
+    inline mlir::Value attach(mlir::Value graphStream, const NamedGraph& graph, llvm::function_ref<mlir::Value(mlir::Value, mlir::Value, mlir::Value)> buildInner) {
+        return attach(graphStream, {columnManager.createRef(graph.nodeSetColumn), columnManager.createRef(graph.edgeSetColumn)},
+            [&](mlir::Value tuple, mlir::ValueRange args) { return buildInner(tuple, args[0], args[1]); });
+    }
+    inline mlir::Value nodeId(mlir::Value stream, tuples::ColumnRefAttr nodeRef, gsubop::NodeRefType nodeRefType, tuples::ColumnRefAttr& idRef) {
+        auto [idDef, ref] = helpers::createColumn(builder.getI32Type(), "path", "id");
+        idRef = ref;
+        return builder.create<subop::GatherOp>(loc, stream, nodeRef, helpers::createColumnDefMemberMappingAttr(ctxt, {{nodeRefType.getNodeMembers().getMembers()[0], idDef}}));
+    }
+
+    private:
+    mlir::OpBuilder& builder;
+    mlir::Location loc;
+    mlir::MLIRContext* ctxt;
+    tuples::ColumnManager& columnManager;
+};
+
 
 struct GraphPatternHelper {
     using AnchorT = std::variant<IdentifierTermAttr, tuples::ColumnRefAttr>;
@@ -37,14 +70,14 @@ struct GraphPatternHelper {
         : rewriter(rewriter), ctxt(rewriter.getContext()), op(op),
         columnManager(ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager()),
         memberManager(ctxt->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager()),
-        graphs(graphs), loc(op->getLoc()), graphRefAttr(graphRefAttr), graphName(graphRefAttr.getName()) {
+        graphs(graphs), loc(op->getLoc()), graphHelper(rewriter, loc), graphRefAttr(graphRefAttr), graphName(graphRefAttr.getName()) {
             std::tie(group, graph) = helpers::splitGraphRef(graphRefAttr);
             assert(graphs.count(graphName) && "graph must already be lowered");
     }
     mlir::Value emitNodeToEdge(mlir::Value stream, AnchorT anchor, EdgeDirection direction, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef, std::optional<size_t> paramId = std::nullopt);
     mlir::Value emitEdgeToNode(mlir::Value stream, tuples::ColumnRefAttr edgeRef, subop::Member nodeMember, tuples::ColumnRefAttr& rawRef);
     mlir::Value scanEdges(mlir::Value stream, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef);
-    mlir::Value scanEdges(mlir::Value stream, tuples::ColumnRefAttr edgesRef, mlir::Type edgeSetType, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRefColumnRef);
+    mlir::Value scanEdges(mlir::Value stream, tuples::ColumnRefAttr edgesRef, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRefColumnRef);
     mlir::Value filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr ref, IdentifierTermAttr ident, std::optional<size_t> paramId = std::nullopt);
     mlir::Value filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr identRef);
     mlir::Value wrapNode(mlir::Value stream, tuples::ColumnRefAttr rawRef, tuples::ColumnDefAttr variantDef);
@@ -64,6 +97,7 @@ struct GraphPatternHelper {
     subop::MemberManager& memberManager;
     NamedGraphMapper& graphs;
     mlir::Location loc;
+    GraphHelper graphHelper;
     tuples::ColumnRefAttr graphRefAttr;
     mlir::SymbolRefAttr graphName;
     std::string group, graph;
