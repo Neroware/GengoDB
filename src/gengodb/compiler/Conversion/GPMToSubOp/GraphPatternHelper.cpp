@@ -171,6 +171,18 @@ mlir::Value GraphPatternHelper::resolveNode(mlir::Value stream, tuples::ColumnRe
             return filterByIdentifier(scan, idRef); 
         });
 }
+mlir::Value GraphPatternHelper::nodeId(mlir::Value stream, IdentifierTermAttr ident, std::optional<size_t> paramId, tuples::ColumnRefAttr& idRef) {
+    gsubop::NodeRefType nodeRefType;
+    tuples::ColumnRefAttr nodeRef;
+    stream = lookupNode(stream, {}, gsubop::IdentifierType::get(ctxt), nodeRefType, nodeRef,
+        [&](mlir::OpBuilder&, mlir::Value, mlir::ValueRange) -> mlir::Value {
+            return graphHelper.createIdentifier(graph, ident, paramId);
+        },
+        [&](mlir::Value scan, tuples::ColumnRefAttr identRef) {
+            return filterByIdentifier(scan, identRef);
+        });
+    return graphHelper.nodeId(stream, nodeRef, nodeRefType, idRef);
+}
 mlir::Value TripleEmitter::lower(mlir::Value stream, std::optional<gpm::TripleSlot> anchor) {
     gsubop::EdgeRefType edgeRefType;
     tuples::ColumnRefAttr edgeRef;
