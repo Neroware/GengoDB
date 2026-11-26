@@ -54,6 +54,26 @@ struct GraphHelper {
         return builder.create<subop::GatherOp>(loc, stream, nodeRef, helpers::createColumnDefMemberMappingAttr(ctxt, {{nodeRefType.getNodeMembers().getMembers()[0], idDef}}));
     }
 
+//     mlir::Value constantNodeId(mlir::Value stream, gpm::IdentifierTermAttr ident, std::optional<size_t> paramId, tuples::ColumnRefAttr& idRef) {
+//       auto nodeRefType = createNodeRefType(ctxt, group, graph);
+//       auto [nodeDef, nodeRef] = createColumn(nodeRefType, "nodes", "ref");
+//       auto nestedMapOp = rewriter.create<subop::NestedMapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({columnManager.createRef(current().nodeSetColumn)}));
+//       auto* block = new mlir::Block;
+//       block->addArgument(tuples::TupleType::get(ctxt), loc);
+//       auto nodeSetArg = block->addArgument(current().nodeSetColumn->type, loc);
+//       nestedMapOp.getRegion().push_back(block);
+//       {
+//          mlir::OpBuilder::InsertionGuard guard(rewriter);
+//          rewriter.setInsertionPointToStart(block);
+//          auto [identDef, identRef] = createColumn(gsubop::IdentifierType::get(ctxt), "idents", "lookup");
+//          auto scan = generateTupleStream(rewriter, loc, identDef, [&](mlir::OpBuilder& b) -> mlir::Value { return createIdentifier(b, ident, paramId); });
+//          scan = filterByIdentifier(scan, identRef);
+//          mlir::Value lookup = rewriter.create<subop::LookupOp>(loc, tuples::TupleStreamType::get(ctxt), scan, nodeSetArg, rewriter.getArrayAttr({identRef}), nodeDef);
+//          rewriter.create<tuples::ReturnOp>(loc, lookup);
+//       }
+//       return nodeIds(nestedMapOp.getRes(), nodeRef, nodeRefType, idRef);
+//    }
+
     private:
     mlir::OpBuilder& builder;
     mlir::Location loc;
@@ -64,6 +84,8 @@ struct GraphHelper {
 
 struct GraphPatternHelper {
     using AnchorT = std::variant<IdentifierTermAttr, tuples::ColumnRefAttr>;
+    using BuildKeyFn = llvm::function_ref<mlir::Value(mlir::OpBuilder&, mlir::Value, mlir::ValueRange)>;
+    using RefApplyFn = llvm::function_ref<mlir::Value(mlir::Value, tuples::ColumnRefAttr)>;
     enum EdgeDirection { Incoming, Outgoing };
 
     GraphPatternHelper(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& graphs, mlir::Operation* op, tuples::ColumnRefAttr graphRefAttr)
@@ -84,6 +106,10 @@ struct GraphPatternHelper {
     mlir::Value wrapEdge(mlir::Value stream, tuples::ColumnRefAttr edgeRef, tuples::ColumnDefAttr variantDef);
     mlir::Value resolveNode(mlir::Value stream, tuples::ColumnRefAttr nodeVariantRef, gsubop::NodeRefType& nodeRefType, tuples::ColumnRefAttr& nodeRef);
     mlir::Value resolveEdge(mlir::Value stream, tuples::ColumnRefAttr edgeVariantRef, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef);
+    mlir::Value lookupNode(mlir::Value stream, llvm::ArrayRef<tuples::ColumnRefAttr> columns, mlir::Type keyType,
+        gsubop::NodeRefType& nodeRefType, tuples::ColumnRefAttr& nodeRef, BuildKeyFn buildKey, RefApplyFn refineScan = nullptr, RefApplyFn refineLookup = nullptr);
+    mlir::Value lookupEdge(mlir::Value stream, llvm::ArrayRef<tuples::ColumnRefAttr> columns, mlir::Type keyType,
+        gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef, BuildKeyFn buildKey, RefApplyFn refineScan = nullptr, RefApplyFn refineLookup = nullptr);
 
     void setUseEdgeWeights(bool useEdgeWeights) { this->useEdgeWeights = useEdgeWeights; }
     std::pair<std::string, std::string> getGraphName() const { return {group, graph}; }
