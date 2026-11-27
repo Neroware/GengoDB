@@ -325,7 +325,7 @@ class PathLowering : public mlir::OpConversionPattern<gpm::PathOp> {
       auto& memberManager = ctxt->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
       auto tupleStreamType = tuples::TupleStreamType::get(ctxt);
       auto i1 = rewriter.getI1Type();
-      auto i32 = rewriter.getI32Type();
+      auto i32Type = rewriter.getI32Type();
 
       const tuples::Column* ends[2] = {nullptr, nullptr};
       gpm::IdentifierTermAttr idents[2];
@@ -404,7 +404,10 @@ class PathLowering : public mlir::OpConversionPattern<gpm::PathOp> {
             return edgeEndpointId(graphStream, false, predicates, idRef);
          });
       }
-      mlir::Value frontier = emitter.emitFrontier();
+      auto anchorKey = createMember(ctxt, "path_anchor", i32Type);
+      mlir::Value anchors;
+      mlir::Value frontier = emitter.emitFrontier(anchorKey, anchors);
+      mlir::Value visited = emitter.emitVisited(anchorKey, anchors, zeroLength);
 
       return failure();
    }

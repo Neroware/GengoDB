@@ -91,6 +91,7 @@ struct GraphPatternHelper {
     mlir::Value lookupEdge(mlir::Value stream, llvm::ArrayRef<tuples::ColumnRefAttr> columns, mlir::Type keyType,
         gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef, BuildKeyFn buildKey, RefApplyFn refineScan = nullptr, RefApplyFn refineLookup = nullptr);
     mlir::Value nodeId(mlir::Value stream, IdentifierTermAttr ident, tuples::ColumnRefAttr& idRef, std::optional<size_t> paramId = std::nullopt);
+    mlir::Value step(mlir::Value stream, tuples::ColumnRefAttr fromRef, bool outgoing, llvm::ArrayRef<mlir::Attribute> predicates, tuples::ColumnRefAttr& toRef);
 
     void setUseEdgeWeights(bool useEdgeWeights) { this->useEdgeWeights = useEdgeWeights; }
     std::pair<std::string, std::string> getGraphName() const { return {group, graph}; }
@@ -151,8 +152,8 @@ class PathPatternEmitter : public GraphPatternHelper {
     // mlir::Value step(mlir::Value stream, tuples::ColumnRefAttr fromRef, bool outgoing, llvm::ArrayRef<mlir::Attribute> predicates, tuples::ColumnRefAttr& toRef);
 
     void addAnchor(mlir::Value stream, tuples::ColumnRefAttr idRef) { anchors.push_back({stream, idRef}); }
-    mlir::Value emitFrontier();
-    mlir::Value emitVisited();
+    mlir::Value emitFrontier(Member& anchorKey, mlir::Value& anchors);
+    mlir::Value emitVisited(const Member& anchorKey, mlir::Value anchors, bool zeroLength);
     mlir::Value emitStep(mlir::Value frontier);
     mlir::Value finish(mlir::Value stream);
 
