@@ -1,0 +1,11 @@
+# Threshold over a TRUTH block that holds only an OPTIONAL: an unmatched OPTIONAL has degree 1.0 (the t-norm's
+# neutral element), so people without any drink pass the threshold instead of being dropped as 'unbound'.
+# Expected: anna, steve, carla with null ?d; bob with coffee (0.9), "Coffee", _:drink1, _:drink2, beer (0.5), soup.
+PREFIX ex: <http://example.org/>
+SELECT ?p ?d
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        ?p ex:type ex:Person .
+        TRUTH 0.5 OF { OPTIONAL { ?p ex:drinks ?d . } }
+    }
+}

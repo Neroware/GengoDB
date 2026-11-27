@@ -1,5 +1,5 @@
-# Hedge on a nullable degree: a person without any drink keeps an unbound ?truth (NOT is not applied to 'unbound').
-# Same rows as truth_optional.sparql; bound truths become 1 - x.
+# Hedge over an OPTIONAL-only block: a person without any drink has degree 1.0 (nothing matched, the t-norm's
+# neutral element), so NOT gives ?truth = 0.0. Same rows as truth_optional.sparql; all truths become 1 - x.
 PREFIX ex: <http://example.org/>
 SELECT ?person ?drink ?truth
 {
