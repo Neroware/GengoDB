@@ -11,6 +11,35 @@ namespace gengodb::compiler::dialect::gpm::lowering {
 using namespace lingodb::compiler::dialect;
 using namespace helpers;
 
+namespace {
+mlir::Block* createI32EqBlock(mlir::OpBuilder& builder, mlir::Location loc, unsigned numKeys) {
+    auto* block = new mlir::Block;
+    auto i32Type = builder.getI32Type();
+    for (unsigned i = 0; i < 2 * numKeys; ++i) block->addArgument(i32Type, loc);
+    mlir::OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(block);
+    mlir::Value result;
+    for (unsigned i = 0; i < numKeys; ++i) {
+        mlir::Value eq = builder.create<mlir::arith::CmpIOp>(
+            loc, mlir::arith::CmpIPredicate::eq, block->getArgument(i), block->getArgument(numKeys + i));
+        result = result ? builder.create<mlir::arith::AndIOp>(loc, result, eq).getResult() : eq;
+    }
+    builder.create<tuples::ReturnOp>(loc, result);
+    return block;
+}
+mlir::Block* createInitBlock(mlir::OpBuilder& builder, mlir::Location loc, llvm::ArrayRef<std::pair<mlir::Type, int64_t>> values) {
+   auto* block = new mlir::Block;
+   mlir::OpBuilder::InsertionGuard guard(builder);
+   builder.setInsertionPointToStart(block);
+   llvm::SmallVector<mlir::Value> results;
+   for (auto [type, value] : values) {
+      results.push_back(builder.create<mlir::arith::ConstantIntOp>(loc, value, type));
+   }
+   builder.create<tuples::ReturnOp>(loc, results);
+   return block;
+}
+} // end anonymous namespace
+
 template <typename BuildIdentFn>
 mlir::Value generateTupleStream(mlir::ConversionPatternRewriter& rewriter, mlir::Location loc, tuples::ColumnDefAttr def, BuildIdentFn buildIdent) {
     auto ctxt = rewriter.getContext();
@@ -171,7 +200,7 @@ mlir::Value GraphPatternHelper::resolveNode(mlir::Value stream, tuples::ColumnRe
             return filterByIdentifier(scan, idRef); 
         });
 }
-mlir::Value GraphPatternHelper::nodeId(mlir::Value stream, IdentifierTermAttr ident, std::optional<size_t> paramId, tuples::ColumnRefAttr& idRef) {
+mlir::Value GraphPatternHelper::nodeId(mlir::Value stream, IdentifierTermAttr ident, tuples::ColumnRefAttr& idRef, std::optional<size_t> paramId) {
     gsubop::NodeRefType nodeRefType;
     tuples::ColumnRefAttr nodeRef;
     stream = lookupNode(stream, {}, gsubop::IdentifierType::get(ctxt), nodeRefType, nodeRef,
@@ -183,6 +212,7 @@ mlir::Value GraphPatternHelper::nodeId(mlir::Value stream, IdentifierTermAttr id
         });
     return graphHelper.nodeId(stream, nodeRef, nodeRefType, idRef);
 }
+
 mlir::Value TripleEmitter::lower(mlir::Value stream, std::optional<gpm::TripleSlot> anchor) {
     gsubop::EdgeRefType edgeRefType;
     tuples::ColumnRefAttr edgeRef;
@@ -274,6 +304,30 @@ mlir::Value TripleEmitter::emitTerm(mlir::Value stream, mlir::Attribute term, Me
         return filterByIdentifier(stream, rawRef, constTerm, paramId);
     }
     return finish(stream, term, rawRef);
+}
+
+mlir::Value PathPatternEmitter::emitFrontier() {
+    auto i32Type = rewriter.getI32Type();
+    auto tupleStreamType = tuples::TupleStreamType::get(ctxt);
+    auto anchorKey = createMember(ctxt, "path_anchor", i32Type);
+    auto anchorsType = subop::MapType::get(ctxt, createStateMembersAttr(ctxt, {anchorKey}), createStateMembersAttr(ctxt, {}), false);
+    mlir::Value anchors = rewriter.create<subop::GenericCreateOp>(loc, anchorsType);
+    for (auto [anchorStream, anchorIdRef] : this->anchors) {
+        auto [refDef, refRef] = createColumn(subop::LookupEntryRefType::get(ctxt, anchorsType), "path", "anchorref");
+        auto insertAnchors = rewriter.create<subop::LookupOrInsertOp>(loc, tupleStreamType, anchorStream, anchors, rewriter.getArrayAttr({anchorIdRef}), refDef);
+        insertAnchors.getEqFn().push_back(createI32EqBlock(rewriter, loc, 1));
+        insertAnchors.getInitFn().push_back(createInitBlock(rewriter, loc, {}));
+    }
+    auto f0Start = createMember(ctxt, "path_f0_start", i32Type);
+    auto f0Node = createMember(ctxt, "path_f0_node", i32Type);
+    auto frontierType = subop::BufferType::get(ctxt, createStateMembersAttr(ctxt, {f0Start, f0Node}));
+    mlir::Value frontier = rewriter.create<subop::GenericCreateOp>(loc, frontierType);
+    {
+        auto [idDef, idRef] = createColumn(i32Type, "path", "anchor_id");
+        mlir::Value scan = rewriter.create<subop::ScanOp>(loc, anchors, createColumnDefMemberMappingAttr(ctxt, {{anchorKey, idDef}}));
+        rewriter.create<subop::MaterializeOp>(loc, scan, frontier, subop::ColumnRefMemberMappingAttr::get(ctxt, {{f0Start, idRef}, {f0Node, idRef}}));
+    }
+    return frontier;
 }
 
 } // namespace gengodb::compiler::dialect::gpm::lowering

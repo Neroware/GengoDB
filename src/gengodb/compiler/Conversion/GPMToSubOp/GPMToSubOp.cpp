@@ -322,6 +322,7 @@ class PathLowering : public mlir::OpConversionPattern<gpm::PathOp> {
       auto* ctxt = rewriter.getContext();
       auto loc = pathOp.getLoc();
       auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+      auto& memberManager = ctxt->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
       auto tupleStreamType = tuples::TupleStreamType::get(ctxt);
       auto i1 = rewriter.getI1Type();
       auto i32 = rewriter.getI32Type();
@@ -359,11 +360,51 @@ class PathLowering : public mlir::OpConversionPattern<gpm::PathOp> {
       PathPatternEmitter emitter(rewriter, localGraphs, pathOp, pathOp.getGraphRef());
       std::string group, graph;
       std::tie(group, graph) = emitter.getGraphName();
-      if (anchorIdent) {
+
+      auto addAnchor = [&](auto fn) {
          tuples::ColumnRefAttr idRef;
-         scanNamedGraph(rewriter, loc, emitter.getGraph(), group, graph);
-         // emitter.addAnchor(edgeEndpointIds(, /*source=*/true, {}, idRef))
+         mlir::Value stream = fn(scanNamedGraph(rewriter, loc, emitter.getGraph(), group, graph), idRef);
+         emitter.addAnchor(stream, idRef);
+      };
+      auto filterByIdentifiers = [&](mlir::Value stream, tuples::ColumnRefAttr edgeRef, llvm::ArrayRef<mlir::Attribute> predicates) -> mlir::Value {
+         llvm::SmallVector<mlir::Value> idents;
+         for (auto predicate : predicates) {
+            idents.push_back(rewriter.create<gsubop::CreateIdentifierOp>(
+               loc, gsubop::IdentifierType::get(ctxt), graph, mlir::cast<gpm::IdentifierTermAttr>(predicate).getIdent()));
+         }
+         return rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, edgeRef, idents);
+      };
+      auto edgeEndpointId = [&](mlir::Value stream, bool fromSource, llvm::ArrayRef<mlir::Attribute> predicates, tuples::ColumnRefAttr& idRef) {
+         gsubop::EdgeRefType edgeRefType;
+         tuples::ColumnRefAttr edgeRef;
+         GraphHelper helper(rewriter, loc);
+         stream = emitter.scanEdges(stream, edgeRefType, edgeRef);
+         if (!predicates.empty()) stream = filterByIdentifiers(stream, edgeRef, predicates);
+         auto endpointMember = fromSource ? edgeRefType.getFromMembers().getMembers()[0] : edgeRefType.getToMembers().getMembers()[0];
+         tuples::ColumnRefAttr rawRef;
+         stream = emitter.emitEdgeToNode(stream, edgeRef, endpointMember, rawRef);
+         return helper.nodeId(stream, rawRef, mlir::cast<gsubop::NodeRefType>(memberManager.getType(endpointMember)), idRef);
+      };
+
+      if (anchorIdent) {
+         addAnchor([&](mlir::Value graphStream, tuples::ColumnRefAttr& idRef) { 
+            return emitter.nodeId(graphStream, anchorIdent, idRef, anchorParam);
+         });
+      } 
+      else if (zeroLength) {
+         addAnchor([&](mlir::Value graphStream, tuples::ColumnRefAttr& idRef) { 
+            return edgeEndpointId(graphStream, true, {}, idRef);
+         });
+         addAnchor([&](mlir::Value graphStream, tuples::ColumnRefAttr& idRef) { 
+            return edgeEndpointId(graphStream, false, {}, idRef);
+         });
+      } 
+      else {
+         addAnchor([&](mlir::Value graphStream, tuples::ColumnRefAttr& idRef) { 
+            return edgeEndpointId(graphStream, false, predicates, idRef);
+         });
       }
+      mlir::Value frontier = emitter.emitFrontier();
 
       return failure();
    }

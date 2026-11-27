@@ -44,7 +44,7 @@ struct GraphHelper {
         builder.create<tuples::ReturnOp>(loc, buildInner(tuple, block->getArguments().drop_front()));
         return nestedMapOp.getRes();
     }
-    inline mlir::Value attach(mlir::Value graphStream, const NamedGraph& graph, llvm::function_ref<mlir::Value(mlir::Value, mlir::Value, mlir::Value)> buildInner) {
+    inline mlir::Value attachGraph(mlir::Value graphStream, const NamedGraph& graph, llvm::function_ref<mlir::Value(mlir::Value, mlir::Value, mlir::Value)> buildInner) {
         return attach(graphStream, {columnManager.createRef(graph.nodeSetColumn), columnManager.createRef(graph.edgeSetColumn)},
             [&](mlir::Value tuple, mlir::ValueRange args) { return buildInner(tuple, args[0], args[1]); });
     }
@@ -90,7 +90,7 @@ struct GraphPatternHelper {
         gsubop::NodeRefType& nodeRefType, tuples::ColumnRefAttr& nodeRef, BuildKeyFn buildKey, RefApplyFn refineScan = nullptr, RefApplyFn refineLookup = nullptr);
     mlir::Value lookupEdge(mlir::Value stream, llvm::ArrayRef<tuples::ColumnRefAttr> columns, mlir::Type keyType,
         gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef, BuildKeyFn buildKey, RefApplyFn refineScan = nullptr, RefApplyFn refineLookup = nullptr);
-    mlir::Value nodeId(mlir::Value stream, IdentifierTermAttr ident, std::optional<size_t> paramId, tuples::ColumnRefAttr& idRef);
+    mlir::Value nodeId(mlir::Value stream, IdentifierTermAttr ident, tuples::ColumnRefAttr& idRef, std::optional<size_t> paramId = std::nullopt);
 
     void setUseEdgeWeights(bool useEdgeWeights) { this->useEdgeWeights = useEdgeWeights; }
     std::pair<std::string, std::string> getGraphName() const { return {group, graph}; }
@@ -150,7 +150,7 @@ class PathPatternEmitter : public GraphPatternHelper {
     // a single step from node id `fromRef` along the step edges: -> i32 id of the neighbor
     // mlir::Value step(mlir::Value stream, tuples::ColumnRefAttr fromRef, bool outgoing, llvm::ArrayRef<mlir::Attribute> predicates, tuples::ColumnRefAttr& toRef);
 
-    void addAnchor(mlir::Value anchor, tuples::ColumnRefAttr idRef) { anchors.push_back({anchor, idRef}); }
+    void addAnchor(mlir::Value stream, tuples::ColumnRefAttr idRef) { anchors.push_back({stream, idRef}); }
     mlir::Value emitFrontier();
     mlir::Value emitVisited();
     mlir::Value emitStep(mlir::Value frontier);
