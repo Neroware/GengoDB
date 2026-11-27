@@ -32,6 +32,11 @@ version here; rdflib still decides *which* resources get described. rdflib 7.x
 crashes on `DESCRIBE *`, so such a query must name the variables to use instead
 in a `# oracle: describe-star ?a ?b ...` header line.
 
+A `# oracle: rdflib-dedupe` header line deduplicates rdflib's rows: rdflib 7.x returns a
+`p*` pair twice when a cycle leads back to the start node, while SPARQL evaluates an
+arbitrary-length path to distinct pairs. Only for queries whose correct result has no
+duplicate rows (e.g. coffee/path/path_duplicate_anchors.sparql).
+
 Queries using the GengoDB-specific fuzzy `TRUTH ?t OF [hedge] { ... }` extension
 (e.g. coffee/misc/truth_crisp.sparql) are skipped too: rdflib can't parse that
 non-standard construct, so there's no independent oracle for them.
@@ -66,6 +71,10 @@ SKIP_RDFLIB = {"coffee/agg/agg_expr_arg_error.sparql", "coffee/agg/agg_group_by_
 TRUTH_OF_RE = re.compile(r"\bTRUTH\s+\S+\s+OF\b", re.IGNORECASE)  # fuzzy extension, not standard SPARQL
 DESCRIBE_STAR_RE = re.compile(r"^#\s*oracle:\s*describe-star((?:\s+\?\w+)+)\s*$", re.MULTILINE)
 UNORDERED_CONCAT_RE = re.compile(r'^#\s*oracle:\s*unordered-concat\s+\?(\w+)\s+"((?:[^"\\]|\\.)*)"\s*$', re.MULTILINE)
+# rdflib 7.x returns a `p*` pair twice when a cycle leads back to the start node (zero-length match +
+# cyclic match); SPARQL evaluates an arbitrary-length path to distinct pairs. Only for queries whose
+# correct result has no duplicate rows.
+RDFLIB_DEDUPE_RE = re.compile(r"^#\s*oracle:\s*rdflib-dedupe\s*$", re.MULTILINE)
 
 
 def cbd_rule1(self, resource, *, target_graph=None, include_reifications=True):
@@ -125,6 +134,8 @@ def main():
             else:
                 rows = [tuple(golden.term_key(t) for t in row) for row in result]
                 result_vars = [str(v) for v in result.vars]
+            if RDFLIB_DEDUPE_RE.search(query_text):
+                rows = list(dict.fromkeys(rows))
             unordered = []
             for var, sep in UNORDERED_CONCAT_RE.findall(query_text):
                 if var not in result_vars:

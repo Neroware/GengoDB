@@ -21,7 +21,7 @@
 #include "lingodb/compiler/Dialect/util/UtilOps.h"
 #include "lingodb/runtime/ExternalDataSourceProperty.h"
 #include "gengodb/compiler/Dialect/GPM/IR/GPMOps.h"
-#include "gengodb/compiler/Conversion/GPMToSubOp/TripleEmitter.h"
+#include "gengodb/compiler/Conversion/GPMToSubOp/GraphPatternHelper.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"

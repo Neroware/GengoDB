@@ -105,6 +105,7 @@ inline bool isAllowedGraphPatternBodyOp(const mlir::Operation& nested) {
         gengodb::compiler::dialect::gpm::BagOp,
         gengodb::compiler::dialect::gpm::FilterOp,
         gengodb::compiler::dialect::gpm::ExtendOp,
+        gengodb::compiler::dialect::gpm::PathOp,
         tuples::ReturnOp>(nested);
 }
 
@@ -119,6 +120,9 @@ ColumnSet getPatternCreatedVariables(mlir::Region& pattern) {
         }
         else if (auto extend = mlir::dyn_cast<gpm::ExtendOp>(nested)) {
             res.insert(extend.getCreatedVariables());
+        }
+        else if (auto path = mlir::dyn_cast<gpm::PathOp>(nested)) {
+            res.insert(path.getCreatedVariables());
         }
     });
     return res;
@@ -171,8 +175,8 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::BasicGraphPatternOp::getCreat
 }
 lingodb::compiler::dialect::relalg::ColumnSet gpm::BasicGraphPatternOp::getUsedVariables() {
     lingodb::compiler::dialect::relalg::ColumnSet res;
-    getPattern().walk([&](TriplePatternOp triple){
-        res.insert(triple.getUsedVariables());
+    getPattern().walk([&](mlir::Operation* leaf){
+        if (mlir::isa<TriplePatternOp, PathOp>(leaf)) res.insert(mlir::cast<GPMOperator>(leaf).getUsedVariables());
     });
     return res;
 }
@@ -293,6 +297,36 @@ void gpm::EdgeExpansionOp::maskParameters() {
     }
 }
 
+lingodb::compiler::dialect::relalg::ColumnSet gpm::PathOp::getCreatedColumns() {
+    return getCreatedVariables();
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::PathOp::getUsedColumns() {
+    return getBoundVariables();
+}
+lingodb::compiler::dialect::relalg::ColumnSet gpm::PathOp::getAvailableColumns(lingodb::compiler::dialect::relalg::AvailabilityCache& cache) {
+    lingodb::compiler::dialect::relalg::ColumnSet available;
+    if (auto child = mlir::dyn_cast_or_null<Operator>(getRel().getDefiningOp())) {
+        available.insert(cache.getAvailableColumnsFor(child));
+    }
+    available.insert(getCreatedColumns());
+    return available;
+}
+bool gpm::PathOp::canColumnReach(Operator source, Operator target, const lingodb::compiler::dialect::tuples::Column* column) {
+    return lingodb::compiler::dialect::relalg::detail::canColumnReach(getOperation(), source, target, column);
+}
+std::vector<relalg::QueryParamLiteral> gpm::PathOp::getParamLiterals() {
+    return paramLiterals({getS(), getO()});
+}
+std::optional<size_t> gpm::PathOp::getParamId(TripleSlot slot) {
+    assert(slot != TripleSlot::predicate && "a path's step predicates are not query parameters");
+    return paramIdForSlot(getOperation(), {getS(), getO()}, slot == TripleSlot::subject ? 0 : 1);
+}
+void gpm::PathOp::maskParameters() {
+    auto placeholder = gpm::IdentifierTermAttr::get(getContext(), mlir::StringAttr::get(getContext(), ""));
+    if (mlir::isa<gpm::IdentifierTermAttr>(getS())) setSAttr(placeholder);
+    if (mlir::isa<gpm::IdentifierTermAttr>(getO())) setOAttr(placeholder);
+}
+
 bool gpm::BindingsCompatibleOp::isEqualityPred(bool nullsAreEqual) {
     return nullsAreEqual || (!mlir::isa<db::NullableType>(getLhs().getType()) 
         && !mlir::isa<db::NullableType>(getRhs().getType()));
@@ -334,8 +368,8 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::BasicGraphPatternOp::getCreat
 }
 lingodb::compiler::dialect::relalg::ColumnSet gpm::BasicGraphPatternOp::getUsedColumns() {
     lingodb::compiler::dialect::relalg::ColumnSet used;
-    getPattern().walk([&](TriplePatternOp triple){
-        used.insert(triple.getBoundVariables());
+    getPattern().walk([&](mlir::Operation* leaf){
+        if (mlir::isa<TriplePatternOp, PathOp>(leaf)) used.insert(mlir::cast<GPMOperator>(leaf).getBoundVariables());
     });
     return used;
 }
@@ -356,8 +390,8 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::OptionalGraphPatternOp::getCr
 }
 lingodb::compiler::dialect::relalg::ColumnSet gpm::OptionalGraphPatternOp::getUsedVariables() {
     lingodb::compiler::dialect::relalg::ColumnSet res;
-    getPattern().walk([&](TriplePatternOp triple){
-        res.insert(triple.getUsedVariables());
+    getPattern().walk([&](mlir::Operation* leaf){
+        if (mlir::isa<TriplePatternOp, PathOp>(leaf)) res.insert(mlir::cast<GPMOperator>(leaf).getUsedVariables());
     });
     return res;
 }
@@ -366,8 +400,8 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::OptionalGraphPatternOp::getCr
 }
 lingodb::compiler::dialect::relalg::ColumnSet gpm::OptionalGraphPatternOp::getUsedColumns() {
     lingodb::compiler::dialect::relalg::ColumnSet used;
-    getPattern().walk([&](TriplePatternOp triple){
-        used.insert(triple.getBoundVariables());
+    getPattern().walk([&](mlir::Operation* leaf){
+        if (mlir::isa<TriplePatternOp, PathOp>(leaf)) used.insert(mlir::cast<GPMOperator>(leaf).getBoundVariables());
     });
     return used;
 }
@@ -389,8 +423,8 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::FuzzyGraphPatternOp::getCreat
 }
 lingodb::compiler::dialect::relalg::ColumnSet gpm::FuzzyGraphPatternOp::getUsedVariables() {
     lingodb::compiler::dialect::relalg::ColumnSet res;
-    getPattern().walk([&](TriplePatternOp triple){
-        res.insert(triple.getUsedVariables());
+    getPattern().walk([&](mlir::Operation* leaf){
+        if (mlir::isa<TriplePatternOp, PathOp>(leaf)) res.insert(mlir::cast<GPMOperator>(leaf).getUsedVariables());
     });
     return res;
 }
@@ -399,8 +433,8 @@ lingodb::compiler::dialect::relalg::ColumnSet gpm::FuzzyGraphPatternOp::getCreat
 }
 lingodb::compiler::dialect::relalg::ColumnSet gpm::FuzzyGraphPatternOp::getUsedColumns() {
     lingodb::compiler::dialect::relalg::ColumnSet used;
-    getPattern().walk([&](TriplePatternOp triple){
-        used.insert(triple.getBoundVariables());
+    getPattern().walk([&](mlir::Operation* leaf){
+        if (mlir::isa<TriplePatternOp, PathOp>(leaf)) used.insert(mlir::cast<GPMOperator>(leaf).getBoundVariables());
     });
     return used;
 }

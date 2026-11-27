@@ -1,0 +1,8 @@
+PREFIX ex: <http://example.org/>
+
+SELECT ?x ?y
+WHERE {
+    GRAPH <file://resources/ttl/coffee/coffee.ttl#rdf> {
+        { ?x ex:rel+ ?y } UNION { ?x ex:asksForMore+ ?y }
+    }
+}
