@@ -33,14 +33,34 @@ llvm::StringRef slotName(gpm::TripleSlot slot) {
       default: return "o";
    }
 }
-mlir::Attribute getSlot(gpm::TriplePatternOp triple, gpm::TripleSlot slot) {
+constexpr gpm::TripleSlot kPathSlots[] = {gpm::TripleSlot::subject, gpm::TripleSlot::object};
+bool isLeaf(mlir::Operation* op) {
+   return mlir::isa_and_nonnull<gpm::TriplePatternOp, gpm::PathOp>(op);
+}
+llvm::ArrayRef<gpm::TripleSlot> slotsOf(mlir::Operation* leaf) {
+   if (mlir::isa<gpm::PathOp>(leaf)) return kPathSlots;
+   return kTripleSlots;
+}
+mlir::Attribute getSlot(mlir::Operation* leaf, gpm::TripleSlot slot) {
+   if (auto path = mlir::dyn_cast<gpm::PathOp>(leaf)) {
+      assert(slot != gpm::TripleSlot::predicate && "a path has no predicate term");
+      return slot == gpm::TripleSlot::subject ? path.getS() : path.getO();
+   }
+   auto triple = mlir::cast<gpm::TriplePatternOp>(leaf);
    switch (slot) {
       case gpm::TripleSlot::subject: return triple.getS();
       case gpm::TripleSlot::predicate: return triple.getP();
       default: return triple.getO();
    }
 }
-void setSlot(gpm::TriplePatternOp triple, gpm::TripleSlot slot, mlir::Attribute term) {
+void setSlot(mlir::Operation* leaf, gpm::TripleSlot slot, mlir::Attribute term) {
+   if (auto path = mlir::dyn_cast<gpm::PathOp>(leaf)) {
+      assert(slot != gpm::TripleSlot::predicate && "a path has no predicate term");
+      if (slot == gpm::TripleSlot::subject) path.setSAttr(term);
+      else path.setOAttr(term);
+      return;
+   }
+   auto triple = mlir::cast<gpm::TriplePatternOp>(leaf);
    switch (slot) {
       case gpm::TripleSlot::subject: triple.setSAttr(term); break;
       case gpm::TripleSlot::predicate: triple.setPAttr(term); break;
@@ -61,7 +81,7 @@ const tuples::Column* resolveThroughRemaps(const ColumnMapper& remaps, const tup
    return column;
 }
 bool isGpmStreamOp(mlir::Operation* op) {
-   return op && (mlir::isa<gpm::GraphPatternOp>(op) || mlir::isa<gpm::BagOp, gpm::TriplePatternOp, gpm::NamedGraphOp, gpm::FilterOp, gpm::ExtendOp>(op));
+   return op && (mlir::isa<gpm::GraphPatternOp>(op) || mlir::isa<gpm::BagOp, gpm::TriplePatternOp, gpm::NamedGraphOp, gpm::FilterOp, gpm::ExtendOp, gpm::PathOp>(op));
 }
 relalg::MapOp asBindMap(mlir::Operation* op) {
    auto mapOp = mlir::dyn_cast_or_null<relalg::MapOp>(op);
@@ -204,6 +224,11 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          rewritten[v] = result;
          return result;
       }
+      if (auto pathOp = mlir::dyn_cast<gpm::PathOp>(op)) {
+         auto result = rewritePath(pathOp);
+         rewritten[v] = result;
+         return result;
+      }
       mlir::Value result;
       if (auto patternOp = mlir::dyn_cast<gpm::GraphPatternOp>(op)) {
          result = rewritePattern(patternOp);
@@ -251,9 +276,19 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       mlir::Value accumulator = rewrite(triple.getRel());
       llvm::StringMap<tuples::ColumnRefAttr> ownScope;
       bnodesToVariables(triple, bnodeScope ? *bnodeScope : ownScope);
-      isolateTriple(triple, insertPoint);
+      isolateLeaf(triple, insertPoint);
       if (!fuzzyScopes.empty()) attachDegree(triple);
       return fold(accumulator, triple.getRes(), gpm::PatternKind::basic, relalg::ColumnSet(), triple.getLoc());
+   }
+   mlir::Value rewritePath(gpm::PathOp pathOp) {
+      if (!fuzzyScopes.empty()) {
+         pathOp.emitOpError("property paths inside fuzzy graph patterns are not supported");
+         signalPassFailure();
+         return {};
+      }
+      mlir::Value accumulator = rewrite(pathOp.getRel());
+      isolateLeaf(pathOp, insertPoint);
+      return fold(accumulator, pathOp.getRes(), gpm::PatternKind::basic, relalg::ColumnSet(), pathOp.getLoc());
    }
    void attachDegree(gpm::TriplePatternOp triple) {
       auto& columnManager = triple.getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
@@ -425,20 +460,20 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          leftVars = collectTripleVariables(accumulator, visited);
       }
       relalg::ColumnSet elementProduced = producedColumns(elementStream);
-      llvm::SmallVector<gpm::TriplePatternOp> triples;
+      llvm::SmallVector<mlir::Operation*> leaves;
       {
          llvm::SmallPtrSet<mlir::Operation*, 16> visited;
-         collectTriples(elementStream, visited, triples);
+         collectLeaves(elementStream, visited, leaves);
       }
       ColumnMapper splits;
-      for (auto triple : triples) {
-         for (auto slot : kTripleSlots) {
+      for (auto* triple : leaves) {
+         for (auto slot : slotsOf(triple)) {
             auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(getSlot(triple, slot));
             if (!varTerm || !varTerm.hasBinding()) continue;
             const auto* column = &varTerm.getBindingReference().getColumn();
             if (leftVars.contains(column) || elementProduced.contains(column)) continue;
             if (splits.contains(column)) {
-               triple.emitOpError("unsupported: variable ?") << columnManager.getName(column).second << " is bound more than once inside an independently evaluated pattern";
+               triple->emitOpError("unsupported: variable ?") << columnManager.getName(column).second << " is bound more than once inside an independently evaluated pattern";
                signalPassFailure();
                return false;
             }
@@ -533,8 +568,8 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       auto insertMapping = [&](mlir::ArrayAttr mapping) {
          for (auto attr : mapping) result.insert(mlir::cast<tuples::ColumnDefAttr>(attr).getColumnPtr().get());
       };
-      if (auto triple = mlir::dyn_cast<gpm::TriplePatternOp>(op)) {
-         result.insert(triple.getCreatedColumns());
+      if (isLeaf(op)) {
+         result.insert(mlir::cast<Operator>(op).getCreatedColumns());
          return result;
       }
       if (auto unionOp = mlir::dyn_cast<relalg::UnionOp>(op)) {
@@ -692,8 +727,9 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       for (auto [scope, degree] : unionDegrees) scope->degreeOf[relUnion.getResult()] = degree;
       return relUnion.getResult();
    }
-   void isolateTriple(gpm::TriplePatternOp triple, mlir::Operation* insertBefore) {
-      auto* ctxt = triple.getContext();
+   template <typename LeafOp>
+   void isolateLeaf(LeafOp triple, mlir::Operation* insertBefore) {
+      mlir::MLIRContext* ctxt = triple.getContext();
       auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
       auto originalGraphType = triple.getGraphRef().getColumn().type;
       auto freshDef = columnManager.createDef(columnManager.getUniqueScope("graphs"), "ref");
@@ -922,9 +958,9 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       relalg::ColumnSet result;
       auto* op = v.getDefiningOp();
       if (!op || !visited.insert(op).second) return result;
-      if (auto triple = mlir::dyn_cast<gpm::TriplePatternOp>(op)) {
-         for (auto slot : kTripleSlots) {
-            auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(getSlot(triple, slot));
+      if (isLeaf(op)) {
+         for (auto slot : slotsOf(op)) {
+            auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(getSlot(op, slot));
             if (!varTerm) continue;
             if (auto ref = varTerm.getBindingReference()) {
                result.insert(&ref.getColumn());
@@ -966,18 +1002,18 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       }
       return result;
    }
-   void collectTriples(mlir::Value v, llvm::SmallPtrSet<mlir::Operation*, 16>& visited, llvm::SmallVectorImpl<gpm::TriplePatternOp>& result) {
+   void collectLeaves(mlir::Value v, llvm::SmallPtrSet<mlir::Operation*, 16>& visited, llvm::SmallVectorImpl<mlir::Operation*>& result) {
       auto* op = v.getDefiningOp();
       if (!op || !visited.insert(op).second) return;
-      if (auto triple = mlir::dyn_cast<gpm::TriplePatternOp>(op)) {
-         result.push_back(triple);
+      if (isLeaf(op)) {
+         result.push_back(op);
       }
       if (auto outerJoin = mlir::dyn_cast<relalg::OuterJoinOp>(op)) {
-         collectTriples(outerJoin.getLeft(), visited, result);
+         collectLeaves(outerJoin.getLeft(), visited, result);
          return;
       }
       for (auto operand : op->getOperands()) {
-         collectTriples(operand, visited, result);
+         collectLeaves(operand, visited, result);
       }
    }
    struct BindingPair {
@@ -988,13 +1024,13 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       auto* ctxt = right.getContext();
       auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
       llvm::SmallPtrSet<mlir::Operation*, 16> visitedRight;
-      llvm::SmallVector<gpm::TriplePatternOp> rightTriples;
-      collectTriples(right, visitedRight, rightTriples);
+      llvm::SmallVector<mlir::Operation*> rightLeaves;
+      collectLeaves(right, visitedRight, rightLeaves);
 
       llvm::SmallVector<BindingPair> result;
-      for (auto triple : rightTriples) {
+      for (auto* triple : rightLeaves) {
          llvm::DenseMap<const tuples::Column*, tuples::ColumnRefAttr> freshInTriple;
-         for (auto slot : kTripleSlots) {
+         for (auto slot : slotsOf(triple)) {
             auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(getSlot(triple, slot));
             if (!varTerm) continue;
             auto existingSource = bindingSource(varTerm);
@@ -1215,8 +1251,9 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
    void normalizeTriples() {
       auto* ctxt = &getContext();
       auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
-      getOperation()->walk([&](gpm::TriplePatternOp triple) {
-         for (auto slot : kTripleSlots) {
+      getOperation()->walk([&](mlir::Operation* triple) {
+         if (!isLeaf(triple)) return;
+         for (auto slot : slotsOf(triple)) {
             auto varTerm = mlir::dyn_cast<gpm::VariableTermAttr>(getSlot(triple, slot));
             if (!varTerm) continue;
             const tuples::Column* column;
