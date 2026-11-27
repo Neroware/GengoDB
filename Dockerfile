@@ -39,7 +39,7 @@ RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
 
 RUN pip install --upgrade pip && \
-    pip install lit conan
+    pip install lit conan rdflib
 
 # ------------------------------------------------------------
 # LLVM 20 + MLIR
