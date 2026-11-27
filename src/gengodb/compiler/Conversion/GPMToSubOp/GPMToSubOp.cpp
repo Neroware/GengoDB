@@ -108,19 +108,19 @@ static LogicalResult normalized(gpm::TriplePatternOp tripleOp) {
    }
    return success();
 }
-static void replaceTripleOp(gpm::TriplePatternOp tripleOp, mlir::Value lowered, ConversionPatternRewriter& rewriter) {
-   bool needsInFlight = llvm::any_of(tripleOp.getRes().getUses(), [](mlir::OpOperand& use) {
+static void replaceGraphPatternOp(mlir::Operation* patternOp, mlir::Value lowered, ConversionPatternRewriter& rewriter) {
+   bool needsInFlight = llvm::any_of(patternOp->getResult(0).getUses(), [](mlir::OpOperand& use) {
       return isRelAlgOperator(use.getOwner());
    });
    if (needsInFlight) {
       relalg::AvailabilityCache availabilityCache;
-      auto availableColumns = mlir::cast<Operator>(tripleOp.getOperation()).getAvailableColumns(availabilityCache).asRefArrayAttr(rewriter.getContext());
-      auto inFlight = rewriter.create<relalg::InFlightOp>(tripleOp.getLoc(), lowered, availableColumns);
-      rewriter.replaceUsesWithIf(tripleOp.getRes(), inFlight.getRes(), [](mlir::OpOperand& use) {
+      auto availableColumns = mlir::cast<Operator>(patternOp).getAvailableColumns(availabilityCache).asRefArrayAttr(rewriter.getContext());
+      auto inFlight = rewriter.create<relalg::InFlightOp>(patternOp->getLoc(), lowered, availableColumns);
+      rewriter.replaceUsesWithIf(patternOp->getResult(0), inFlight.getRes(), [](mlir::OpOperand& use) {
          return isRelAlgOperator(use.getOwner());
       });
    }
-   rewriter.replaceOp(tripleOp, lowered);
+   rewriter.replaceOp(patternOp, lowered);
 }
 
 class NamedGraphLowering : public OpConversionPattern<gpm::NamedGraphOp> {
@@ -146,7 +146,7 @@ class TriplePatternLowering : public OpConversionPattern<gpm::TriplePatternOp> {
          return failure();
       TripleEmitter emitter(rewriter, graphs, tripleOp);
       emitter.setUseEdgeWeights(tripleOp->hasAttr("truthDegr"));
-      replaceTripleOp(tripleOp, emitter.lower(adaptor.getRel()), rewriter);
+      replaceGraphPatternOp(tripleOp, emitter.lower(adaptor.getRel()), rewriter);
       return success();
    }
 };
@@ -170,7 +170,7 @@ class VirtualTriplePatternLowering : public OpConversionPattern<gpm::TriplePatte
          (void) column;
       }
       mlir::Value placeholder = rewriter.create<gsubop::GraphIndexExpandOp>(tripleOp.getLoc(), tuples::TupleStreamType::get(rewriter.getContext()), adaptor.getRel(), asDictAttr(tripleOp), idAttr);
-      replaceTripleOp(tripleOp, placeholder, rewriter);
+      replaceGraphPatternOp(tripleOp, placeholder, rewriter);
       return success();
    }
    private:
@@ -319,44 +319,37 @@ class PathLowering : public mlir::OpConversionPattern<gpm::PathOp> {
       : mlir::OpConversionPattern<gpm::PathOp>(typeConverter, context), graphs(graphs) {}
 
    LogicalResult matchAndRewrite(gpm::PathOp pathOp, OpAdaptor adaptor, ConversionPatternRewriter& rewriter) const override {
+      using PathTerm = PathPatternEmitter::PathTerm;
       auto* ctxt = rewriter.getContext();
       auto loc = pathOp.getLoc();
-      auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
       auto& memberManager = ctxt->getLoadedDialect<subop::SubOperatorDialect>()->getMemberManager();
-      auto tupleStreamType = tuples::TupleStreamType::get(ctxt);
-      auto i1 = rewriter.getI1Type();
       auto i32Type = rewriter.getI32Type();
 
-      const tuples::Column* ends[2] = {nullptr, nullptr};
-      gpm::IdentifierTermAttr idents[2];
+      PathTerm terms[2];
       for (auto [i, term] : llvm::enumerate(std::array<mlir::Attribute, 2>{pathOp.getS(), pathOp.getO()})) {
+         terms[i].paramId = pathOp.getParamId(i == 0 ? gpm::TripleSlot::subject : gpm::TripleSlot::object);
          if (auto ident = mlir::dyn_cast<gpm::IdentifierTermAttr>(term)) {
-            idents[i] = ident;
+            terms[i].ident = ident;
             continue;
          }
          auto varTerm = mlir::cast<gpm::VariableTermAttr>(term);
          if (!varTerm.getProducedBinding())
             return pathOp.emitOpError("path is not normalized, run --gpm-unnest-patterns first");
-         ends[i] = &varTerm.getProducedBinding().getColumn();
-         if (!mlir::isa<variant::VariantType>(ends[i]->type))
+         terms[i].column = &varTerm.getProducedBinding().getColumn();
+         if (!mlir::isa<variant::VariantType>(terms[i].column->type))
             return pathOp.emitOpError("path end columns must be variants, run --gpm-unnest-patterns first");
       }
       auto graphIt = graphs.find(pathOp.getGraphRef().getName());
       if (graphIt == graphs.end())
          return pathOp.emitOpError("the path's named graph must be lowered before the path");
-      const NamedGraph inputGraph = graphIt->second;
 
-      bool forward = idents[0] || !idents[1];
-      gpm::IdentifierTermAttr anchorIdent = forward ? idents[0] : idents[1];
-      gpm::IdentifierTermAttr otherIdent = forward ? idents[1] : gpm::IdentifierTermAttr();
-      auto anchorParam = pathOp.getParamId(forward ? gpm::TripleSlot::subject : gpm::TripleSlot::object);
-      auto otherParam = pathOp.getParamId(gpm::TripleSlot::object);
-      bool sameVariable = ends[0] && ends[0] == ends[1];
+      bool forward = terms[0].ident || !terms[1].ident;
+      const PathTerm& anchor = forward ? terms[0] : terms[1];
       bool zeroLength = pathOp.getMinLength() == 0;
       auto predicates = llvm::to_vector(pathOp.getPredicates().getValue());
 
       NamedGraphMapper localGraphs;
-      localGraphs[pathOp.getGraphRef().getName()] = inputGraph;
+      localGraphs[pathOp.getGraphRef().getName()] = graphIt->second;
       PathPatternEmitter emitter(rewriter, localGraphs, pathOp, pathOp.getGraphRef(), forward, zeroLength, predicates);
       std::string group, graph;
       std::tie(group, graph) = emitter.getGraphName();
@@ -378,22 +371,24 @@ class PathLowering : public mlir::OpConversionPattern<gpm::PathOp> {
          return helper.nodeId(stream, rawRef, mlir::cast<gsubop::NodeRefType>(memberManager.getType(endpointMember)), idRef);
       };
 
-      if (anchorIdent) {
-         addAnchor([&](mlir::Value graphStream, tuples::ColumnRefAttr& idRef) { 
-            return emitter.nodeId(graphStream, anchorIdent, idRef, anchorParam);
+      if (anchor.ident) {
+         addAnchor([&](mlir::Value graphStream, tuples::ColumnRefAttr& idRef) {
+            return emitter.nodeId(graphStream, anchor.ident, idRef, anchor.paramId);
          });
-      } 
+      }
       else if (zeroLength) {
-         addAnchor([&](mlir::Value graphStream, tuples::ColumnRefAttr& idRef) { 
+         // p*: every node of G reaches itself
+         addAnchor([&](mlir::Value graphStream, tuples::ColumnRefAttr& idRef) {
             return edgeEndpointId(graphStream, true, {}, idRef);
          });
-         addAnchor([&](mlir::Value graphStream, tuples::ColumnRefAttr& idRef) { 
+         addAnchor([&](mlir::Value graphStream, tuples::ColumnRefAttr& idRef) {
             return edgeEndpointId(graphStream, false, {}, idRef);
          });
-      } 
+      }
       else {
-         addAnchor([&](mlir::Value graphStream, tuples::ColumnRefAttr& idRef) { 
-            return edgeEndpointId(graphStream, false, predicates, idRef);
+         // p+: a path starts with a step edge
+         addAnchor([&](mlir::Value graphStream, tuples::ColumnRefAttr& idRef) {
+            return edgeEndpointId(graphStream, true, predicates, idRef);
          });
       }
       auto anchorKey = createMember(ctxt, "path_anchor", i32Type);
@@ -405,9 +400,12 @@ class PathLowering : public mlir::OpConversionPattern<gpm::PathOp> {
       subop::Member visitedSeen;
       subop::MapType visitedType;
       mlir::Value visited = emitter.emitVisited(anchorKey, anchors, visitedType, visitedStart, visitedNode, visitedSeen);
-      mlir::Value step = emitter.emitStep(frontier, visited, visitedType, visitedSeen);
 
-      return failure();
+      visited = emitter.emitStep(frontier, visited, visitedType, visitedSeen);
+
+      mlir::Value lowered = emitter.finish(adaptor.getRel(), visited, terms[0], terms[1], visitedStart, visitedNode);
+      replaceGraphPatternOp(pathOp, lowered, rewriter);
+      return success();
    }
 };
 
@@ -534,6 +532,7 @@ void GPMToSubOpLoweringPass::runOnOperation() {
    patterns.insert<VirtualTriplePatternLowering>(typeConverter, ctxt, graphIdxExpandIds);
    patterns.insert<NodeExpansionLowering>(typeConverter, ctxt, graphs);
    patterns.insert<EdgeExpansionLowering>(typeConverter, ctxt, graphs);
+   patterns.insert<PathLowering>(typeConverter, ctxt, graphs);
    patterns.insert<GpmBindingsCompatibleLowering>(typeConverter, ctxt);
    patterns.insert<GetBindingOpLowering>(typeConverter, ctxt);
 
