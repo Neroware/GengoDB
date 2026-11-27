@@ -357,7 +357,7 @@ class PathLowering : public mlir::OpConversionPattern<gpm::PathOp> {
 
       NamedGraphMapper localGraphs;
       localGraphs[pathOp.getGraphRef().getName()] = inputGraph;
-      PathPatternEmitter emitter(rewriter, localGraphs, pathOp, pathOp.getGraphRef());
+      PathPatternEmitter emitter(rewriter, localGraphs, pathOp, pathOp.getGraphRef(), forward, zeroLength, predicates);
       std::string group, graph;
       std::tie(group, graph) = emitter.getGraphName();
 
@@ -399,7 +399,13 @@ class PathLowering : public mlir::OpConversionPattern<gpm::PathOp> {
       auto anchorKey = createMember(ctxt, "path_anchor", i32Type);
       mlir::Value anchors;
       mlir::Value frontier = emitter.emitFrontier(anchorKey, anchors);
-      mlir::Value visited = emitter.emitVisited(anchorKey, anchors, zeroLength);
+
+      subop::Member visitedStart;
+      subop::Member visitedNode;
+      subop::Member visitedSeen;
+      subop::MapType visitedType;
+      mlir::Value visited = emitter.emitVisited(anchorKey, anchors, visitedType, visitedStart, visitedNode, visitedSeen);
+      mlir::Value step = emitter.emitStep(frontier, visited, visitedType, visitedSeen);
 
       return failure();
    }

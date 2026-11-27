@@ -147,20 +147,28 @@ class TripleEmitter : public GraphPatternHelper {
 
 class PathPatternEmitter : public GraphPatternHelper {
     public:
-    PathPatternEmitter(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& localGraphs, mlir::Operation* op, tuples::ColumnRefAttr graphRef)
-        : GraphPatternHelper(rewriter, localGraphs, op, graphRef) {}
-
-    // a single step from node id `fromRef` along the step edges: -> i32 id of the neighbor
-    // mlir::Value step(mlir::Value stream, tuples::ColumnRefAttr fromRef, bool outgoing, llvm::ArrayRef<mlir::Attribute> predicates, tuples::ColumnRefAttr& toRef);
+    PathPatternEmitter(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& localGraphs, mlir::Operation* op, tuples::ColumnRefAttr graphRef,
+        bool forward, bool zeroLength, llvm::ArrayRef<mlir::Attribute> predicates)
+            : GraphPatternHelper(rewriter, localGraphs, op, graphRef), inputGraph(getGraph()),
+            forward(forward), zeroLength(zeroLength), predicates(predicates.begin(), predicates.end()) {}
 
     void addAnchor(mlir::Value stream, tuples::ColumnRefAttr idRef) { anchors.push_back({stream, idRef}); }
     mlir::Value emitFrontier(Member& anchorKey, mlir::Value& anchors);
-    mlir::Value emitVisited(const Member& anchorKey, mlir::Value anchors, bool zeroLength);
-    mlir::Value emitStep(mlir::Value frontier);
-    mlir::Value finish(mlir::Value stream);
+    mlir::Value emitVisited(const Member& anchorKey, mlir::Value anchors, subop::MapType& type, subop::Member& start, subop::Member& node, subop::Member& seen);
+    mlir::Value emitStep(mlir::Value frontier, mlir::Value visited, subop::MapType type, const subop::Member& seen);
+    mlir::Value finish(mlir::Value stream, const subop::Member& start, const subop::Member& node);
 
     private:
+    // mlir::Value filterIdsEqual(mlir::Value stream, tuples::ColumnRefAttr left, tuples::ColumnRefAttr right);
+    // mlir::Value constantNotInGraph(IdentifierTermAttr ident, std::optional<size_t> paramId, tuples::ColumnRefAttr& valueRef);
+
+    NamedGraph inputGraph;
+    bool forward, zeroLength;
+    llvm::SmallVector<mlir::Attribute> predicates;
     llvm::SmallVector<std::pair<mlir::Value, tuples::ColumnRefAttr>> anchors;
+    // subop::MapType visitedType;
+    // Member visitedStart, visitedNode, visitedSeen;
+    // mlir::Value visited;
 }; // PathPatternEmitter
 
 } // namespace gengodb::compiler::dialect::gpm::lowering
