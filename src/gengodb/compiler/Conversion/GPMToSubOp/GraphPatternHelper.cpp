@@ -220,22 +220,33 @@ mlir::Value GraphPatternHelper::nodeId(mlir::Value stream, IdentifierTermAttr id
         });
     return graphHelper.nodeId(stream, nodeRef, nodeRefType, idRef);
 }
+mlir::Value GraphPatternHelper::lookupNode(mlir::Value stream, tuples::ColumnRefAttr idRef, gsubop::NodeRefType& nodeRefType, tuples::ColumnRefAttr& nodeRef) {
+    return lookupNode(stream, {idRef}, rewriter.getI32Type(), nodeRefType, nodeRef,
+        [](mlir::OpBuilder&, mlir::Value, mlir::ValueRange args) -> mlir::Value { return args[0]; });
+}
+mlir::Value GraphPatternHelper::filterByIdentifiers(mlir::Value stream, tuples::ColumnRefAttr edgeRef, llvm::ArrayRef<mlir::Attribute> predicates) {
+    llvm::SmallVector<mlir::Value> idents;
+    for (auto predicate : predicates) {
+        idents.push_back(graphHelper.createIdentifier(graph, mlir::cast<IdentifierTermAttr>(predicate), std::nullopt));
+    }
+    return rewriter.create<gsubop::FilterByIdentifierOp>(loc, stream, edgeRef, idents);
+}
 mlir::Value GraphPatternHelper::step(mlir::Value stream, tuples::ColumnRefAttr fromRef, bool outgoing, llvm::ArrayRef<mlir::Attribute> predicates, tuples::ColumnRefAttr& toRef) {
-    gsubop::NodeRefType nodeRefType;
-    tuples::ColumnRefAttr nodeRef;
-    stream = lookupNode(stream, fromRef, nodeRefType, nodeRef);
-    auto edgeMember = outgoing ? nodeRefType.getOutgoingMembers().getMembers()[0] : nodeRefType.getIncomingMembers().getMembers()[0];
-    auto edgeSetType = memberManager.getType(edgeMember);
-    auto [edgesDef, edgesRef] = createColumn(edgeSetType, "edges", outgoing ? "outgoing" : "incoming");
-    stream = rewriter.create<subop::GatherOp>(loc, stream, nodeRef, createColumnDefMemberMappingAttr(ctxt, {{edgeMember, edgesDef}}));
-    gsubop::EdgeRefType edgeRefType;
-    tuples::ColumnRefAttr edgeRef;
-    stream = scanEdges(stream, edgesRef, edgeSetType, edgeRefType, edgeRef);
-    stream = filterByIdentifiers(stream, edgeRef, predicates);
-    auto endpointMember = outgoing ? edgeRefType.getToMembers().getMembers()[0] : edgeRefType.getFromMembers().getMembers()[0];
-    tuples::ColumnRefAttr rawRef;
-    stream = emitEdgeToNode(stream, edgeRef, endpointMember, rawRef);
-    return nodeIds(stream, rawRef, mlir::cast<gsubop::NodeRefType>(memberManager.getType(endpointMember)), toRef);
+    // gsubop::NodeRefType nodeRefType;
+    // tuples::ColumnRefAttr nodeRef;
+    // stream = lookupNode(stream, fromRef, nodeRefType, nodeRef);
+    // auto edgeMember = outgoing ? nodeRefType.getOutgoingMembers().getMembers()[0] : nodeRefType.getIncomingMembers().getMembers()[0];
+    // auto edgeSetType = memberManager.getType(edgeMember);
+    // auto [edgesDef, edgesRef] = createColumn(edgeSetType, "edges", outgoing ? "outgoing" : "incoming");
+    // stream = rewriter.create<subop::GatherOp>(loc, stream, nodeRef, createColumnDefMemberMappingAttr(ctxt, {{edgeMember, edgesDef}}));
+    // gsubop::EdgeRefType edgeRefType;
+    // tuples::ColumnRefAttr edgeRef;
+    // stream = scanEdges(stream, edgesRef, edgeSetType, edgeRefType, edgeRef);
+    // stream = filterByIdentifiers(stream, edgeRef, predicates);
+    // auto endpointMember = outgoing ? edgeRefType.getToMembers().getMembers()[0] : edgeRefType.getFromMembers().getMembers()[0];
+    // tuples::ColumnRefAttr rawRef;
+    // stream = emitEdgeToNode(stream, edgeRef, endpointMember, rawRef);
+    // return nodeIds(stream, rawRef, mlir::cast<gsubop::NodeRefType>(memberManager.getType(endpointMember)), toRef);
 }
 
 mlir::Value TripleEmitter::lower(mlir::Value stream, std::optional<gpm::TripleSlot> anchor) {
@@ -372,80 +383,80 @@ mlir::Value PathPatternEmitter::emitVisited(const Member& anchorKey, mlir::Value
     }
 }
 mlir::Value PathPatternEmitter::emitStep(mlir::Value frontier) {
-    auto i32Type = rewriter.getI32Type();
-    auto i1Type = rewriter.getI1Type();
-    auto tupleStreamType = tuples::TupleStreamType::get(ctxt);
-    auto fStart = createMember(ctxt, "path_f_start", i32Type);
-    auto fNode = createMember(ctxt, "path_f_node", i32Type);
-    auto frontierType = subop::BufferType::get(ctxt, createStateMembersAttr(ctxt, {fStart, fNode}));
-    auto loopOp = rewriter.create<subop::LoopOp>(loc, mlir::TypeRange{frontierType}, mlir::ValueRange{frontier});
-    auto* body = new mlir::Block;
-    mlir::Value frontierArg = body->addArgument(frontierType, loc);
-    loopOp.getBodyRegion().push_back(body);
-    {
-        mlir::OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToStart(body);
-        auto nStart = createMember(ctxt, "path_n_start", i32Type);
-        auto nNode = createMember(ctxt, "path_n_node", i32Type);
-        auto nextType = subop::BufferType::get(ctxt, createStateMembersAttr(ctxt, {nStart, nNode}));
-        mlir::Value next = rewriter.create<subop::GenericCreateOp>(loc, nextType);
-        auto cStart = createMember(ctxt, "path_c_start", i32Type);
-        auto cNode = createMember(ctxt, "path_c_node", i32Type);
-        auto candType = subop::MapType::get(ctxt, createStateMembersAttr(ctxt, {cStart, cNode}), createStateMembersAttr(ctxt, {}), false);
-        mlir::Value cand = rewriter.create<subop::GenericCreateOp>(loc, candType);
-        auto goMember = createMember(ctxt, "path_go", i1Type);
-        auto goType = subop::SimpleStateType::get(ctxt, createStateMembersAttr(ctxt, {goMember}));
-        auto goCreate = rewriter.create<subop::CreateSimpleStateOp>(loc, goType);
-        goCreate.getInitFn().push_back(createInitBlock(rewriter, loc, {{i1Type, 0}}));
-        mlir::Value go = goCreate.getRes();
+    // auto i32Type = rewriter.getI32Type();
+    // auto i1Type = rewriter.getI1Type();
+    // auto tupleStreamType = tuples::TupleStreamType::get(ctxt);
+    // auto fStart = createMember(ctxt, "path_f_start", i32Type);
+    // auto fNode = createMember(ctxt, "path_f_node", i32Type);
+    // auto frontierType = subop::BufferType::get(ctxt, createStateMembersAttr(ctxt, {fStart, fNode}));
+    // auto loopOp = rewriter.create<subop::LoopOp>(loc, mlir::TypeRange{frontierType}, mlir::ValueRange{frontier});
+    // auto* body = new mlir::Block;
+    // mlir::Value frontierArg = body->addArgument(frontierType, loc);
+    // loopOp.getBodyRegion().push_back(body);
+    // {
+    //     mlir::OpBuilder::InsertionGuard guard(rewriter);
+    //     rewriter.setInsertionPointToStart(body);
+    //     auto nStart = createMember(ctxt, "path_n_start", i32Type);
+    //     auto nNode = createMember(ctxt, "path_n_node", i32Type);
+    //     auto nextType = subop::BufferType::get(ctxt, createStateMembersAttr(ctxt, {nStart, nNode}));
+    //     mlir::Value next = rewriter.create<subop::GenericCreateOp>(loc, nextType);
+    //     auto cStart = createMember(ctxt, "path_c_start", i32Type);
+    //     auto cNode = createMember(ctxt, "path_c_node", i32Type);
+    //     auto candType = subop::MapType::get(ctxt, createStateMembersAttr(ctxt, {cStart, cNode}), createStateMembersAttr(ctxt, {}), false);
+    //     mlir::Value cand = rewriter.create<subop::GenericCreateOp>(loc, candType);
+    //     auto goMember = createMember(ctxt, "path_go", i1Type);
+    //     auto goType = subop::SimpleStateType::get(ctxt, createStateMembersAttr(ctxt, {goMember}));
+    //     auto goCreate = rewriter.create<subop::CreateSimpleStateOp>(loc, goType);
+    //     goCreate.getInitFn().push_back(createInitBlock(rewriter, loc, {{i1Type, 0}}));
+    //     mlir::Value go = goCreate.getRes();
 
-        // step (s, n) -p-> (s, m), deduplicated within the iteration
-        auto [sDef, sRef] = createColumn(i32Type, "path", "start");
-        auto [nDef, nRef] = createColumn(i32Type, "path", "node");
-        NamedGraph& namedGraph = getGraph();
-        mlir::Value stepStream = graphHelper.attachGraph(scanNamedGraph(rewriter, loc, namedGraph, group, graph), namedGraph, [&](mlir::Value, mlir::Value, mlir::Value) -> mlir::Value {
-            return rewriter.create<subop::ScanOp>(loc, frontierArg, createColumnDefMemberMappingAttr(ctxt, {{fStart, sDef}, {fNode, nDef}}));
-        });
-        tuples::ColumnRefAttr mRef;
-        stepStream = emitter.step(stepStream, nRef, forward, predicates, mRef);
-        {
-            auto [refDef, refRef] = createColumn(subop::LookupEntryRefType::get(ctxt, candType), "path", "candref");
-            auto insertCand = rewriter.create<subop::LookupOrInsertOp>(loc, tupleStreamType, stepStream, cand, rewriter.getArrayAttr({sRef, mRef}), refDef);
-            insertCand.getEqFn().push_back(createI32EqBlock(rewriter, loc, 2));
-            insertCand.getInitFn().push_back(createInitBlock(rewriter, loc, {}));
-        }
+    //     // step (s, n) -p-> (s, m), deduplicated within the iteration
+    //     auto [sDef, sRef] = createColumn(i32Type, "path", "start");
+    //     auto [nDef, nRef] = createColumn(i32Type, "path", "node");
+    //     NamedGraph& namedGraph = getGraph();
+    //     mlir::Value stepStream = graphHelper.attachGraph(scanNamedGraph(rewriter, loc, namedGraph, group, graph), namedGraph, [&](mlir::Value, mlir::Value, mlir::Value) -> mlir::Value {
+    //         return rewriter.create<subop::ScanOp>(loc, frontierArg, createColumnDefMemberMappingAttr(ctxt, {{fStart, sDef}, {fNode, nDef}}));
+    //     });
+    //     tuples::ColumnRefAttr mRef;
+    //     stepStream = emitter.step(stepStream, nRef, forward, predicates, mRef);
+    //     {
+    //         auto [refDef, refRef] = createColumn(subop::LookupEntryRefType::get(ctxt, candType), "path", "candref");
+    //         auto insertCand = rewriter.create<subop::LookupOrInsertOp>(loc, tupleStreamType, stepStream, cand, rewriter.getArrayAttr({sRef, mRef}), refDef);
+    //         insertCand.getEqFn().push_back(createI32EqBlock(rewriter, loc, 2));
+    //         insertCand.getInitFn().push_back(createInitBlock(rewriter, loc, {}));
+    //     }
 
-        // 2b. Δ = cand − visited ; visited ∪= Δ ; next = Δ
-        auto [dsDef, dsRef] = createColumn(i32, "path", "delta_start");
-        auto [dnDef, dnRef] = createColumn(i32, "path", "delta_node");
-        mlir::Value delta = rewriter.create<subop::ScanOp>(loc, cand, createColumnDefMemberMappingAttr(ctxt, {{cStart, dsDef}, {cNode, dnDef}}));
-        auto [visRefDef, visRef] = createColumn(subop::LookupEntryRefType::get(ctxt, visitedType), "path", "visref");
-        auto lookupVisited = rewriter.create<subop::LookupOrInsertOp>(loc, tupleStreamType, delta, visited, rewriter.getArrayAttr({dsRef, dnRef}), visRefDef);
-        lookupVisited.getEqFn().push_back(createI32EqBlock(rewriter, loc, 2));
-        lookupVisited.getInitFn().push_back(createInitBlock(rewriter, loc, {{i1, 0}}));
-        auto [seenDef, seenRef] = createColumn(i1, "path", "seen");
-        delta = rewriter.create<subop::GatherOp>(loc, lookupVisited.getRes(), visRef, createColumnDefMemberMappingAttr(ctxt, {{visitedSeen, seenDef}}));
-        delta = rewriter.create<subop::FilterOp>(loc, delta, subop::FilterSemantic::none_true, rewriter.getArrayAttr({seenRef}));
-        auto [trueDef, trueRef] = createColumn(i1, "path", "true");
-        {
-            subop::MapCreationHelper helper(ctxt);
-            helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
-            mlir::Value trueValue = b.create<mlir::arith::ConstantIntOp>(loc, 1, i1);
-            b.create<tuples::ReturnOp>(loc, trueValue);
-            });
-            auto mapOp = rewriter.create<subop::MapOp>(loc, tupleStreamType, delta, rewriter.getArrayAttr({trueDef}), helper.getColRefs());
-            mapOp.getFn().push_back(helper.getMapBlock());
-            delta = mapOp.getResult();
-        }
-        rewriter.create<subop::ScatterOp>(loc, delta, visRef, subop::ColumnRefMemberMappingAttr::get(ctxt, {{visitedSeen, trueRef}}));
-        rewriter.create<subop::MaterializeOp>(loc, delta, next, subop::ColumnRefMemberMappingAttr::get(ctxt, {{nStart, dsRef}, {nNode, dnRef}}));
+    //     // 2b. Δ = cand − visited ; visited ∪= Δ ; next = Δ
+    //     auto [dsDef, dsRef] = createColumn(i32, "path", "delta_start");
+    //     auto [dnDef, dnRef] = createColumn(i32, "path", "delta_node");
+    //     mlir::Value delta = rewriter.create<subop::ScanOp>(loc, cand, createColumnDefMemberMappingAttr(ctxt, {{cStart, dsDef}, {cNode, dnDef}}));
+    //     auto [visRefDef, visRef] = createColumn(subop::LookupEntryRefType::get(ctxt, visitedType), "path", "visref");
+    //     auto lookupVisited = rewriter.create<subop::LookupOrInsertOp>(loc, tupleStreamType, delta, visited, rewriter.getArrayAttr({dsRef, dnRef}), visRefDef);
+    //     lookupVisited.getEqFn().push_back(createI32EqBlock(rewriter, loc, 2));
+    //     lookupVisited.getInitFn().push_back(createInitBlock(rewriter, loc, {{i1, 0}}));
+    //     auto [seenDef, seenRef] = createColumn(i1, "path", "seen");
+    //     delta = rewriter.create<subop::GatherOp>(loc, lookupVisited.getRes(), visRef, createColumnDefMemberMappingAttr(ctxt, {{visitedSeen, seenDef}}));
+    //     delta = rewriter.create<subop::FilterOp>(loc, delta, subop::FilterSemantic::none_true, rewriter.getArrayAttr({seenRef}));
+    //     auto [trueDef, trueRef] = createColumn(i1, "path", "true");
+    //     {
+    //         subop::MapCreationHelper helper(ctxt);
+    //         helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
+    //         mlir::Value trueValue = b.create<mlir::arith::ConstantIntOp>(loc, 1, i1);
+    //         b.create<tuples::ReturnOp>(loc, trueValue);
+    //         });
+    //         auto mapOp = rewriter.create<subop::MapOp>(loc, tupleStreamType, delta, rewriter.getArrayAttr({trueDef}), helper.getColRefs());
+    //         mapOp.getFn().push_back(helper.getMapBlock());
+    //         delta = mapOp.getResult();
+    //     }
+    //     rewriter.create<subop::ScatterOp>(loc, delta, visRef, subop::ColumnRefMemberMappingAttr::get(ctxt, {{visitedSeen, trueRef}}));
+    //     rewriter.create<subop::MaterializeOp>(loc, delta, next, subop::ColumnRefMemberMappingAttr::get(ctxt, {{nStart, dsRef}, {nNode, dnRef}}));
 
-        // 2c. continue while Δ ≠ ∅
-        auto [goRefDef, goRef] = createColumn(subop::EntryRefType::get(ctxt, goType), "path", "goref");
-        mlir::Value goStream = rewriter.create<subop::LookupOp>(loc, tupleStreamType, delta, go, rewriter.getArrayAttr({}), goRefDef);
-        rewriter.create<subop::ScatterOp>(loc, goStream, goRef, subop::ColumnRefMemberMappingAttr::get(ctxt, {{goMember, trueRef}}));
-        rewriter.create<subop::LoopContinueOp>(loc, go, subop::MemberAttr::get(ctxt, goMember), mlir::ValueRange{next});
-    }
+    //     // 2c. continue while Δ ≠ ∅
+    //     auto [goRefDef, goRef] = createColumn(subop::EntryRefType::get(ctxt, goType), "path", "goref");
+    //     mlir::Value goStream = rewriter.create<subop::LookupOp>(loc, tupleStreamType, delta, go, rewriter.getArrayAttr({}), goRefDef);
+    //     rewriter.create<subop::ScatterOp>(loc, goStream, goRef, subop::ColumnRefMemberMappingAttr::get(ctxt, {{goMember, trueRef}}));
+    //     rewriter.create<subop::LoopContinueOp>(loc, go, subop::MemberAttr::get(ctxt, goMember), mlir::ValueRange{next});
+    // }
 }
 
 } // namespace gengodb::compiler::dialect::gpm::lowering

@@ -82,12 +82,14 @@ struct GraphPatternHelper {
     mlir::Value scanEdges(mlir::Value stream, tuples::ColumnRefAttr edgesRef, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRefColumnRef);
     mlir::Value filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr ref, IdentifierTermAttr ident, std::optional<size_t> paramId = std::nullopt);
     mlir::Value filterByIdentifier(mlir::Value stream, tuples::ColumnRefAttr identRef);
+    mlir::Value filterByIdentifiers(mlir::Value stream, tuples::ColumnRefAttr edgeRef, llvm::ArrayRef<mlir::Attribute> predicates);
     mlir::Value wrapNode(mlir::Value stream, tuples::ColumnRefAttr rawRef, tuples::ColumnDefAttr variantDef);
     mlir::Value wrapEdge(mlir::Value stream, tuples::ColumnRefAttr edgeRef, tuples::ColumnDefAttr variantDef);
     mlir::Value resolveNode(mlir::Value stream, tuples::ColumnRefAttr nodeVariantRef, gsubop::NodeRefType& nodeRefType, tuples::ColumnRefAttr& nodeRef);
     mlir::Value resolveEdge(mlir::Value stream, tuples::ColumnRefAttr edgeVariantRef, gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef);
     mlir::Value lookupNode(mlir::Value stream, llvm::ArrayRef<tuples::ColumnRefAttr> columns, mlir::Type keyType,
         gsubop::NodeRefType& nodeRefType, tuples::ColumnRefAttr& nodeRef, BuildKeyFn buildKey, RefApplyFn refineScan = nullptr, RefApplyFn refineLookup = nullptr);
+    mlir::Value lookupNode(mlir::Value stream, tuples::ColumnRefAttr idRef, gsubop::NodeRefType& nodeRefType, tuples::ColumnRefAttr& nodeRef);
     mlir::Value lookupEdge(mlir::Value stream, llvm::ArrayRef<tuples::ColumnRefAttr> columns, mlir::Type keyType,
         gsubop::EdgeRefType& edgeRefType, tuples::ColumnRefAttr& edgeRef, BuildKeyFn buildKey, RefApplyFn refineScan = nullptr, RefApplyFn refineLookup = nullptr);
     mlir::Value nodeId(mlir::Value stream, IdentifierTermAttr ident, tuples::ColumnRefAttr& idRef, std::optional<size_t> paramId = std::nullopt);
