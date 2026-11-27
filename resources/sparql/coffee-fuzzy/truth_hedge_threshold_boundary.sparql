@@ -1,0 +1,11 @@
+# Threshold exactly on a hedged degree: bob/coffee has degree 0.9 and VERY(0.9) = 0.81 in exact arithmetic, but in f32
+# 0.9f * 0.9f = 0.80999994 < 0.81f. A threshold must keep exactly the rows whose 'TRUTH ?v OF VERY' value is >= 0.81, so
+# the hedge is applied forwards to the degree (not inverted onto the threshold, where sqrt(0.81f) = 0.9f kept the row).
+# Expected 4 rows: bob with "Coffee", _:drink1, _:drink2, soup (all 1.0); bob/coffee is excluded.
+PREFIX ex: <http://example.org/>
+SELECT ?p ?d
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH 0.81 OF VERY { ?p ex:drinks ?d . }
+    }
+}

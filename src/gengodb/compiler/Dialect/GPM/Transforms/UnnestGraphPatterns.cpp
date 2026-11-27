@@ -206,6 +206,8 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
    llvm::DenseMap<const tuples::Column*, tuples::ColumnRefAttr> isolatedGraphs;
    struct FuzzyScope {
       std::optional<float> threshold;
+      std::optional<gpm::Hedge> hedge;
+      bool prunesEarly() const { return threshold && hedge != gpm::Hedge::negation && !pruneSuppressed; }
       unsigned pruneSuppressed = 0;
       llvm::DenseMap<mlir::Value, const tuples::Column*> degreeOf;
       llvm::DenseSet<mlir::Value> pruned;
@@ -332,9 +334,13 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       mlir::Value blockArg = fuzzyOp.getPattern().front().getArgument(0);
       rewritten[blockArg] = accumulator;
       std::optional<gpm::Hedge> hedge = fuzzyOp.getHedge();
-      std::optional<DegreeBound> bound;
-      if (auto attr = fuzzyOp.getThreshold()) bound = boundOnRawDegree(attr->convertToFloat(), hedge);
-      fuzzyScopes.emplace_back().threshold = bound && !bound->upper ? std::optional<float>(bound->value) : std::nullopt;
+      std::optional<float> threshold;
+      if (auto attr = fuzzyOp.getThreshold()) threshold = attr->convertToFloat();
+      {
+         auto& newScope = fuzzyScopes.emplace_back();
+         newScope.threshold = threshold;
+         newScope.hedge = hedge;
+      }
       mlir::Value result = rewriteRegion(fuzzyOp.getPattern());
       FuzzyScope scope = fuzzyScopes.pop_back_val();
       rewritten.erase(blockArg);
@@ -346,33 +352,36 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          return {};
       }
       mlir::Value finalStream;
-      if (!bound) {
+      if (!threshold) {
          mlir::Value degreeStream = result;
          if (hedge) std::tie(degreeStream, degree) = buildHedge(result, degree, *hedge, loc);
          finalStream = bindTruthDegree(degreeStream, degree, fuzzyOp.getTruthDegrAttr(), loc);
       }
-      else if (!bound->upper && scope.pruned.contains(result)) {
+      else if (scope.pruned.contains(result)) {
          finalStream = result;
       }
       else {
-         auto predicate = bound->upper ? mlir::arith::CmpFPredicate::OLE : mlir::arith::CmpFPredicate::OGE;
-         finalStream = buildThresholdSelection(result, degree, bound->value, loc, predicate);
+         finalStream = buildThresholdSelection(result, degree, *threshold, hedge, loc);
       }
       propagateDegrees(result, finalStream);
       return finalStream;
    }
-   struct DegreeBound {
-      float value;
-      bool upper;
-   };
-   static DegreeBound boundOnRawDegree(float threshold, std::optional<gpm::Hedge> hedge) {
-      double t = threshold;
-      if (!hedge) return {threshold, false};
-      switch (*hedge) {
-         case gpm::Hedge::very: return {static_cast<float>(std::sqrt(t)), false};
-         case gpm::Hedge::extremely: return {static_cast<float>(std::cbrt(t)), false};
-         case gpm::Hedge::more_or_less: return {static_cast<float>(t * t), false};
-         case gpm::Hedge::negation: return {static_cast<float>(1.0 - t), true};
+   static mlir::Value emitHedge(mlir::OpBuilder& builder, mlir::Value x, gpm::Hedge hedge, mlir::Location loc) {
+      mlir::Type f32 = builder.getF32Type();
+      switch (hedge) {
+         case gpm::Hedge::very:
+            return builder.create<mlir::arith::MulFOp>(loc, x, x);
+         case gpm::Hedge::extremely:
+            return builder.create<mlir::arith::MulFOp>(loc, builder.create<mlir::arith::MulFOp>(loc, x, x), x);
+         case gpm::Hedge::more_or_less: {
+            mlir::Value wide = builder.create<mlir::arith::ExtFOp>(loc, builder.getF64Type(), x);
+            mlir::Value root = builder.create<db::RuntimeCall>(loc, builder.getF64Type(), "Sqrt", mlir::ValueRange({wide})).getRes();
+            return builder.create<mlir::arith::TruncFOp>(loc, f32, root);
+         }
+         case gpm::Hedge::negation: {
+            mlir::Value one = builder.create<mlir::arith::ConstantOp>(loc, f32, builder.getF32FloatAttr(1.0f));
+            return builder.create<mlir::arith::SubFOp>(loc, one, x);
+         }
       }
       llvm_unreachable("unknown fuzzy hedge");
    }
@@ -380,7 +389,6 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       auto* ctxt = stream.getContext();
       auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
       mlir::Type f32 = mlir::Float32Type::get(ctxt);
-      mlir::Type f64 = mlir::Float64Type::get(ctxt);
       assert(degree->type == f32 && "truth degrees must be non-nullable f32");
       auto hedgedDef = columnManager.createDef(columnManager.getUniqueScope("fuzzy"), "hedged");
       hedgedDef.getColumn().type = f32;
@@ -392,27 +400,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          mlir::OpBuilder::InsertionGuard guard(builder);
          builder.setInsertionPointToStart(block);
          mlir::Value x = builder.create<tuples::GetColumnOp>(loc, f32, columnManager.createRef(degree), tuple);
-         mlir::Value hedged;
-         switch (hedge) {
-            case gpm::Hedge::very:
-               hedged = builder.create<mlir::arith::MulFOp>(loc, x, x);
-               break;
-            case gpm::Hedge::extremely:
-               hedged = builder.create<mlir::arith::MulFOp>(loc, builder.create<mlir::arith::MulFOp>(loc, x, x), x);
-               break;
-            case gpm::Hedge::more_or_less: {
-               mlir::Value wide = builder.create<mlir::arith::ExtFOp>(loc, f64, x);
-               mlir::Value root = builder.create<db::RuntimeCall>(loc, f64, "Sqrt", mlir::ValueRange({wide})).getRes();
-               hedged = builder.create<mlir::arith::TruncFOp>(loc, f32, root);
-               break;
-            }
-            case gpm::Hedge::negation: {
-               mlir::Value one = builder.create<mlir::arith::ConstantOp>(loc, f32, builder.getF32FloatAttr(1.0f));
-               hedged = builder.create<mlir::arith::SubFOp>(loc, one, x);
-               break;
-            }
-         }
-         builder.create<tuples::ReturnOp>(loc, hedged);
+         builder.create<tuples::ReturnOp>(loc, emitHedge(builder, x, hedge, loc));
       }
       auto mapOp = builder.create<relalg::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, builder.getArrayAttr({hedgedDef}));
       mapOp.getPredicate().push_back(block);
@@ -851,8 +839,8 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       llvm::SmallVector<bool> prunedNow;
       for (auto [scope, entry] : llvm::zip(fuzzyScopes, combined)) {
          auto [degree, contributed] = entry;
-         bool prune = scope.threshold && !scope.pruneSuppressed && degree && contributed;
-         if (prune) current = buildThresholdSelection(current, degree, *scope.threshold, loc);
+         bool prune = scope.prunesEarly() && degree && contributed;
+         if (prune) current = buildThresholdSelection(current, degree, *scope.threshold, scope.hedge, loc);
          prunedNow.push_back(prune);
       }
       for (auto [scope, entry, prunedHere] : llvm::zip(fuzzyScopes, combined, prunedNow)) {
@@ -907,7 +895,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       mapOp.getPredicate().push_back(block);
       return {mapOp.getResult(), &accDef.getColumn()};
    }
-   mlir::Value buildThresholdSelection(mlir::Value stream, const tuples::Column* degree, float threshold, mlir::Location loc, mlir::arith::CmpFPredicate predicate = mlir::arith::CmpFPredicate::OGE) {
+   mlir::Value buildThresholdSelection(mlir::Value stream, const tuples::Column* degree, float threshold, std::optional<gpm::Hedge> hedge, mlir::Location loc) {
       auto* ctxt = stream.getContext();
       auto& columnManager = ctxt->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
       mlir::OpBuilder builder(ctxt);
@@ -918,9 +906,11 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       selOp.getPredicate().push_back(block);
       mlir::OpBuilder::InsertionGuard guard(builder);
       builder.setInsertionPointToStart(block);
+      assert(degree->type == builder.getF32Type() && "truth degrees must be non-nullable f32");
       mlir::Value value = builder.create<tuples::GetColumnOp>(loc, degree->type, columnManager.createRef(degree), tuple);
+      if (hedge) value = emitHedge(builder, value, *hedge, loc);
       mlir::Value bound = builder.create<mlir::arith::ConstantOp>(loc, builder.getF32Type(), builder.getF32FloatAttr(threshold));
-      builder.create<tuples::ReturnOp>(loc, builder.create<mlir::arith::CmpFOp>(loc, predicate, value, bound).getResult());
+      builder.create<tuples::ReturnOp>(loc, builder.create<mlir::arith::CmpFOp>(loc, mlir::arith::CmpFPredicate::OGE, value, bound).getResult());
       return selOp.getResult();
    }
    mlir::Value bindTruthDegree(mlir::Value stream, const tuples::Column* degree, tuples::ColumnDefAttr resultDef, mlir::Location loc) {
