@@ -11,6 +11,20 @@ namespace gengodb::compiler::dialect::gpm::lowering {
 using namespace lingodb::compiler::dialect;
 using namespace helpers;
 
+template <typename BuildIdentFn>
+mlir::Value generateTupleStream(mlir::ConversionPatternRewriter& rewriter, mlir::Location loc, tuples::ColumnDefAttr def, BuildIdentFn buildIdent) {
+    auto ctxt = rewriter.getContext();
+    auto generateOp = rewriter.create<subop::GenerateOp>(loc, std::vector<mlir::Type>{
+        tuples::TupleStreamType::get(ctxt), tuples::TupleStreamType::get(ctxt)}, rewriter.getArrayAttr({def}));
+    auto* generateBlock = new mlir::Block;
+    mlir::OpBuilder::InsertionGuard guard(rewriter);
+    generateOp.getRegion().push_back(generateBlock);
+    rewriter.setInsertionPointToStart(generateBlock);
+    mlir::Value identValue = buildIdent(rewriter);
+    rewriter.create<subop::GenerateEmitOp>(loc, mlir::ValueRange{identValue});
+    rewriter.create<tuples::ReturnOp>(loc);
+    return generateOp.getRes();
+}
 namespace {
 mlir::Value scanNamedGraph(mlir::OpBuilder& builder, mlir::Location loc, NamedGraph& namedGraph, const std::string& group, const std::string& graph, bool uniqueScope = true) {
    auto& columnManager = builder.getContext()->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
@@ -46,22 +60,53 @@ mlir::Block* createInitBlock(mlir::OpBuilder& builder, mlir::Location loc, llvm:
    builder.create<tuples::ReturnOp>(loc, results);
    return block;
 }
+mlir::Value filterIdsEqual(mlir::OpBuilder& rewriter, mlir::Location loc, mlir::Value stream, tuples::ColumnRefAttr left, tuples::ColumnRefAttr right) {
+    auto* ctxt = rewriter.getContext();
+    auto [eqDef, eqRef] = createColumn(rewriter.getI1Type(), "path", "same");
+    subop::MapCreationHelper helper(ctxt);
+    helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
+        mlir::Value eq = b.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::eq, helper.access(left, loc), helper.access(right, loc));
+        b.create<tuples::ReturnOp>(loc, eq);
+    });
+    auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({eqDef}), helper.getColRefs());
+    mapOp.getFn().push_back(helper.getMapBlock());
+    return rewriter.create<subop::FilterOp>(loc, mapOp.getResult(), subop::FilterSemantic::all_true, rewriter.getArrayAttr({eqRef}));
+}
+mlir::Value constantNotInGraph(mlir::ConversionPatternRewriter& rewriter, mlir::Location loc, NamedGraph& namedGraph, const std::string& group, const std::string& graph,
+    IdentifierTermAttr ident, std::optional<size_t> paramId, tuples::ColumnRefAttr& valueRef) {
+    auto* ctxt = rewriter.getContext();
+    GraphHelper graphHelper(rewriter, loc);
+    mlir::Value graphStream = scanNamedGraph(rewriter, loc, namedGraph, group, graph);
+    mlir::Value stream = graphHelper.attachGraph(graphStream, namedGraph, [&](mlir::Value, mlir::Value, mlir::Value) -> mlir::Value {
+        auto [keyDef, keyRef] = createColumn(gsubop::IdentifierType::get(ctxt), "path", "outside_key");
+        mlir::Value scan = generateTupleStream(rewriter, loc, keyDef, [&](mlir::OpBuilder&) -> mlir::Value {
+            return graphHelper.createIdentifier(graph, ident, paramId);
+        });
+        auto [outsideDef, outsideRef] = createColumn(rewriter.getI1Type(), "path", "outside");
+        subop::MapCreationHelper helper(ctxt);
+        helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
+            mlir::Value valid = b.create<gsubop::IdentifierValidOp>(loc, b.getI1Type(), helper.access(keyRef, loc));
+            mlir::Value one = b.create<mlir::arith::ConstantIntOp>(loc, 1, b.getI1Type());
+            b.create<tuples::ReturnOp>(loc, mlir::Value(b.create<mlir::arith::XOrIOp>(loc, valid, one)));
+        });
+        auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(ctxt), scan, rewriter.getArrayAttr({outsideDef}), helper.getColRefs());
+        mapOp.getFn().push_back(helper.getMapBlock());
+        return rewriter.create<subop::FilterOp>(loc, mapOp.getResult(), subop::FilterSemantic::all_true, rewriter.getArrayAttr({outsideRef}));
+    });
+    auto [valueDef, ref] = createColumn(variant::VariantType::get(ctxt), "path", "constant_value");
+    subop::MapCreationHelper helper(ctxt);
+    helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) {
+        mlir::Value str = b.create<db::ConstantOp>(loc, db::StringType::get(ctxt), b.getStringAttr(ident.identifier()));
+        auto typeId = b.getI32IntegerAttr(gengodb::semantics::xsd::to_int32(gengodb::semantics::xsd::Type::AnyIRI));
+        b.create<tuples::ReturnOp>(loc, mlir::Value(b.create<variant::CreateScalarOp>(loc, variant::VariantType::get(ctxt), str, typeId)));
+    });
+    auto mapOp = rewriter.create<subop::MapOp>(loc, tuples::TupleStreamType::get(ctxt), stream, rewriter.getArrayAttr({valueDef}), helper.getColRefs());
+    mapOp.getFn().push_back(helper.getMapBlock());
+    valueRef = ref;
+    return mapOp.getResult();
+}
 } // end anonymous namespace
 
-template <typename BuildIdentFn>
-mlir::Value generateTupleStream(mlir::ConversionPatternRewriter& rewriter, mlir::Location loc, tuples::ColumnDefAttr def, BuildIdentFn buildIdent) {
-    auto ctxt = rewriter.getContext();
-    auto generateOp = rewriter.create<subop::GenerateOp>(loc, std::vector<mlir::Type>{
-        tuples::TupleStreamType::get(ctxt), tuples::TupleStreamType::get(ctxt)}, rewriter.getArrayAttr({def}));
-    auto* generateBlock = new mlir::Block;
-    mlir::OpBuilder::InsertionGuard guard(rewriter);
-    generateOp.getRegion().push_back(generateBlock);
-    rewriter.setInsertionPointToStart(generateBlock);
-    mlir::Value identValue = buildIdent(rewriter);
-    rewriter.create<subop::GenerateEmitOp>(loc, mlir::ValueRange{identValue});
-    rewriter.create<tuples::ReturnOp>(loc);
-    return generateOp.getRes();
-}
 TripleEmitter::TripleEmitter(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& graphs, mlir::Operation* op, mlir::DictionaryAttr triple)
     : GraphPatternHelper(rewriter, graphs, op, mlir::cast<tuples::ColumnRefAttr>(triple.get("graphRef"))),
     sTerm(triple.get("s")), pTerm(triple.get("p")), oTerm(triple.get("o")),
@@ -453,6 +498,51 @@ mlir::Value PathPatternEmitter::emitStep(mlir::Value frontier, mlir::Value visit
         rewriter.create<subop::ScatterOp>(loc, goStream, goRef, subop::ColumnRefMemberMappingAttr::get(ctxt, {{goMember, trueRef}}));
         rewriter.create<subop::LoopContinueOp>(loc, go, subop::MemberAttr::get(ctxt, goMember), mlir::ValueRange{next});
     }
+    return visited;
+}
+mlir::Value PathPatternEmitter::finish(mlir::Value stream, mlir::Value visited, const PathTerm& startNode, const PathTerm& endNode, const Member& start, const Member& node) {
+    auto i32Type = rewriter.getI32Type();
+    auto tupleStreamType = tuples::TupleStreamType::get(ctxt);
+    const PathTerm& anchor = forward ? startNode : endNode;
+    const PathTerm& other = forward ? endNode : startNode;
+    bool sameVariable = startNode.column && startNode.column == endNode.column;
+
+    getGraph() = inputGraph;
+    auto [vsDef, vsRef] = createColumn(i32Type, "path", "visited_start");
+    auto [vnDef, vnRef] = createColumn(i32Type, "path", "visited_node");
+    mlir::Value out = graphHelper.attachGraph(stream, getGraph(), [&](mlir::Value, mlir::Value, mlir::Value) -> mlir::Value {
+        return rewriter.create<subop::ScanOp>(loc, visited, createColumnDefMemberMappingAttr(ctxt, {{start, vsDef}, {node, vnDef}}));
+    });
+    if (other.ident) {
+        // both ends constant: keep the pair iff it ends at the object
+        tuples::ColumnRefAttr otherIdRef;
+        out = nodeId(out, other.ident, otherIdRef, other.paramId);
+        out = filterIdsEqual(rewriter, loc, out, vnRef, otherIdRef);
+    }
+    if (sameVariable) out = filterIdsEqual(rewriter, loc, out, vsRef, vnRef);
+    auto wrapEnd = [&](tuples::ColumnRefAttr idRef, const tuples::Column* column) {
+        gsubop::NodeRefType nodeRefType;
+        tuples::ColumnRefAttr nodeRef;
+        out = lookupNode(out, idRef, nodeRefType, nodeRef);
+        out = wrapNode(out, nodeRef, columnManager.createDef(column));
+    };
+    if (startNode.column) wrapEnd(forward ? vsRef : vnRef, startNode.column);
+    if (endNode.column && !sameVariable) wrapEnd(forward ? vnRef : vsRef, endNode.column);
+
+    // p*: a constant end that isn't a node of the graph still reaches itself (zero-length path)
+    if (zeroLength && anchor.ident && (!other.ident || other.ident == anchor.ident)) {
+        tuples::ColumnRefAttr valueRef;
+        mlir::Value outside = constantNotInGraph(rewriter, loc, getGraph(), group, graph, anchor.ident, anchor.paramId, valueRef);
+        if (other.column) {
+            subop::MapCreationHelper helper(ctxt);
+            helper.buildBlock(rewriter, [&](mlir::OpBuilder& b) { b.create<tuples::ReturnOp>(loc, helper.access(valueRef, loc)); });
+            auto mapOp = rewriter.create<subop::MapOp>(loc, tupleStreamType, outside, rewriter.getArrayAttr({columnManager.createDef(other.column)}), helper.getColRefs());
+            mapOp.getFn().push_back(helper.getMapBlock());
+            outside = mapOp.getResult();
+        }
+        out = rewriter.create<subop::UnionOp>(loc, tupleStreamType, mlir::ValueRange{out, outside});
+    }
+    return out;
 }
 
 } // namespace gengodb::compiler::dialect::gpm::lowering

@@ -147,6 +147,11 @@ class TripleEmitter : public GraphPatternHelper {
 
 class PathPatternEmitter : public GraphPatternHelper {
     public:
+    struct PathTerm {
+        const tuples::Column* column = nullptr;
+        IdentifierTermAttr ident;
+        std::optional<size_t> paramId;
+    };
     PathPatternEmitter(mlir::ConversionPatternRewriter& rewriter, NamedGraphMapper& localGraphs, mlir::Operation* op, tuples::ColumnRefAttr graphRef,
         bool forward, bool zeroLength, llvm::ArrayRef<mlir::Attribute> predicates)
             : GraphPatternHelper(rewriter, localGraphs, op, graphRef), inputGraph(getGraph()),
@@ -156,19 +161,13 @@ class PathPatternEmitter : public GraphPatternHelper {
     mlir::Value emitFrontier(Member& anchorKey, mlir::Value& anchors);
     mlir::Value emitVisited(const Member& anchorKey, mlir::Value anchors, subop::MapType& type, subop::Member& start, subop::Member& node, subop::Member& seen);
     mlir::Value emitStep(mlir::Value frontier, mlir::Value visited, subop::MapType type, const subop::Member& seen);
-    mlir::Value finish(mlir::Value stream, const subop::Member& start, const subop::Member& node);
+    mlir::Value finish(mlir::Value stream, mlir::Value visited, const PathTerm& startNode, const PathTerm& endNode, const Member& start, const Member& node);
 
     private:
-    // mlir::Value filterIdsEqual(mlir::Value stream, tuples::ColumnRefAttr left, tuples::ColumnRefAttr right);
-    // mlir::Value constantNotInGraph(IdentifierTermAttr ident, std::optional<size_t> paramId, tuples::ColumnRefAttr& valueRef);
-
     NamedGraph inputGraph;
     bool forward, zeroLength;
     llvm::SmallVector<mlir::Attribute> predicates;
     llvm::SmallVector<std::pair<mlir::Value, tuples::ColumnRefAttr>> anchors;
-    // subop::MapType visitedType;
-    // Member visitedStart, visitedNode, visitedSeen;
-    // mlir::Value visited;
 }; // PathPatternEmitter
 
 } // namespace gengodb::compiler::dialect::gpm::lowering
