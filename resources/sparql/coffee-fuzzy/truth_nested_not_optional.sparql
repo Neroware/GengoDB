@@ -1,0 +1,14 @@
+# A negated nested block inside an OPTIONAL: an unmatched OPTIONAL contributes 1.0 to the enclosing t-norm, it is
+# not negated (the NOT applies to the nested block's degree, which only exists if the OPTIONAL matched).
+# Expected: anna 0.7, steve 1.0, carla 0.85 (no drinks, null ?d); bob: 0.95 * (1 - d), i.e. coffee 0.095, tea 0.57,
+# soda 0.76, beer 0.475, miso 0.95, and 0.0 for the crisp drinks "Coffee", _:drink1, _:drink2, soup.
+PREFIX ex: <http://example.org/>
+SELECT ?p ?d ?t
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH ?t OF {
+            ?p ex:type ex:Person .
+            OPTIONAL { TRUTH OF NOT { ?p ex:drinks ?d . } }
+        }
+    }
+}

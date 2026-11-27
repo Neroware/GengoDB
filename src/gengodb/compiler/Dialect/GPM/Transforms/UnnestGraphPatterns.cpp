@@ -298,7 +298,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       auto degreeDef = columnManager.createDef(columnManager.getUniqueScope("fuzzy"), "degree");
       degreeDef.getColumn().type = mlir::Float32Type::get(triple.getContext());
       triple.setTruthDegrAttr(degreeDef);
-      for (auto& scope : fuzzyScopes) scope.degreeOf[triple.getRes()] = &degreeDef.getColumn();
+      fuzzyScopes.back().degreeOf[triple.getRes()] = &degreeDef.getColumn();
    }
    void propagateDegrees(mlir::Value from, mlir::Value to) {
       for (auto& scope : fuzzyScopes) {
@@ -351,20 +351,31 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
          signalPassFailure();
          return {};
       }
-      mlir::Value finalStream;
-      if (!threshold) {
-         mlir::Value degreeStream = result;
-         if (hedge) std::tie(degreeStream, degree) = buildHedge(result, degree, *hedge, loc);
-         finalStream = bindTruthDegree(degreeStream, degree, fuzzyOp.getTruthDegrAttr(), loc);
+      auto truthDegr = fuzzyOp.getTruthDegrAttr();
+      bool contributes = !fuzzyScopes.empty();
+      mlir::Value finalStream = result;
+      std::optional<gpm::Hedge> thresholdHedge = hedge;
+      if (hedge && (truthDegr || contributes)) {
+         std::tie(finalStream, degree) = buildHedge(finalStream, degree, *hedge, loc);
+         thresholdHedge = std::nullopt;
       }
-      else if (scope.pruned.contains(result)) {
-         finalStream = result;
-      }
-      else {
-         finalStream = buildThresholdSelection(result, degree, *threshold, hedge, loc);
-      }
+      if (truthDegr) finalStream = bindTruthDegree(finalStream, degree, truthDegr, loc);
+      if (threshold && !scope.pruned.contains(result)) finalStream = buildThresholdSelection(finalStream, degree, *threshold, thresholdHedge, loc);
       propagateDegrees(result, finalStream);
+      if (contributes) finalStream = contributeToParent(finalStream, degree, loc);
       return finalStream;
+   }
+   mlir::Value contributeToParent(mlir::Value stream, const tuples::Column* childDegree, mlir::Location loc) {
+      auto& parent = fuzzyScopes.back();
+      const tuples::Column* degree = childDegree;
+      mlir::Value current = stream;
+      if (const auto* outerDegree = parent.degreeOf.lookup(stream)) std::tie(current, degree) = buildProductTNorm(current, outerDegree, childDegree, loc);
+      bool prune = parent.prunesEarly();
+      if (prune) current = buildThresholdSelection(current, degree, *parent.threshold, parent.hedge, loc);
+      propagateDegrees(stream, current);
+      parent.degreeOf[current] = degree;
+      if (prune) parent.pruned.insert(current);
+      return current;
    }
    static mlir::Value emitHedge(mlir::OpBuilder& builder, mlir::Value x, gpm::Hedge hedge, mlir::Location loc) {
       mlir::Type f32 = builder.getF32Type();

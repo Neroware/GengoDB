@@ -1,0 +1,12 @@
+# 'TRUTH OF <hedge> { ... }' without a variable or threshold only hedges its block's degree for the enclosing block.
+# Expected: bob/coffee 0.95 * 0.9^2 = 0.7695, bob/tea 0.95 * 0.16 = 0.152, bob/miso 0.0, bob with crisp drinks 0.95.
+PREFIX ex: <http://example.org/>
+SELECT ?p ?d ?t
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH ?t OF {
+            ?p ex:type ex:Person .
+            TRUTH OF VERY { ?p ex:drinks ?d . }
+        }
+    }
+}

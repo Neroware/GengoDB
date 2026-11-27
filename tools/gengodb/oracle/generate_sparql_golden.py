@@ -68,7 +68,7 @@ SKIP = {"bsbm/12.sparql"}  # CONSTRUCT not yet supported
 # list of exclusions, due to rdflib issues
 SKIP_RDFLIB = {"coffee/agg/agg_expr_arg_error.sparql", "coffee/agg/agg_group_by_expr_noalias.sparql",
                "coffee/agg/agg_computed_alias_chain.sparql"}
-TRUTH_OF_RE = re.compile(r"\bTRUTH\s+\S+\s+OF\b", re.IGNORECASE)  # fuzzy extension, not standard SPARQL
+TRUTH_OF_RE = re.compile(r"\bTRUTH\s+(?:\S+\s+)?OF\b", re.IGNORECASE)  # fuzzy extension, not standard SPARQL
 DESCRIBE_STAR_RE = re.compile(r"^#\s*oracle:\s*describe-star((?:\s+\?\w+)+)\s*$", re.MULTILINE)
 UNORDERED_CONCAT_RE = re.compile(r'^#\s*oracle:\s*unordered-concat\s+\?(\w+)\s+"((?:[^"\\]|\\.)*)"\s*$', re.MULTILINE)
 # rdflib 7.x returns a `p*` pair twice when a cycle leads back to the start node (zero-length match +

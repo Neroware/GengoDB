@@ -1,0 +1,12 @@
+# A hedged nested block inside an OPTIONAL: an unmatched OPTIONAL contributes 1.0.
+# Expected: anna 0.7, steve 1.0, carla 0.85 (no drinks); bob/coffee 0.95 * 0.81 = 0.7695, bob/beer 0.2375, ...
+PREFIX ex: <http://example.org/>
+SELECT ?p ?d ?t
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH ?t OF {
+            ?p ex:type ex:Person .
+            OPTIONAL { TRUTH OF VERY { ?p ex:drinks ?d . } }
+        }
+    }
+}

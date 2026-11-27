@@ -1,0 +1,13 @@
+# Threshold over a block whose nested block is negated: 0.95 * (1 - d) >= 0.5 keeps only drinks with d <= 0.47.
+# Checks that early pruning in the outer block uses the hedged (NOT) child degree, not the raw drink degree.
+# Expected: bob with tea (0.4), soda (0.2), miso (0.0).
+PREFIX ex: <http://example.org/>
+SELECT ?p ?d
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH 0.5 OF {
+            ?p ex:type ex:Person .
+            TRUTH OF NOT { ?p ex:drinks ?d . }
+        }
+    }
+}

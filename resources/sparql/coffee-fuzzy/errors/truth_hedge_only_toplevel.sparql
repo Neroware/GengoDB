@@ -1,0 +1,8 @@
+# Expected to fail: without a truth variable or threshold, a TRUTH block has no effect unless it is nested in another one.
+PREFIX ex: <http://example.org/>
+SELECT ?p
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH OF VERY { ?p ex:drinks ex:coffee . }
+    }
+}

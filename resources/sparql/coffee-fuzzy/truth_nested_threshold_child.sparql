@@ -1,0 +1,12 @@
+# A nested threshold block filters its own rows and still contributes its degree to the enclosing block.
+# Expected: bob with coffee 0.855, beer 0.475, tea 0.38, "Coffee"/_:drink1/_:drink2/soup 0.95 (soda 0.2, miso 0.0 dropped).
+PREFIX ex: <http://example.org/>
+SELECT ?p ?d ?t
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH ?t OF {
+            ?p ex:type ex:Person .
+            TRUTH 0.4 OF { ?p ex:drinks ?d . }
+        }
+    }
+}

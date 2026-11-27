@@ -895,14 +895,15 @@ class Parser {
             auto tp = std::make_unique<sparql::TruthPattern>();
             if (is(TK::Variable)) {
                tp->variable = tok.value;
+               advance();
             } else if (is(TK::Number)) {
                tp->threshold = std::stof(tok.value);
                if (*tp->threshold < 0.0f || *tp->threshold > 1.0f)
                   throw std::runtime_error("TRUTH OF threshold must be in [0, 1] at line " + std::to_string(tok.line));
-            } else {
-               throw std::runtime_error("Expected truth variable or threshold after TRUTH at line " + std::to_string(tok.line) + ", got '" + tok.value + "'");
+               advance();
+            } else if (!kw("OF")) {
+               throw std::runtime_error("Expected truth variable, threshold or OF after TRUTH at line " + std::to_string(tok.line) + ", got '" + tok.value + "'");
             }
-            advance();
             eatKw("OF");
             if (is(TK::Keyword)) {
                static const std::set<std::string> builtinHedges{"VERY", "EXTREMELY", "MORE_OR_LESS", "NOT"};
@@ -1551,6 +1552,8 @@ class Translator {
          throw sparql::UnsupportedFeatureError("FUZZY_NORM <" + *tp.normIri + "> is not supported (only <" + kProductNormIri + "> is implemented)");
       if (tp.variable && varDefs.count(*tp.variable))
          throw sparql::UnsupportedFeatureError("TRUTH OF target ?" + *tp.variable + " is already bound");
+      if (!tp.variable && !tp.threshold && truthDepth == 0)
+         throw std::runtime_error("'TRUTH OF { ... }' without a truth variable or threshold is only allowed inside another TRUTH OF block");
       std::optional<gpm::Hedge> hedge;
       if (tp.hedgeIri) hedge = resolveHedge(*tp.hedgeIri);
       if (!inputStream) {
@@ -1584,7 +1587,7 @@ class Translator {
          varDefs[*tp.variable] = def;
          allVars.push_back(*tp.variable);
          fuzzyOp.setTruthDegrAttr(def);
-      } else {
+      } else if (tp.threshold) {
          fuzzyOp.setThresholdAttr(builder.getF32FloatAttr(*tp.threshold));
       }
       return fuzzyOp.getRes();
