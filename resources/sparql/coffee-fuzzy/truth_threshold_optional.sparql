@@ -1,0 +1,15 @@
+# Threshold over an OPTIONAL whose right side is a join: must equal
+#   TRUTH ?t OF { ... } FILTER(?t >= 0.65)
+# anna's cup matches (0.7 * 1.0 * 0.6 = 0.42), so anna must NOT appear. Pruning the
+# OPTIONAL's inner join early (0.6 < 0.65) used to turn that match into a padded row
+# (anna, null, null) with degree 0.7. Expected: bob, steve, carla, each with null ?c ?d.
+PREFIX ex: <http://example.org/>
+SELECT ?p ?c ?d
+{
+    GRAPH <file://resources/ttl/coffee-fuzzy/coffee.fttl#rdf> {
+        TRUTH 0.65 OF {
+            ?p ex:type ex:Person .
+            OPTIONAL { ?p ex:cup ?c . ?c ex:drinks ?d . }
+        }
+    }
+}

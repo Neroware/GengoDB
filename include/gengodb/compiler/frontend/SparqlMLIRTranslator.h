@@ -1456,16 +1456,7 @@ class Translator {
    mlir::Value buildBGP(const sparql::GraphPattern& gp, mlir::Value inputStream,
                         tuples::ColumnRefAttr graphRef) {
       auto loc = builder.getUnknownLoc();
-      auto bgpOp = builder.create<gpm::BasicGraphPatternOp>(
-         loc, tuples::TupleStreamType::get(ctxt), inputStream);
-
-      auto* block = new mlir::Block;
-      block->addArgument(tuples::TupleStreamType::get(ctxt), loc);
-      bgpOp.getPattern().push_back(block);
-      {
-         mlir::OpBuilder::InsertionGuard guard(builder);
-         builder.setInsertionPointToStart(block);
-         mlir::Value cur = block->getArgument(0);
+      auto buildTriples = [&](mlir::Value cur) {
          for (const auto& triple : gp.triples) {
             if (triple.path) {
                cur = buildPath(triple, cur, graphRef);
@@ -1477,7 +1468,21 @@ class Translator {
             cur = builder.create<gpm::TriplePatternOp>(
                loc, tuples::TupleStreamType::get(ctxt), cur, graphRef, s, p, o, /*degree=*/tuples::ColumnDefAttr());
          }
-         builder.create<tuples::ReturnOp>(loc, cur);
+         return cur;
+      };
+      if (mlir::isa_and_nonnull<gpm::GraphPatternOp>(builder.getInsertionBlock()->getParentOp()))
+         return buildTriples(inputStream);
+
+      auto bgpOp = builder.create<gpm::BasicGraphPatternOp>(
+         loc, tuples::TupleStreamType::get(ctxt), inputStream);
+
+      auto* block = new mlir::Block;
+      block->addArgument(tuples::TupleStreamType::get(ctxt), loc);
+      bgpOp.getPattern().push_back(block);
+      {
+         mlir::OpBuilder::InsertionGuard guard(builder);
+         builder.setInsertionPointToStart(block);
+         builder.create<tuples::ReturnOp>(loc, buildTriples(block->getArgument(0)));
       }
       return bgpOp.getRes();
    }

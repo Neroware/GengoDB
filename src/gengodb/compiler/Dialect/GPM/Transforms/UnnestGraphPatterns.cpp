@@ -206,6 +206,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
    llvm::DenseMap<const tuples::Column*, tuples::ColumnRefAttr> isolatedGraphs;
    struct FuzzyScope {
       std::optional<float> threshold;
+      unsigned pruneSuppressed = 0;
       llvm::DenseMap<mlir::Value, const tuples::Column*> degreeOf;
       llvm::DenseSet<mlir::Value> pruned;
    };
@@ -430,7 +431,15 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       auto kind = patternOp.getPatternKind();
       auto loc = patternOp.getLoc();
       mlir::Value accumulator = rewrite(patternOp.getRel());
+      bool suppressPruning = kind == gpm::PatternKind::optional || kind == gpm::PatternKind::minus;
+      size_t enclosingScopes = fuzzyScopes.size();
+      if (suppressPruning) {
+         for (size_t i = 0; i < enclosingScopes; i++) fuzzyScopes[i].pruneSuppressed++;
+      }
       mlir::Value elementStream = rewriteRegion(patternOp.getPattern());
+      if (suppressPruning) {
+         for (size_t i = 0; i < enclosingScopes; i++) fuzzyScopes[i].pruneSuppressed--;
+      }
       if (accumulator && elementStream && (kind == gpm::PatternKind::basic || kind == gpm::PatternKind::optional)) {
          if (!splitDanglingReferences(patternOp, accumulator, elementStream, createdVars)) return {};
       }
@@ -846,7 +855,7 @@ class UnnestGraphPatternsPass : public mlir::PassWrapper<UnnestGraphPatternsPass
       llvm::SmallVector<bool> prunedNow;
       for (auto [scope, entry] : llvm::zip(fuzzyScopes, combined)) {
          auto [degree, contributed] = entry;
-         bool prune = scope.threshold && degree && contributed;
+         bool prune = scope.threshold && !scope.pruneSuppressed && degree && contributed;
          if (prune) current = buildThresholdSelection(current, degree, *scope.threshold, /*keepUnbound=*/true, loc);
          prunedNow.push_back(prune && !mlir::isa<db::NullableType>(degree->type));
       }
